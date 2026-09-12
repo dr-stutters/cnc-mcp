@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to smoke_plan.json and replace with real calls for this platform. phase: read (default) runs always; write runs only with --write. expect_error inverts the pass condition. Write steps must leave the platform as found: create -> verify -> delete.",
+  "steps": [
+    { "tool": "cnc_list_widgets", "args": { "limit": 5 } },
+    { "tool": "cnc_get_widget", "args": { "widget_id": "does-not-exist" }, "expect_error": true },
+    { "tool": "cnc_create_widget", "args": { "name": "smoke-test" }, "phase": "write" },
+    { "tool": "cnc_delete_widget", "args": { "widget_id": "REPLACE-with-created-id-or-use-a-dedicated-cleanup-tool" }, "phase": "write" }
+  ]
+}

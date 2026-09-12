@@ -1,0 +1,10 @@
+# Credentials must never enter the image — pass them at runtime via --env-file/-e.
+.env
+
+.venv/
+.git/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
