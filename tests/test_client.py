@@ -248,7 +248,7 @@ async def test_crosswork_genuine_403_does_not_reauth(make_settings):
 @pytest.mark.parametrize(
     ("status", "body", "fragment"),
     [
-        (403, {"error": "Unauthorized request"}, "rejected the bearer token"),
+        (403, {"error": "Unauthorized request"}, "rejected bearer"),
         (403, {"error": "Missing Authorization header"}, "no bearer token"),
         (500, {"error": "Middleware error"}, "gateway rejected the bearer token"),
         (500, {"error": "NATS request failed"}, "malformed request body"),

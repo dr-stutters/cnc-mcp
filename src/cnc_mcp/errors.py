@@ -68,9 +68,10 @@ _DETAIL_HINTS: list[tuple[int, str, str]] = [
     (
         403,
         "unauthorized request",
-        "Authentication failed: Crosswork rejected the bearer token (expired or invalid). "
-        "The server re-authenticates automatically once per request; if this persists, "
-        "verify the configured username/password.",
+        "Crosswork answered 'Unauthorized request'. This is either a rejected bearer "
+        "token (the server already re-authenticated once and retried) or a path the "
+        "gateway does not know / your role may not call — check the endpoint path before "
+        "suspecting the credentials.",
     ),
     (
         500,
