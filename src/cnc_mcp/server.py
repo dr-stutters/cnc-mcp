@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from mcp.server.mcpserver import MCPServer
 from pydantic import ValidationError
 
-from cnc_mcp.auth import AuthStrategy, LoginTokenAuth, NoAuth, StaticTokenAuth
+from cnc_mcp.auth import AuthStrategy, CrossworkCasAuth, StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.errors import PlatformError
@@ -27,38 +27,69 @@ logger = logging.getLogger(__name__)
 
 
 def create_auth(settings: Settings) -> AuthStrategy:
-    """Choose the auth strategy for this platform.
+    """Choose the auth strategy for Crosswork Network Controller.
 
-    TEMPLATE: replace this with the real strategy during specialization (see the
-    strategy overview in auth.py). The default below only exists so the
-    template runs out of the box:
-    - api_token set        -> StaticTokenAuth (Authorization: Bearer <token>)
-    - username/password    -> LoginTokenAuth against a placeholder /auth/login
-    - neither              -> NoAuth
+    - username/password -> CrossworkCasAuth: two-leg CAS SSO (ticket-granting
+      ticket -> service ticket), which Crosswork issues as an ~8 h JWT sent as
+      ``Authorization: Bearer``. This is the normal configuration.
+    - api_token         -> StaticTokenAuth: a JWT obtained elsewhere (e.g. copied
+      from a browser session for a one-off). It cannot be refreshed, so expect
+      auth failures after it expires.
     """
     if settings.api_token:
         return StaticTokenAuth(settings.api_token)
-    if settings.username:
-        return LoginTokenAuth(
-            "/auth/login",
-            settings.username,
-            settings.password,
-            login_style="json",
-            token_location="json",
-            token_field="token",
+    prefix = Settings.model_config.get("env_prefix", "")
+    if not (settings.username and settings.password):
+        raise PlatformError(
+            f"Crosswork credentials are required: set {prefix}USERNAME and "
+            f"{prefix}PASSWORD (or {prefix}API_TOKEN with a pre-issued JWT)."
         )
-    return NoAuth()
+    return CrossworkCasAuth(settings.username, settings.password)
+
+
+def quiet_http_logging() -> None:
+    """Keep httpx's per-request INFO lines out of the log.
+
+    httpx logs every request URL at INFO, and the second CAS leg's URL contains
+    the ticket-granting ticket (``.../tickets/TGT-...``) — a credential. Cap the
+    HTTP client loggers at WARNING regardless of the configured level.
+    """
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def build_instructions(settings: Settings) -> str:
     """Server-level instructions shown to connecting agents."""
-    # TEMPLATE: describe the platform, what the tools cover, and any conventions
-    # (ID formats, object model quirks, pagination) the agent should know.
     prefix = Settings.model_config.get("env_prefix", "")
     lines = [
-        "Tools for the Cnc platform API.",
-        "List tools support limit/offset pagination and a response_format of "
-        "'markdown' (default, human-readable) or 'json' (complete data).",
+        "Tools for Cisco Crosswork Network Controller (CNC): device inventory, credential "
+        "profiles, providers (SR-PCE, NSO, ...), the topology graph, tags, alarms, users, "
+        "installed applications, and inventory jobs.",
+        "",
+        "Conventions:",
+        "- Objects are identified by 'uuid' (devices, providers) or by name (credential "
+        "profiles by 'profile', tags by 'name'). List tools return the identifiers; get "
+        "tools take exactly one selector.",
+        "- List tools page with page_size/page (page is 0-based) and return an envelope "
+        "{total, count, page, page_size, has_more, next_page, items}. 'total' counts matches "
+        "for the filter; 'collection_total' is the size of the whole collection.",
+        "- Filters are exact-match, case-insensitive, and accept '*' as a wildcard "
+        "(host_name='PE*'). There is no substring match without '*'.",
+        "- response_format='markdown' (default) is a curated summary; 'json' is complete data.",
+        "- Enum inputs accept friendly values (admin_state='up', family='sr_pce', "
+        "protocol='ssh') or the platform's wire values (ROBOT_ADMIN_STATE_UP).",
+        "- Writes return the platform's job envelope (job_id, state, impacted_objects). "
+        "A write that the platform rejected is reported as 'Error: ...' with the reason; "
+        "use cnc_get_inventory_job / cnc_wait_for_inventory_job for long-running jobs.",
+        "- Object model: a device (node) references a credential profile and is attached to "
+        "a Data Gateway (dg_name) for collection; providers (e.g. an SR-PCE) also reference "
+        "a credential profile. Create the credential profile first, then providers, then "
+        "devices. The L3 topology comes from an SR-PCE provider (BGP-LS); L2 links come "
+        "from device collection (LLDP). A device's te_router_id must match its router-id "
+        "in the SR-PCE topology for the two to be correlated.",
+        "- Newly added devices show reachability 'CONN_STATE_UNKNOWN' / operational "
+        "'ROBOT_OPER_STATE_CHECKING' for a minute or two; cnc_wait_for_device_reachable "
+        "waits for the check to finish.",
     ]
     if settings.enable_writes:
         lines.append(
@@ -110,6 +141,7 @@ def main() -> None:
         level=settings.log_level.upper(),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    quiet_http_logging()
     logger.info("Starting %s (writes %s)", SERVER_NAME, "ON" if settings.enable_writes else "off")
     try:
         server = build_server(settings)

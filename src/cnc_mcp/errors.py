@@ -55,16 +55,53 @@ def _extract_detail(response: httpx.Response, max_chars: int = 300) -> str:
     return str(data)[:max_chars]
 
 
+# Crosswork hides several distinct conditions behind generic status codes
+# (verified live). Matched case-insensitively against the extracted detail and
+# checked before the generic status hint.
+_DETAIL_HINTS: list[tuple[int, str, str]] = [
+    (
+        403,
+        "missing authorization header",
+        "Authentication failed: no bearer token reached Crosswork. This indicates a "
+        "server bug rather than a permissions problem.",
+    ),
+    (
+        403,
+        "unauthorized request",
+        "Authentication failed: Crosswork rejected the bearer token (expired or invalid). "
+        "The server re-authenticates automatically once per request; if this persists, "
+        "verify the configured username/password.",
+    ),
+    (
+        500,
+        "middleware error",
+        "The Crosswork gateway rejected the bearer token before it reached the service "
+        "(malformed or expired JWT). The server re-authenticates automatically once per "
+        "request; if this persists, verify the configured credentials.",
+    ),
+    (
+        500,
+        "nats request failed",
+        "The Crosswork service could not process the request. On this platform that "
+        "usually means a malformed request body rather than an outage — check the "
+        "payload (valid JSON, expected field names) before retrying.",
+    ),
+]
+
+
 def http_error(response: httpx.Response) -> PlatformError:
     """Build a PlatformError for a non-success HTTP response."""
     status = response.status_code
-    hint = _STATUS_HINTS.get(
+    detail = _extract_detail(response)
+    hint = next(
+        (h for st, marker, h in _DETAIL_HINTS if st == status and marker in detail.lower()),
+        None,
+    ) or _STATUS_HINTS.get(
         status,
         "The platform API request failed."
         if status < 500
         else "The platform returned a server error. It may be busy or mid-deploy; try again.",
     )
-    detail = _extract_detail(response)
     message = f"API request failed with status {status}. {hint}"
     if detail:
         message += f" Platform said: {detail}"

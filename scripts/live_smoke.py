@@ -7,6 +7,10 @@ fill in real calls for this platform. Read-phase steps must be side-effect free;
 write-phase steps run only with --write and must leave the platform exactly as
 found (create -> verify -> delete).
 
+Steps may chain: a step with "capture": {"var": "dotted.path.0.to.value"} stores
+values from its JSON result, and later steps may use "$var" (or "$var" inside a
+string) in their args — e.g. capture the uuid a create returned, then delete it.
+
 Usage (from the project root):
     uv run python scripts/live_smoke.py            # read phase only
     uv run python scripts/live_smoke.py --write    # read + write phases
@@ -51,20 +55,61 @@ async def run() -> int:
     print(f"{len(tools)} tools registered (writes {'ON' if args.write else 'off'})")
 
     failures = 0
+    captured: dict[str, str] = {}
     for step in plan["steps"]:
         if step.get("phase", "read") == "write" and not args.write:
             continue
         name = step["tool"]
-        result = await mcp.call_tool(name, step.get("args", {}))
+        call_args = _substitute(step.get("args", {}), captured)
+        result = await mcp.call_tool(name, call_args)
         text = "".join(getattr(block, "text", "") for block in result.content)
         ok = not text.startswith("Error:")
         if step.get("expect_error"):
             ok = not ok
         failures += 0 if ok else 1
         print(f"{'OK  ' if ok else 'FAIL'} {name}: {text[:140]!r}")
+        for var, path in (step.get("capture") or {}).items():
+            value = _dig(text, path)
+            if value is None:
+                failures += 1
+                print(f"FAIL capture {var}: path {path!r} not found in result")
+            else:
+                captured[var] = str(value)
+                print(f"     captured {var}={captured[var]}")
 
     print(f"\n{'PASS' if not failures else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
+
+
+def _dig(text: str, path: str):
+    """Follow a dotted path (list indexes as integers) into a JSON result."""
+    try:
+        node = json.loads(text)
+    except ValueError:
+        return None
+    for part in path.split("."):
+        if isinstance(node, list) and part.isdigit():
+            idx = int(part)
+            node = node[idx] if idx < len(node) else None
+        elif isinstance(node, dict):
+            node = node.get(part)
+        else:
+            return None
+        if node is None:
+            return None
+    return node
+
+
+def _substitute(value, captured: dict[str, str]):
+    """Replace "$var" references in step args with captured values."""
+    if isinstance(value, dict):
+        return {k: _substitute(v, captured) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute(v, captured) for v in value]
+    if isinstance(value, str) and "$" in value:
+        for var, val in captured.items():
+            value = value.replace(f"${var}", val)
+    return value
 
 
 if __name__ == "__main__":

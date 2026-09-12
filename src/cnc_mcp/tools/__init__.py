@@ -1,7 +1,6 @@
 """Tool registry.
 
-Each tool module exposes register(mcp, ctx). Add new modules to ALL_MODULES —
-one module per platform API area (e.g. devices, policies, labs).
+Each tool module exposes register(mcp, ctx). One module per Crosswork API area.
 """
 
 from __future__ import annotations
@@ -9,10 +8,14 @@ from __future__ import annotations
 from mcp.server.mcpserver import MCPServer
 
 from cnc_mcp.safety import AppContext
-from cnc_mcp.tools import example_widgets
+from cnc_mcp.tools import credentials, devices, platform, providers, topology
 
 ALL_MODULES = [
-    example_widgets,  # TEMPLATE: delete once real tool modules exist
+    devices,  # network devices (inventory nodes)
+    credentials,  # credential profiles
+    providers,  # SR-PCE / NSO / ... providers
+    topology,  # topology graph (LLDP + SR-PCE)
+    platform,  # tags, users, applications, alarms, inventory jobs
 ]
 
 

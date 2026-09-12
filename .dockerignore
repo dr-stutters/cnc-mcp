@@ -1,5 +1,7 @@
 # Credentials must never enter the image — pass them at runtime via --env-file/-e.
 .env
+.env.*
+!.env.example
 
 .venv/
 .git/

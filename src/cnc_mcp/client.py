@@ -1,7 +1,8 @@
 """Async HTTP client for the platform API.
 
 Wraps httpx.AsyncClient with the behaviors every platform server needs:
-- auth via a pluggable AuthStrategy, including one transparent re-auth on 401
+- auth via a pluggable AuthStrategy, including one transparent re-auth when the
+  strategy's is_auth_failure() says the response means the token was rejected
 - retry with exponential backoff (+ jitter, honoring Retry-After): 429 is retried
   for every method (the platform rejected the request before processing it);
   5xx and transport errors are retried only for idempotent methods, because a
@@ -58,7 +59,7 @@ class ApiClient:
         raise_on_error: bool = True,
         retryable: bool | None = None,
     ) -> httpx.Response:
-        """Make a request with auth, retries, and 401 re-auth. Returns the response.
+        """Make a request with auth, retries, and one re-auth on auth failure. Returns the response.
 
         retryable=None (default) auto-retries 5xx/transport errors only for
         idempotent methods; pass True when a write is known-safe to re-send on
@@ -139,7 +140,7 @@ class ApiClient:
                     f"Could not reach the platform ({type(e).__name__}). {hint}"
                 ) from e
 
-            if response.status_code == 401 and not reauth_attempted:
+            if not reauth_attempted and self._auth.is_auth_failure(response):
                 reauth_attempted = True
                 if await self._auth.handle_unauthorized(self._http, headers):
                     continue

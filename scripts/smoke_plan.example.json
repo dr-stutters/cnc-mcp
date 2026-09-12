@@ -1,9 +1,329 @@
 {
-  "_comment": "Copy to smoke_plan.json and replace with real calls for this platform. phase: read (default) runs always; write runs only with --write. expect_error inverts the pass condition. Write steps must leave the platform as found: create -> verify -> delete.",
+  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1, a credential profile 'cml-xrd', and an SR-PCE provider 'cml-pce'; the write phase only touches smoke-* objects it creates itself.",
   "steps": [
-    { "tool": "cnc_list_widgets", "args": { "limit": 5 } },
-    { "tool": "cnc_get_widget", "args": { "widget_id": "does-not-exist" }, "expect_error": true },
-    { "tool": "cnc_create_widget", "args": { "name": "smoke-test" }, "phase": "write" },
-    { "tool": "cnc_delete_widget", "args": { "widget_id": "REPLACE-with-created-id-or-use-a-dedicated-cleanup-tool" }, "phase": "write" }
+    {
+      "tool": "cnc_list_devices",
+      "args": {
+        "page_size": 3
+      }
+    },
+    {
+      "tool": "cnc_list_devices",
+      "args": {
+        "page_size": 3,
+        "page": 1,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_devices",
+      "args": {
+        "host_name": "PE*",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_devices",
+      "args": {
+        "reachability": "reachable",
+        "admin_state": "up"
+      }
+    },
+    {
+      "tool": "cnc_get_device",
+      "args": {
+        "host_name": "PE1"
+      }
+    },
+    {
+      "tool": "cnc_get_device",
+      "args": {
+        "host_name": "does-not-exist"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_device",
+      "args": {},
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_device_collection_summary",
+      "args": {}
+    },
+    {
+      "tool": "cnc_wait_for_device_reachable",
+      "args": {
+        "host_name": "P1",
+        "timeout_seconds": 20,
+        "interval_seconds": 5
+      }
+    },
+    {
+      "tool": "cnc_list_credential_profiles",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_credential_profiles",
+      "args": {
+        "profile": "cml*",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "cml-xrd"
+      }
+    },
+    {
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_providers",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_providers",
+      "args": {
+        "family": "sr_pce",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_provider",
+      "args": {
+        "name": "cml-pce"
+      }
+    },
+    {
+      "tool": "cnc_get_provider",
+      "args": {
+        "name": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_topology_summary",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_topology",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_topology",
+      "args": {
+        "response_format": "json",
+        "page_size": 1
+      }
+    },
+    {
+      "tool": "cnc_list_topology_nodes",
+      "args": {
+        "page_size": 2,
+        "page": 1,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_topology_links",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_tags",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_tags",
+      "args": {
+        "name": "mdt",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_users",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_applications",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_alarms",
+      "args": {
+        "limit": 5
+      }
+    },
+    {
+      "tool": "cnc_list_inventory_jobs",
+      "args": {
+        "page_size": 3,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_inventory_job",
+      "args": {
+        "job_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_credential_profile",
+      "args": {
+        "profile": "smoke-cred",
+        "ssh_username": "apiuser",
+        "ssh_password": "changeme",
+        "http_username": "apiuser",
+        "http_password": "changeme",
+        "snmpv2_read_community": "public"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "smoke-cred"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_provider",
+      "args": {
+        "name": "smoke-pce",
+        "family": "sr_pce",
+        "credential_profile": "smoke-cred",
+        "ip_address": "192.0.2.250",
+        "protocol": "http",
+        "port": 8080
+      },
+      "capture": {
+        "provider_uuid": "impacted_objects.0.uuid"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_provider",
+      "args": {
+        "uuid": "$provider_uuid",
+        "response_format": "json"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_provider",
+      "args": {
+        "uuid": "$provider_uuid",
+        "properties": "outgoing-interface=eth0"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_provider",
+      "args": {
+        "uuid": "$provider_uuid"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_provider",
+      "args": {
+        "name": "smoke-pce"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device",
+      "args": {
+        "host_name": "smoke-dev",
+        "ip_address": "192.0.2.98",
+        "prefix_length": 18,
+        "credential_profile": "smoke-cred",
+        "protocols": "ssh,snmp",
+        "admin_state": "unmanaged",
+        "reachability_check": false,
+        "capabilities": "snmp,yang_cli",
+        "te_router_id": "10.0.0.98"
+      },
+      "capture": {
+        "device_uuid": "impacted_objects.0.uuid",
+        "job_id": "job_id"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_inventory_job",
+      "args": {
+        "job_id": "$job_id"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_wait_for_inventory_job",
+      "args": {
+        "job_id": "$job_id",
+        "timeout_seconds": 15
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_device",
+      "args": {
+        "uuid": "$device_uuid"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device",
+      "args": {
+        "uuid": "$device_uuid",
+        "admin_state": "down"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device",
+      "args": {
+        "uuid": "$device_uuid"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device",
+      "args": {
+        "uuid": "$device_uuid"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_device",
+      "args": {
+        "host_name": "smoke-dev"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_credential_profile",
+      "args": {
+        "profile": "smoke-cred"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "smoke-cred"
+      },
+      "expect_error": true
+    }
   ]
 }

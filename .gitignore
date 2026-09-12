@@ -12,3 +12,8 @@ build/
 
 # Secrets — never commit
 .env
+.env.*
+!.env.example
+
+# Live smoke plan: instance-specific addresses and credentials stay local
+scripts/smoke_plan.json

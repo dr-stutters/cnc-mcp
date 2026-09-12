@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from cnc_mcp.auth import BasicAuth, LoginTokenAuth, StaticTokenAuth
+from cnc_mcp.auth import BasicAuth, CrossworkCasAuth, LoginTokenAuth, StaticTokenAuth
 from cnc_mcp.errors import PlatformError
 from tests.conftest import BASE_URL
 
@@ -147,3 +147,122 @@ async def test_login_missing_token_raises():
     async with httpx.AsyncClient(base_url=BASE_URL) as http:
         with pytest.raises(PlatformError, match="no token"):
             await auth.ensure_authenticated(http)
+
+
+# --- CrossworkCasAuth: the real strategy for this server ---------------------------
+
+TICKETS = f"{BASE_URL}/crosswork/sso/v1/tickets"
+JWT = "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJtY3AtYWRtaW4ifQ.sig"
+
+
+def _mock_cas(tgt: str = "TGT-1-abc", jwt: str = JWT):
+    """Mock both CAS legs; returns (leg1_route, leg2_route)."""
+    leg1 = respx.post(TICKETS).mock(
+        return_value=httpx.Response(
+            201, text=tgt, headers={"Location": f"https://internal:5489/tickets/{tgt}"}
+        )
+    )
+    leg2 = respx.post(f"{TICKETS}/{tgt}").mock(return_value=httpx.Response(200, text=jwt))
+    return leg1, leg2
+
+
+@respx.mock
+async def test_crosswork_two_leg_login_yields_bearer_jwt():
+    leg1, leg2 = _mock_cas()
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+    assert auth.headers() == {"Authorization": f"Bearer {JWT}"}
+    # Leg 1: form-urlencoded credentials, not JSON and not HTTP Basic.
+    req1 = leg1.calls[0].request
+    assert req1.headers["Content-Type"].startswith("application/x-www-form-urlencoded")
+    assert b"username=mcp-admin" in req1.content and b"password=secret" in req1.content
+    assert "Authorization" not in req1.headers
+    # Leg 2: the service URL is derived from base_url and becomes the JWT audience.
+    req2 = leg2.calls[0].request
+    assert b"service=" in req2.content
+    assert BASE_URL.replace(":", "%3A").replace("/", "%2F").encode() in req2.content
+    assert b"app-dashboard" in req2.content
+
+
+@respx.mock
+async def test_crosswork_does_not_follow_internal_location():
+    """Leg 1's Location header points at an internal port; it must never be requested."""
+    _mock_cas()
+    internal = respx.post("https://internal:5489/tickets/TGT-1-abc").mock(
+        return_value=httpx.Response(200, text="should-not-be-called")
+    )
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+    assert internal.call_count == 0
+
+
+@respx.mock
+async def test_crosswork_bad_credentials_message_mentions_nonexistent_user():
+    respx.post(TICKETS).mock(
+        return_value=httpx.Response(
+            401, json={"authentication_exceptions": ["Invalid credentials"]}
+        )
+    )
+    auth = CrossworkCasAuth("nobody", "wrong")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        with pytest.raises(PlatformError, match="does not exist"):
+            await auth.ensure_authenticated(http)
+
+
+@respx.mock
+async def test_crosswork_non_tgt_body_is_actionable():
+    respx.post(TICKETS).mock(return_value=httpx.Response(200, text="<html>login page</html>"))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        with pytest.raises(PlatformError, match="ticket-granting ticket"):
+            await auth.ensure_authenticated(http)
+
+
+@respx.mock
+async def test_crosswork_leg2_failure_is_actionable():
+    respx.post(TICKETS).mock(return_value=httpx.Response(201, text="TGT-1-abc"))
+    respx.post(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(404))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        with pytest.raises(PlatformError, match="service-ticket exchange failed"):
+            await auth.ensure_authenticated(http)
+
+
+@respx.mock
+async def test_crosswork_non_jwt_service_ticket_is_rejected():
+    respx.post(TICKETS).mock(return_value=httpx.Response(201, text="TGT-1-abc"))
+    respx.post(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(200, text="ST-9-plain"))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        with pytest.raises(PlatformError, match="not a JWT"):
+            await auth.ensure_authenticated(http)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (401, None, True),
+        (403, {"error": "Missing Authorization header"}, True),
+        (403, {"error": "Unauthorized request"}, True),
+        (500, {"error": "Middleware error"}, True),
+        # Genuine permission denial and genuine server faults must NOT re-auth.
+        (403, {"error": "User lacks role for this operation"}, False),
+        (500, {"error": "NATS request failed"}, False),
+        (500, None, False),
+        (404, {"error": "Unauthorized request"}, False),
+        (200, {"error": "Unauthorized request"}, False),
+    ],
+)
+def test_crosswork_is_auth_failure_matrix(status, body, expected):
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    response = httpx.Response(status, json=body) if body is not None else httpx.Response(status)
+    assert auth.is_auth_failure(response) is expected
+
+
+def test_default_strategy_only_treats_401_as_auth_failure():
+    auth = StaticTokenAuth("tok")
+    assert auth.is_auth_failure(httpx.Response(401)) is True
+    denied = httpx.Response(403, json={"error": "Unauthorized request"})
+    assert auth.is_auth_failure(denied) is False

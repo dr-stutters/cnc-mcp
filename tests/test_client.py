@@ -189,3 +189,76 @@ async def test_non_json_response_raises_toolerror(settings):
             await client.request_json("GET", "/v1/thing")
     finally:
         await client.aclose()
+
+
+@respx.mock
+async def test_crosswork_403_unauthorized_request_triggers_reauth(make_settings):
+    """Crosswork never answers 401: an expired JWT surfaces as 403 'Unauthorized request'.
+    The client must let the strategy classify it and re-authenticate once."""
+    from cnc_mcp.auth import CrossworkCasAuth
+
+    settings = make_settings(api_token="", username="mcp-admin", password="secret")
+    tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
+    respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
+    leg2 = respx.post(f"{tickets}/TGT-1-x").mock(
+        side_effect=[
+            httpx.Response(200, text="a.stale.jwt"),
+            httpx.Response(200, text="a.fresh.jwt"),
+        ]
+    )
+    api = respx.post(f"{BASE_URL}/crosswork/inventory/v1/nodes/query").mock(
+        side_effect=[
+            httpx.Response(403, json={"error": "Unauthorized request"}),
+            httpx.Response(200, json={"data": []}),
+        ]
+    )
+    client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
+    try:
+        result = await client.request_json(
+            "POST", "/crosswork/inventory/v1/nodes/query", json_body={}
+        )
+        assert result == {"data": []}
+        assert api.call_count == 2
+        assert leg2.call_count == 2
+        assert api.calls[1].request.headers["Authorization"] == "Bearer a.fresh.jwt"
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_crosswork_genuine_403_does_not_reauth(make_settings):
+    from cnc_mcp.auth import CrossworkCasAuth
+
+    settings = make_settings(api_token="", username="mcp-admin", password="secret")
+    tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
+    respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
+    leg2 = respx.post(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200, text="a.b.c"))
+    respx.get(f"{BASE_URL}/crosswork/aaa/v1/user").mock(
+        return_value=httpx.Response(403, json={"error": "User lacks role for this operation"})
+    )
+    client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
+    try:
+        with pytest.raises(PlatformError, match="Permission denied"):
+            await client.request_json("GET", "/crosswork/aaa/v1/user")
+        assert leg2.call_count == 1  # logged in once; no re-auth storm on real RBAC denials
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "fragment"),
+    [
+        (403, {"error": "Unauthorized request"}, "rejected the bearer token"),
+        (403, {"error": "Missing Authorization header"}, "no bearer token"),
+        (500, {"error": "Middleware error"}, "gateway rejected the bearer token"),
+        (500, {"error": "NATS request failed"}, "malformed request body"),
+        (500, {"error": "something else"}, "server error"),
+        (403, {"error": "no such role"}, "Permission denied"),
+    ],
+)
+def test_crosswork_error_hints(status, body, fragment):
+    from cnc_mcp.errors import http_error
+
+    msg = str(http_error(httpx.Response(status, json=body)))
+    assert fragment in msg
+    assert body["error"] in msg  # the platform's own words are preserved

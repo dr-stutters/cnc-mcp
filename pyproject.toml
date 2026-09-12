@@ -1,7 +1,7 @@
 [project]
 name = "cnc-mcp"
 version = "0.1.0"
-description = "Template MCP server for platform API integrations (copy, specialize, ship)"
+description = "MCP server for Cisco Crosswork Network Controller (inventory, providers, topology, alarms)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

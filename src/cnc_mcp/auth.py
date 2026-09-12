@@ -11,9 +11,13 @@ Pick (or subclass) one in ``server.create_auth()`` during specialization:
                       raw response body; presented in any header with any
                       scheme prefix. Subclass its hooks when the platform
                       returns extra session state on login.
+- CrossworkCasAuth -> the real strategy for this server: Cisco Crosswork's
+                      two-leg CAS SSO (ticket-granting ticket -> service
+                      ticket, which is a JWT), presented as a Bearer token.
 
-All strategies are 401-aware: ApiClient calls handle_unauthorized() once per
-request, so expired tokens are transparently re-acquired.
+Every strategy decides what an auth failure looks like via is_auth_failure();
+ApiClient calls handle_unauthorized() once per request when it fires, so
+expired tokens are transparently re-acquired.
 """
 
 from __future__ import annotations
@@ -40,10 +44,21 @@ class AuthStrategy:
         """Headers to attach to every API request."""
         return {}
 
+    def is_auth_failure(self, response: httpx.Response) -> bool:
+        """Does this response mean 'credentials were not accepted'?
+
+        ApiClient consults this once per request and, if True, calls
+        handle_unauthorized() and retries. The default (401 only) is right for
+        well-behaved platforms; override when a gateway hides auth failures
+        behind other status codes.
+        """
+        return response.status_code == 401
+
     async def handle_unauthorized(
         self, http: httpx.AsyncClient, failed_headers: dict[str, str] | None = None
     ) -> bool:
-        """Called once after a 401, with the auth headers the failed request carried.
+        """Called once after an auth failure, with the auth headers the failed
+        request carried.
 
         Return True if the request is worth retrying.
         """
@@ -224,3 +239,113 @@ class LoginTokenAuth(AuthStrategy):
 
     def _on_login_response(self, response: httpx.Response) -> None:
         """Hook for subclasses to capture extra session state from the login response."""
+
+
+def _error_text(response: httpx.Response) -> str:
+    """Lower-cased 'error' field of a Crosswork gateway JSON error body ('' if absent)."""
+    try:
+        data = response.json()
+    except ValueError:
+        return ""
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        return data["error"].strip().lower()
+    return ""
+
+
+class CrossworkCasAuth(LoginTokenAuth):
+    """Cisco Crosswork Network Controller: two-leg CAS SSO, then a Bearer JWT.
+
+    Verified live against CNC (Tyk-fronted, NodePort 30603):
+
+    1. ``POST /crosswork/sso/v1/tickets`` with form-urlencoded ``username`` and
+       ``password`` -> 201; the body is a ticket-granting ticket (``TGT-...``).
+       The ``Location`` header points at an internal port and is never followed.
+    2. ``POST /crosswork/sso/v1/tickets/{TGT}`` with form-urlencoded
+       ``service=<base_url>/app-dashboard`` -> 200; the body is the JWT (its
+       ``aud`` claim is that service URL, ``sub`` is the username).
+    3. Every API call carries ``Authorization: Bearer <JWT>``. The JWT lives
+       about 8 hours; re-login simply repeats both legs.
+
+    The gateway never answers 401. A missing or garbage token is a 403
+    (``"Missing Authorization header"`` / ``"Unauthorized request"``) and a
+    JWT-shaped but invalid one is a 500 (``"Middleware error"``), so
+    is_auth_failure() recognises those bodies — otherwise an expired token
+    would surface as a permission error and never trigger re-authentication.
+    """
+
+    TICKETS_PATH = "/crosswork/sso/v1/tickets"
+    SERVICE_PATH = "/app-dashboard"
+    _AUTH_FAILURE_BODIES: dict[int, tuple[str, ...]] = {
+        403: ("missing authorization header", "unauthorized request"),
+        500: ("middleware error",),
+    }
+
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        *,
+        tickets_path: str = TICKETS_PATH,
+        service_path: str = SERVICE_PATH,
+    ) -> None:
+        super().__init__(
+            tickets_path,
+            username,
+            password,
+            login_style="basic",  # unused: _login is overridden
+            token_location="body",
+            auth_header="Authorization",
+            auth_scheme="Bearer",
+        )
+        self._service_path = service_path
+
+    def is_auth_failure(self, response: httpx.Response) -> bool:
+        if response.status_code == 401:
+            return True
+        markers = self._AUTH_FAILURE_BODIES.get(response.status_code)
+        if not markers:
+            return False
+        text = _error_text(response)
+        return any(m in text for m in markers)
+
+    async def _login(self, http: httpx.AsyncClient) -> None:
+        # Leg 1: ticket-granting ticket.
+        first = await http.post(
+            self._login_path,
+            data={"username": self._username, "password": self._password},
+        )
+        if first.status_code in (401, 403):
+            raise PlatformError(
+                "Login to Crosswork failed: credentials were rejected. Verify the "
+                "*_USERNAME and *_PASSWORD environment variables. Crosswork returns the "
+                "same 'Invalid credentials' for a wrong password and for a username that "
+                "does not exist, so confirm the account under Administration > Users and Roles."
+            )
+        if not first.is_success:
+            raise PlatformError(
+                f"Crosswork SSO ticket request failed with status {first.status_code}. "
+                "Check that base_url is the Crosswork UI/API URL (https://<host>:30603)."
+            )
+        tgt = first.text.strip()
+        if not tgt.startswith("TGT-"):
+            raise PlatformError(
+                "Crosswork SSO did not return a ticket-granting ticket. The base_url may "
+                "point at something other than a Crosswork SSO endpoint."
+            )
+
+        # Leg 2: service ticket, which Crosswork issues as a JWT.
+        service = f"{str(http.base_url).rstrip('/')}{self._service_path}"
+        second = await http.post(f"{self._login_path}/{tgt}", data={"service": service})
+        if not second.is_success:
+            raise PlatformError(
+                f"Crosswork SSO service-ticket exchange failed with status "
+                f"{second.status_code}. The ticket-granting ticket may have expired; retry."
+            )
+        token = second.text.strip()
+        if token.count(".") != 2:
+            raise PlatformError(
+                "Crosswork SSO returned a service ticket that is not a JWT; this server "
+                "expects the JWT flow used by Crosswork Network Controller."
+            )
+        self._token = token
+        logger.info("Authenticated to Crosswork (JWT acquired)")
