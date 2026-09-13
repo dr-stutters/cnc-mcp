@@ -3,15 +3,22 @@
 The module is registered directly (not through build_server) so the test does
 not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
 The "verified" fixtures are verbatim what Crosswork 7.2 answered live on
-2026-09-13 (platform notes, "OAM RPCs" and "Service Health probe manager"):
-the delete interval, the registered / running / failed trace-route answers
-(the gNMI text and the no-uuid 'mpls oam' text), the status-6 "Route not
-found" answer with every string empty, the list's zero counts, and the probe
-manager's 500 "no active probe session" document. The populated shapes (a
-completed trace with paths, a 200 probe report, the reactivate answer) follow
-the 7.2 documents and are marked as such; so do the extrapolations from the
-verified answers (a probe-manager 500 document carrying another ``error``,
-the set RPC answering a terminal status directly).
+2026-09-13 / 2026-09-14 (platform notes, "OAM RPCs" and "Service Health probe
+manager"): the delete interval, the registered / running / failed trace-route
+answers (the gNMI text, the no-uuid 'mpls oam' text and XR's 'mpls-lspv'
+text), the status-4 "No path found between the selected devices" verdict with
+0 paths (seen for the SHORT input form — yang-path + uuids, names and
+router-ids echoed empty — on a policy service; the full form ended in status
+5 on the lab), the status-6 "Route not found" answer with every string empty,
+the list's zero counts, and the probe manager's 500 "no active probe session"
+document. The populated shapes (a completed trace with paths, a 200 probe
+report, the reactivate answer) follow the 7.2 documents and are marked as
+such; so do the extrapolations from the verified answers (a probe-manager 500
+document carrying another ``error``, the set RPC answering a terminal status
+directly, and a FULL-form query — the one cnc_start_oam_trace_route registers
+— ending in the status-4 zero-path verdict: ``NO_PATH`` combines the short
+form's verified verdict with the full form's verified echo, a sequence never
+observed live).
 """
 
 from __future__ import annotations
@@ -33,23 +40,35 @@ from cnc_mcp.restconf import EMPTY_500_EXPLANATION
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import oam
 from cnc_mcp.tools.oam import (
+    NO_PATH_FOUND_MESSAGE,
     OAM_EMPTY_500_HINT,
     OAM_MODULE,
     PROBE_STATUS_NAMES,
     PROBEMGR_NOT_ROUTED_HINT,
     REACTIVATE_STATUS_NAMES,
+    TraceEnd,
+    canonical_service_type,
     check_oam_output,
+    completed_without_paths,
     end_text,
     enum_name,
     enum_word,
+    hop_lines,
+    oam_epoch_ms,
     oam_time,
     path_line,
     probe_reports,
     probe_verdict_500,
+    service_identity,
+    service_type_of_list,
+    split_service_path,
     start_summary,
+    start_trace_body,
     status_word,
+    trace_end_of_node,
     trace_status,
     validate_device_uuid,
+    verdict_delay_text,
 )
 from tests.conftest import BASE_URL, call_tool_text
 
@@ -57,6 +76,7 @@ YANG_JSON = "application/yang-data+json"
 OPERATIONS = f"{BASE_URL}/crosswork/nbi/optimization/v3/restconf/operations"
 PROBE_STATUS_URL = f"{BASE_URL}/crosswork/probemgr/v1/probeStatusReport"
 REACTIVATE_URL = f"{BASE_URL}/crosswork/probemgr/v1/reactivateProbe"
+NODES_QUERY_URL = f"{BASE_URL}/crosswork/inventory/v1/nodes/query"
 
 
 def rpc(name: str) -> str:
@@ -96,6 +116,12 @@ MPLS_OAM_TEXT = (
     "device for enabling 'mpls oam' configuration.(Could not register collection job. Response "
     'result: request_result: REJECTED error { error: "empty device id item in list" })'
 )
+# XR's own error when the full-form trace runs on a head-end without 'mpls oam' (2026-09-14).
+XR_MPLS_OAM_TEXT = (
+    "Path cannot be traced until the device configuration is completed, please check the "
+    "device for enabling 'mpls oam' configuration.('mpls-lspv' detected the 'resource not "
+    "available' condition 'Failed to send a LWM message to the server')"
+)
 
 
 def service_route(status: int, message: str, **overrides: Any) -> dict:
@@ -123,12 +149,33 @@ def service_route(status: int, message: str, **overrides: Any) -> dict:
     return route
 
 
+# The full-form inputs as the engine echoes them (verified 2026-09-14).
+FULL_ECHO = {
+    "service-name": "mcp-oam-91",
+    "service-type": "policy",
+    "head-end-node-name": "PE1",
+    "head-end-te-router-id": "10.0.0.1",
+    "tail-end-node-name": "PE2",
+    "tail-end-te-router-id": "10.0.0.3",
+}
+
 REGISTERED = service_route(3, "Path trace registered for calculation")
+FULL_REGISTERED = service_route(3, "Path trace registered for calculation", **FULL_ECHO)
 RUNNING = service_route(
     3, "Path trace running for calculation", **{"update-time": "1789324620000.0"}
 )
 FAILED = service_route(5, GNMI_TEXT, **{"update-time": "1789324647000.0"})
 FAILED_NO_UUID = service_route(5, MPLS_OAM_TEXT)
+FAILED_XR_MPLS_OAM = service_route(
+    5, XR_MPLS_OAM_TEXT, **FULL_ECHO, **{"update-time": "1789324627000.0"}
+)
+# Verified (2026-09-14): status 4 with zero paths ~10 s after registration (completed, not
+# failed) — the SHORT form's answer, so names / router-ids are echoed empty.
+NO_PATH_SHORT = service_route(4, NO_PATH_FOUND_MESSAGE, **{"update-time": "1789324627000.0"})
+# EXTRAPOLATED: the same verdict on a FULL-form query (the form cnc_start_oam_trace_route
+# sends). Never observed live — the verified full-form traces ended in status 5 (XR's
+# 'mpls oam' text); this combines the verified verdict with the verified full-form echo.
+NO_PATH = {**NO_PATH_SHORT, **FULL_ECHO}
 # get-oam-trace-route-by-query-id for an unknown id: HTTP 200, status 6, every string "".
 NOT_FOUND = {
     "query-id": "",
@@ -164,6 +211,71 @@ NO_SESSION_DOC = {
 NO_SESSION_500 = httpx.Response(500, json=NO_SESSION_DOC)
 # Go's plain-text 404 (verified: probemgr's unknown paths and the absent Service Health app).
 GO_404 = httpx.Response(404, text="404 page not found\n", headers={"Content-Type": "text/plain"})
+
+
+# Inventory nodes as nodes/query returns them (the fields the trace-end lookup reads).
+def inventory_node(device_uuid: str, host: str, te_router_id: str | None) -> dict:
+    node: dict[str, Any] = {
+        "uuid": device_uuid,
+        "host_name": host,
+        "routing_info": {"global_isis_system_id": "0000.0000.0001"},
+    }
+    if te_router_id is not None:
+        node["routing_info"]["te_router_id"] = te_router_id
+    return node
+
+
+PE1_NODE = inventory_node(PE1_UUID, "PE1", "10.0.0.1")
+PE2_NODE = inventory_node(PE2_UUID, "PE2", "10.0.0.3")
+PE2_NO_ROUTER_ID = inventory_node(PE2_UUID, "PE2", None)
+# The verified empty answer: no "data" key at all, only the collection total.
+NO_NODES = {"total_count": 5}
+
+
+def node_query_body(device_uuid: str) -> dict:
+    """The verified nodes/query grammar (devices.py's query_body) for one uuid."""
+    return {
+        "filter": {"uuid": device_uuid},
+        "filterData": {"PageSize": 1, "PageNum": 0, "Criteria": ""},
+    }
+
+
+def node_answer(*nodes: dict) -> httpx.Response:
+    return httpx.Response(
+        200, json={"data": list(nodes), "result_count": len(nodes), "total_count": 5}
+    )
+
+
+def mock_nodes(*nodes: dict) -> respx.Route:
+    """nodes/query answering, per request, the given node whose uuid the filter names —
+    or the verified empty document for any other uuid."""
+    by_uuid = {n["uuid"]: n for n in nodes}
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        wanted = json.loads(request.content)["filter"].get("uuid")
+        node = by_uuid.get(wanted)
+        return node_answer(node) if node else httpx.Response(200, json=NO_NODES)
+
+    return respx.post(NODES_QUERY_URL).mock(side_effect=answer)
+
+
+PE1_END = TraceEnd(PE1_UUID, "PE1", "10.0.0.1")
+PE2_END = TraceEnd(PE2_UUID, "PE2", "10.0.0.3")
+# The FULL set-oam-trace-route-by-calc input (verified 2026-09-14 — the only form that
+# makes the engine run the LSP trace).
+FULL_START_BODY = {
+    "input": {
+        "yang-path": POLICY_PATH,
+        "head-end-node-uuid": PE1_UUID,
+        "tail-end-node-uuid": PE2_UUID,
+        "service-type": "policy",
+        "service-name": "mcp-oam-91",
+        "head-end-node-name": "PE1",
+        "tail-end-node-name": "PE2",
+        "head-end-te-router-id": "10.0.0.1",
+        "tail-end-te-router-id": "10.0.0.3",
+    }
+}
 
 # --- document-shaped fixtures (7.2 OpenAPI; unverified live) ------------------------
 
@@ -376,11 +488,10 @@ async def test_annotations_and_flat_schemas(writes):
     assert set(wait["required"]) == {"query_id"}
     assert wait["properties"]["timeout_seconds"]["default"] == 90
     assert wait["properties"]["interval_seconds"]["default"] == 5
-    assert set(tools["cnc_start_oam_trace_route"].input_schema["required"]) == {
-        "service_yang_path",
-        "headend_uuid",
-        "endpoint_uuid",
-    }
+    start = tools["cnc_start_oam_trace_route"].input_schema
+    assert set(start["required"]) == {"service_yang_path", "headend_uuid", "endpoint_uuid"}
+    assert start["properties"]["service_type"]["default"] == ""
+    assert start["properties"]["service_name"]["default"] == ""
     for name in ("cnc_get_probe_status", "cnc_reactivate_probe"):
         assert "service_id" in tools[name].input_schema["required"], name
     # Every argument is a flat scalar (the only $ref is the ResponseFormat enum).
@@ -400,6 +511,24 @@ def test_oam_time_renders_epoch_ms_strings():
     assert oam_time(None) == "-"
     assert oam_time("0") == "-"
     assert oam_time("not-a-time") == "not-a-time"
+
+
+def test_oam_epoch_ms_parses_the_decimal_strings():
+    assert oam_epoch_ms(CREATE_TIME) == 1789324616899
+    assert oam_epoch_ms(1789324616899) == 1789324616899
+    for blank in ("", None, "0", "0.0", "-5", "not-a-time", "1e400"):
+        assert oam_epoch_ms(blank) is None, blank
+
+
+def test_verdict_delay_text_is_update_minus_create():
+    # NO_PATH_SHORT: created ...616899, updated ...627000 -> 10.1 s, rendered whole.
+    assert verdict_delay_text(NO_PATH_SHORT) == "; the verdict arrived 10s after registration"
+    assert verdict_delay_text(REGISTERED) == "; the verdict arrived 0s after registration"
+    # Missing / unparseable / backwards times give nothing rather than a wrong number.
+    assert verdict_delay_text({**NO_PATH_SHORT, "update-time": ""}) == ""
+    assert verdict_delay_text({**NO_PATH_SHORT, "create-time": "x"}) == ""
+    assert verdict_delay_text({**NO_PATH_SHORT, "update-time": "1789324600000.0"}) == ""
+    assert verdict_delay_text(NOT_FOUND) == ""
 
 
 def test_trace_status_and_status_word():
@@ -460,6 +589,120 @@ def test_validate_device_uuid_canonicalises_every_spelling(spelling):
     assert validate_device_uuid(spelling, "headend_uuid") == PE1_UUID
 
 
+def test_split_service_path():
+    assert split_service_path(POLICY_PATH) == (
+        "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy",
+        "mcp-oam-91",
+    )
+    assert split_service_path("cisco-cs-sr-te-cfp:cs-sr-te-policy=cs1") == (
+        "cisco-cs-sr-te-cfp:cs-sr-te-policy",
+        "cs1",
+    )
+    # The key is returned as spelled; a key containing '=' keeps its remainder.
+    assert split_service_path("ietf-te:te/tunnels/tunnel=a%3Db=c")[1] == "a%3Db=c"
+    with pytest.raises(PlatformError) as excinfo:
+        split_service_path("cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies")
+    assert str(excinfo.value).startswith(
+        "'cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies' is not a keyed service path"
+    )
+    assert "cnc_list_services" in str(excinfo.value)
+
+
+def test_service_type_of_list_covers_the_seven_documented_lists():
+    expected = {
+        "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy": "policy",
+        "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template": "odn-template",
+        "cisco-cs-sr-te-cfp:cs-sr-te-policy": "cs-sr-te-policy",
+        "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service": "ietf-l3vpn",
+        "ietf-l2vpn-ntw:l2vpn-ntw/vpn-services/vpn-service": "ietf-l2vpn",
+        "ietf-network-slice-service:network-slice-services/slice-service": "slice-service",
+        "ietf-te:te/tunnels/tunnel": "tunnel",
+    }
+    for list_path, label in expected.items():
+        assert service_type_of_list(list_path) == label, list_path
+    # The proxy's module-qualified spelling of the last segment finds the same entry.
+    assert (
+        service_type_of_list(
+            "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/"
+            "cisco-sr-te-cfp-sr-policies:policy"
+        )
+        == "policy"
+    )
+    assert service_type_of_list("cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policy") is None
+    assert service_type_of_list("acme:things/thing") is None
+    assert service_type_of_list("acme:thing") is None
+
+
+def test_canonical_service_type():
+    assert canonical_service_type(" policy ") == "policy"
+    assert canonical_service_type("sr-policy") == "policy"
+    assert canonical_service_type("L3VPN") == "ietf-l3vpn"
+    assert canonical_service_type("{urn:ietf:params:xml:ns:yang:ietf-te}tunnel") == "tunnel"
+    # Unknown labels / QNames are the escape hatch: sent as given.
+    assert canonical_service_type("acme-thing") == "acme-thing"
+    assert canonical_service_type("{urn:acme}thing") == "{urn:acme}thing"
+
+
+def test_service_identity_derives_the_full_form_fields():
+    assert service_identity(POLICY_PATH) == ("policy", "mcp-oam-91")
+    assert service_identity("ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=mcp-l3vpn-91") == (
+        "ietf-l3vpn",
+        "mcp-l3vpn-91",
+    )
+    # The key is percent-decoded for service-name (the yang-path itself stays as given).
+    assert service_identity("ietf-te:te/tunnels/tunnel=t%201%2F2") == ("tunnel", "t 1/2")
+    # Overrides win; a known alias becomes the CAT label, anything else goes as given.
+    assert service_identity(POLICY_PATH, service_type="sr-policy") == ("policy", "mcp-oam-91")
+    assert service_identity(POLICY_PATH, service_name="other") == ("policy", "other")
+    assert service_identity("acme:things/thing=x", service_type="acme") == ("acme", "x")
+    # With both overrides the path need not even be keyed.
+    assert service_identity("acme:things", "acme", "x") == ("acme", "x")
+
+
+def test_service_identity_refuses_what_it_cannot_derive():
+    with pytest.raises(PlatformError) as excinfo:
+        service_identity("acme:things/thing=x")
+    text = str(excinfo.value)
+    assert text.startswith("cannot derive the service-type of 'acme:things/thing=x'")
+    assert "'acme:things/thing'" in text
+    assert "policy, odn-template" in text
+    assert "service_type=" in text and "cnc_list_service_types" in text
+    with pytest.raises(PlatformError, match="is not a keyed service path"):
+        service_identity("acme:things")
+    with pytest.raises(PlatformError, match="has an empty key after '='"):
+        service_identity(f"{POLICY_PATH.rsplit('=', 1)[0]}=")
+    # A service_type override alone still needs the key for the name.
+    with pytest.raises(PlatformError, match="is not a keyed service path"):
+        service_identity("acme:things", service_type="acme")
+
+
+def test_trace_end_of_node():
+    assert trace_end_of_node(PE1_NODE, PE1_UUID, "headend_uuid") == PE1_END
+    with pytest.raises(PlatformError) as excinfo:
+        trace_end_of_node(PE2_NO_ROUTER_ID, PE2_UUID, "endpoint_uuid")
+    text = str(excinfo.value)
+    assert text.startswith(f"endpoint_uuid PE2 ('{PE2_UUID}') has no te_router_id")
+    assert f"cnc_update_device(uuid='{PE2_UUID}', te_router_id=" in text
+    with pytest.raises(PlatformError, match="has no te_router_id"):
+        trace_end_of_node({"uuid": PE2_UUID, "host_name": "PE2"}, PE2_UUID, "endpoint_uuid")
+    with pytest.raises(PlatformError, match="has no host_name"):
+        trace_end_of_node({"uuid": PE1_UUID, "routing_info": {}}, PE1_UUID, "headend_uuid")
+
+
+def test_start_trace_body_is_the_full_form():
+    assert start_trace_body(POLICY_PATH, "policy", "mcp-oam-91", PE1_END, PE2_END) == (
+        FULL_START_BODY
+    )
+    assert "transport-type" not in FULL_START_BODY["input"]
+
+
+def test_completed_without_paths():
+    assert completed_without_paths(NO_PATH) is True
+    assert completed_without_paths(COMPLETED) is False
+    assert completed_without_paths(FAILED) is False
+    assert completed_without_paths({**NO_PATH, "path-info-list": []}) is True
+
+
 def test_start_summary_is_state_aware():
     registered = start_summary(REGISTERED, QUERY_ID)
     assert registered.startswith(
@@ -479,6 +722,13 @@ def test_start_summary_is_state_aware():
         f"OAM trace route {QUERY_ID} completed immediately: completed (4): Path trace completed."
     )
     assert "cnc_wait_for_oam_trace_route" not in completed
+    no_path = start_summary(NO_PATH, QUERY_ID)
+    assert no_path.startswith(
+        f"OAM trace route {QUERY_ID} completed immediately with 0 paths: completed (4): "
+        f"{NO_PATH_FOUND_MESSAGE}."
+    )
+    assert "paths are below" not in no_path
+    assert "cnc_wait_for_oam_trace_route" not in no_path
     other = start_summary({**REGISTERED, "status": 7, "status-message": "queued"}, QUERY_ID)
     assert other.startswith(f"OAM trace route {QUERY_ID} answered status 7: queued on registration")
     assert f"cnc_get_oam_trace_route(query_id='{QUERY_ID}')" in other
@@ -512,9 +762,59 @@ def test_path_line_renders_the_document_shape():
     assert path_line(COMPLETED["path-info-list"][0]) == (
         "- path 1: 10.0.0.1 -> 10.0.0.3 via next-hop 10.1.2.2 out-interface "
         f"GigabitEthernet0/0/0/0; path-status success; devices {PE1_UUID}, {P1_UUID}, "
-        f"{PE2_UUID}; details 16002 16003"
+        f"{PE2_UUID}\n    - hop: 16002 16003"
     )
     assert path_line({"path": "2"}) == "- path 2: ? -> ?"
+
+
+# Verified live 2026-09-14: the head-end's LSP-ping traceroute of an L3VPN, one of the
+# two ECMP paths PE1 -> P2 -> PE2 (the platform's own UI markup, hops split by newlines).
+VERIFIED_PATH_DETAILS = (
+    "#BOLD_WORD#Hop index:0 | #BOLD_WORD#Hop origin IP:10.0.0.1 | "
+    "#BOLD_WORD#Hop destination IP:10.1.4.1 | #BOLD_WORD#MRU:1500 | #BOLD_WORD#Labels:[16003] | "
+    "#BOLD_WORD#ret code:0 | #BOLD_WORD#multipaths:0\n"
+    "#BOLD_WORD#Hop index:1 | #BOLD_WORD#Hop origin IP:10.1.4.1 | "
+    "#BOLD_WORD#Hop destination IP:10.1.3.1 | #BOLD_WORD#MRU:1500 | "
+    "#BOLD_WORD#Labels:[implicit-null] | #BOLD_WORD#ret code:8 | #BOLD_WORD#return char:L | "
+    "#BOLD_WORD#multipaths:1\n"
+    "#BOLD_WORD#Hop index:2 | #BOLD_WORD#Hop origin IP:10.1.3.1 | #BOLD_WORD#MRU:0 | "
+    "#BOLD_WORD#ret code:3 | #BOLD_WORD#return char:! | #BOLD_WORD#multipaths:0\n"
+)
+VERIFIED_PATH = {
+    "path": "Path 1",
+    "path-info": {
+        "out-interface": "GigabitEthernet0/0/0/1",
+        "source": "10.0.0.1",
+        "destination": "127.0.0.0",
+        "path-details": VERIFIED_PATH_DETAILS,
+        "device-uuids": [P1_UUID, PE2_UUID],
+        "path-status": "found",
+        "next-hop": "10.1.4.1",
+    },
+}
+
+
+def test_hop_lines_parse_the_verified_markup():
+    assert hop_lines(VERIFIED_PATH_DETAILS) == [
+        "    - hop 0: origin IP 10.0.0.1, destination IP 10.1.4.1, MRU 1500, Labels [16003], "
+        "ret code 0, multipaths 0",
+        "    - hop 1: origin IP 10.1.4.1, destination IP 10.1.3.1, MRU 1500, "
+        "Labels [implicit-null], ret code 8, return char L, multipaths 1",
+        "    - hop 2: origin IP 10.1.3.1, MRU 0, ret code 3, return char !, multipaths 0",
+    ]
+    # an unparseable hop is kept verbatim (minus the markup), nothing is dropped
+    assert hop_lines("#BOLD_WORD#free text\r\n\n") == ["    - hop: free text"]
+    assert hop_lines("") == []
+
+
+def test_path_line_renders_the_verified_success_shape():
+    text = path_line(VERIFIED_PATH)
+    assert text.startswith(
+        "- path Path 1: 10.0.0.1 -> 127.0.0.0 via next-hop 10.1.4.1 out-interface "
+        f"GigabitEthernet0/0/0/1; path-status found; devices {P1_UUID}, {PE2_UUID}\n"
+    )
+    assert "#BOLD_WORD#" not in text
+    assert text.count("\n    - hop ") == 3
 
 
 def test_probe_enum_helpers():
@@ -739,6 +1039,51 @@ async def test_get_trace_route_completed_renders_paths(reads):
 
 
 @respx.mock
+async def test_get_trace_route_completed_with_no_path_is_a_verdict_not_an_error(reads):
+    """The verified status-4 answer (short form, 2026-09-14): 'No path found between the
+    selected devices', 0 paths, names / router-ids echoed empty, ~10 s after registration."""
+    mock_trace_route(ok(out(**NO_PATH_SHORT)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert not text.startswith("Error:")
+    assert text.startswith(f"# OAM trace route {QUERY_ID} — completed (4)")
+    assert f"- status: completed (4): {NO_PATH_FOUND_MESSAGE}" in text
+    assert f"- service: {POLICY_PATH}\n" in text
+    assert f"- head-end: {PE1_UUID}\n" in text
+    assert f"- tail-end: {PE2_UUID}\n" in text
+    assert "- created: 2026-09-13T18:36:56Z; updated: 2026-09-13T18:37:07Z" in text
+    assert "- available-path-count: 0" in text
+    assert "## Paths" not in text
+    assert "Completed with ZERO paths — the engine's verdict, not a failure" in text
+    # The footer hedges: verified only for the short form / policy, judged by timing.
+    assert "verified only for the SHORT input form" in text
+    assert "WITHOUT tracing anything" in text
+    assert "answering status 4 has NOT been observed live" in text
+    assert "the verdict arrived 10s after registration" in text
+    assert "re-check that service-type is the CAT label" in text
+    assert "A failed query is not re-run" not in text
+
+
+@respx.mock
+async def test_get_trace_route_full_form_no_path_shows_the_echo_and_the_timing_hint(reads):
+    """EXTRAPOLATED: the zero-path verdict on a full-form query (never observed live — the
+    verified full-form traces ended in status 5) renders the echoed inputs and the same
+    timing-based hedge; without parseable times the delay clause is simply absent."""
+    mock_trace_route(ok(out(**NO_PATH)), ok(out(**{**NO_PATH, "update-time": ""})))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert not text.startswith("Error:")
+    assert f"- service: {POLICY_PATH} (service-name mcp-oam-91, service-type policy)" in text
+    assert f"- head-end: PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1)" in text
+    assert f"- tail-end: PE2 (uuid {PE2_UUID}, te-router-id 10.0.0.3)" in text
+    assert "Completed with ZERO paths — the engine's verdict, not a failure" in text
+    assert "(both times are shown above; the verdict arrived 10s after registration)" in text
+    assert "only 'policy' is verified on the wire" in text
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert "- created: 2026-09-13T18:36:56Z; updated: -" in text
+    assert "(both times are shown above): a verdict within seconds" in text
+    assert "the verdict arrived" not in text
+
+
+@respx.mock
 async def test_get_trace_route_json(reads):
     mock_trace_route(ok(out(**RUNNING)))
     text = await call_tool_text(
@@ -823,6 +1168,46 @@ async def test_wait_completed_renders_the_paths(reads, fake_clock):
         f"Trace route {QUERY_ID} finished after 5s: completed (4): Path trace completed"
     )
     assert "## Paths (1)" in text
+
+
+@respx.mock
+async def test_wait_completed_with_no_path_says_so(reads, fake_clock):
+    """The verified 2026-09-14 sequence (short form): registered -> running -> status 4 with
+    0 paths ~10 s after registration."""
+    route = mock_trace_route(ok(out(**REGISTERED)), ok(out(**RUNNING)), ok(out(**NO_PATH_SHORT)))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 3
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        f"Trace route {QUERY_ID} finished after 10s with 0 paths: completed (4): "
+        f"{NO_PATH_FOUND_MESSAGE}"
+    )
+    assert f"# OAM trace route {QUERY_ID} — completed (4)" in text
+    assert "Completed with ZERO paths" in text
+    assert "verified only for the SHORT input form" in text
+
+
+@respx.mock
+async def test_wait_full_form_completed_with_no_path_is_rendered_the_same(reads, fake_clock):
+    """EXTRAPOLATED: a full-form query (names / router-ids echoed) reaching the zero-path
+    verdict — never observed live (the verified full-form traces ended in status 5)."""
+    route = mock_trace_route(ok(out(**FULL_REGISTERED)), ok(out(**RUNNING)), ok(out(**NO_PATH)))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 3
+    assert text.startswith(f"Trace route {QUERY_ID} finished after 10s with 0 paths: completed")
+    assert f"- head-end: PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1)" in text
+    assert "answering status 4 has NOT been observed live" in text
+    assert "the verdict arrived 10s after registration" in text
+
+
+@respx.mock
+async def test_wait_xr_mpls_oam_failure_is_the_platform_verdict(reads, fake_clock):
+    """The full-form trace on a head-end without 'mpls oam' (verified 2026-09-14)."""
+    mock_trace_route(ok(out(**RUNNING)), ok(out(**FAILED_XR_MPLS_OAM)))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert text.startswith(f"Trace route {QUERY_ID} FAILED after 5s: {XR_MPLS_OAM_TEXT}")
+    assert "'mpls-lspv ... resource not available'" in text
+    assert "cnc_enable_device_gnmi" in text
 
 
 @respx.mock
@@ -1004,24 +1389,29 @@ async def test_get_probe_status_home_app_404_is_unrouted(reads):
 
 
 @respx.mock
-async def test_start_trace_route_sends_the_verified_body(writes):
-    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+async def test_start_trace_route_resolves_the_ends_and_sends_the_full_body(writes):
+    """The FULL form (verified 2026-09-14): service-type / service-name derived from the
+    yang-path, node names and TE router-ids from two inventory lookups by uuid."""
+    nodes = mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
     text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert nodes.call_count == 2
+    assert nodes.calls[0].request.method == "POST"
+    assert sent(nodes, 0) == node_query_body(PE1_UUID)
+    assert sent(nodes, 1) == node_query_body(PE2_UUID)
     assert route.call_count == 1
     assert_yang_post(route)
-    assert sent(route) == {
-        "input": {
-            "yang-path": POLICY_PATH,
-            "head-end-node-uuid": PE1_UUID,
-            "tail-end-node-uuid": PE2_UUID,
-        }
-    }
+    assert sent(route) == FULL_START_BODY
     assert text.startswith(
         f"OAM trace route registered: query-id {QUERY_ID}, in progress (3): Path trace "
         "registered for calculation."
     )
     assert f"cnc_wait_for_oam_trace_route(query_id='{QUERY_ID}')" in text
     assert f"# OAM trace route {QUERY_ID} — in progress (3)" in text
+    assert f"- head-end: PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1)" in text
+    assert f"- service: {POLICY_PATH} (service-name mcp-oam-91, service-type policy)" in text
     handle = json.loads(text[text.rindex("{") :])
     assert handle == {
         "query_id": QUERY_ID,
@@ -1032,19 +1422,187 @@ async def test_start_trace_route_sends_the_verified_body(writes):
 
 
 @respx.mock
+async def test_start_trace_route_node_lookup_is_a_retried_read(writes):
+    """nodes/query is a read: a transient 5xx is retried, unlike the set RPC."""
+    replies = [
+        httpx.Response(503),
+        node_answer(PE1_NODE),
+        node_answer(PE2_NODE),
+    ]
+    nodes = respx.post(NODES_QUERY_URL).mock(side_effect=lambda _r: replies.pop(0))
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert nodes.call_count == 3
+    assert route.call_count == 1
+    assert text.startswith("OAM trace route registered")
+
+
+@respx.mock
 async def test_start_trace_route_normalises_the_yang_path(writes):
-    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
     await call_tool_text(
         writes,
         "cnc_start_oam_trace_route",
         {**START_ARGS, "service_yang_path": f"/crosswork/proxy/nso/restconf/data/{POLICY_PATH}"},
     )
-    assert sent(route)["input"]["yang-path"] == POLICY_PATH
+    body = sent(route)["input"]
+    assert body["yang-path"] == POLICY_PATH
+    assert body["service-type"] == "policy" and body["service-name"] == "mcp-oam-91"
+
+
+@respx.mock
+async def test_start_trace_route_derives_type_and_decoded_name_per_list(writes):
+    """Each documented list maps to its CAT label; the key is percent-decoded for the name
+    while the yang-path itself goes as given."""
+    mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    cases = {
+        "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=mcp-l3vpn-91": (
+            "ietf-l3vpn",
+            "mcp-l3vpn-91",
+        ),
+        "ietf-l2vpn-ntw:l2vpn-ntw/vpn-services/vpn-service=evpn%201": ("ietf-l2vpn", "evpn 1"),
+        "cisco-cs-sr-te-cfp:cs-sr-te-policy=cs1": ("cs-sr-te-policy", "cs1"),
+        "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=odn-90": (
+            "odn-template",
+            "odn-90",
+        ),
+        "ietf-network-slice-service:network-slice-services/slice-service=s1": (
+            "slice-service",
+            "s1",
+        ),
+        "ietf-te:te/tunnels/tunnel=t1": ("tunnel", "t1"),
+        # The proxy's module-qualified spelling of the list.
+        "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/"
+        "cisco-sr-te-cfp-sr-policies:policy=p1": ("policy", "p1"),
+    }
+    for index, (path, (label, name)) in enumerate(cases.items()):
+        text = await call_tool_text(
+            writes, "cnc_start_oam_trace_route", {**START_ARGS, "service_yang_path": path}
+        )
+        assert not text.startswith("Error:"), path
+        body = sent(route, index)["input"]
+        assert (body["yang-path"], body["service-type"], body["service-name"]) == (
+            path,
+            label,
+            name,
+        ), path
+
+
+@respx.mock
+async def test_start_trace_route_overrides_win(writes):
+    nodes = mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    # A known alias is sent as its CAT label; the name as given.
+    text = await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {**START_ARGS, "service_type": "sr-policy", "service_name": " mcp-other "},
+    )
+    assert not text.startswith("Error:")
+    body = sent(route, 0)["input"]
+    assert body["service-type"] == "policy" and body["service-name"] == "mcp-other"
+    assert body["yang-path"] == POLICY_PATH
+    # An unknown list is fine once service_type names it — sent verbatim.
+    text = await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {**START_ARGS, "service_yang_path": "acme:things/thing=x%20y", "service_type": "acme"},
+    )
+    assert not text.startswith("Error:")
+    body = sent(route, 1)["input"]
+    assert body["service-type"] == "acme" and body["service-name"] == "x y"
+    assert body["yang-path"] == "acme:things/thing=x%20y"
+    assert nodes.call_count == 4
+
+
+@respx.mock
+async def test_start_trace_route_unresolvable_service_list_is_error_before_any_call(writes):
+    nodes = mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    text = await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {**START_ARGS, "service_yang_path": "acme:things/thing=x"},
+    )
+    assert text.startswith("Error: cannot derive the service-type of 'acme:things/thing=x'")
+    assert "service_type=" in text
+    text = await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {
+            **START_ARGS,
+            "service_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies",
+        },
+    )
+    assert text.startswith(
+        "Error: 'cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies' is not"
+    )
+    assert nodes.call_count == 0
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_start_trace_route_missing_te_router_id_is_error_before_the_rpc(writes):
+    nodes = mock_nodes(PE1_NODE, PE2_NO_ROUTER_ID)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith(f"Error: endpoint_uuid PE2 ('{PE2_UUID}') has no te_router_id")
+    assert f"cnc_update_device(uuid='{PE2_UUID}', te_router_id=" in text
+    assert nodes.call_count == 2
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_start_trace_route_unknown_uuid_is_error_before_the_rpc(writes):
+    nodes = mock_nodes(PE2_NODE)  # PE1's uuid is not in the inventory
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith(f"Error: headend_uuid '{PE1_UUID}' is not an inventory device")
+    assert "cnc_list_devices" in text
+    assert nodes.call_count == 1  # the tail-end is not looked up after the head-end failed
+    assert route.call_count == 0
+    # An inventory filter that is not honoured (another device came back) is not a match.
+    respx.post(NODES_QUERY_URL).mock(return_value=node_answer(PE2_NODE))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith(f"Error: headend_uuid '{PE1_UUID}' is not an inventory device")
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_start_trace_route_node_lookup_http_error(writes):
+    respx.post(NODES_QUERY_URL).mock(
+        return_value=httpx.Response(403, json={"message": "Unauthorized request"})
+    )
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith("Error: API request failed with status 403.")
+    assert route.call_count == 0
 
 
 @respx.mock
 async def test_start_trace_route_refuses_non_uuid_devices_before_any_call(writes):
-    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    nodes = mock_nodes(PE1_NODE, PE2_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
     text = await call_tool_text(
         writes, "cnc_start_oam_trace_route", {**START_ARGS, "headend_uuid": "PE1"}
     )
@@ -1057,33 +1615,43 @@ async def test_start_trace_route_refuses_non_uuid_devices_before_any_call(writes
         writes, "cnc_start_oam_trace_route", {**START_ARGS, "service_yang_path": " / "}
     )
     assert text.startswith("Error: yang_path is empty")
+    assert nodes.call_count == 0
     assert route.call_count == 0
 
 
 @respx.mock
 @pytest.mark.parametrize("spelling", NON_CANONICAL_UUIDS)
 async def test_start_trace_route_sends_every_uuid_spelling_canonical(writes, spelling):
-    """Braces, urn:uuid: (either case), upper-case and 32-hex forms are accepted and the
-    wire carries the canonical lower-case hyphenated uuid the inventory holds."""
-    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    """Braces, urn:uuid: (either case), upper-case and 32-hex forms are accepted; the
+    inventory is queried and the wire carries the canonical lower-case hyphenated uuid."""
+    nodes = mock_nodes(PE1_NODE)
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
     text = await call_tool_text(
         writes,
         "cnc_start_oam_trace_route",
         {**START_ARGS, "headend_uuid": spelling, "endpoint_uuid": spelling},
     )
     assert not text.startswith("Error:")
+    assert nodes.call_count == 2
+    assert sent(nodes, 0)["filter"] == {"uuid": PE1_UUID}
     assert route.call_count == 1
     body = sent(route)["input"]
     assert body["head-end-node-uuid"] == PE1_UUID
     assert body["tail-end-node-uuid"] == PE1_UUID
+    assert body["head-end-node-name"] == "PE1" and body["tail-end-node-name"] == "PE1"
+    assert body["head-end-te-router-id"] == "10.0.0.1"
     # The spelling as given never reaches the wire.
-    assert spelling.strip() not in route.calls[0].request.content.decode()
+    for call in (*nodes.calls, *route.calls):
+        assert spelling.strip() not in call.request.content.decode()
 
 
 @respx.mock
 async def test_start_trace_route_terminal_answer_gives_no_wait_hint(writes):
     """The set RPC answering the verified no-uuid failure directly (status 5): the first
     line is the verdict, not "registered ... Next: wait"; the rendering's footer follows."""
+    mock_nodes(PE1_NODE, PE2_NODE)
     route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
         return_value=ok(out(**FAILED_NO_UUID))
     )
@@ -1103,6 +1671,7 @@ async def test_start_trace_route_terminal_answer_gives_no_wait_hint(writes):
 
 @respx.mock
 async def test_start_trace_route_completed_answer_renders_the_paths(writes):
+    mock_nodes(PE1_NODE, PE2_NODE)
     respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**COMPLETED)))
     text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
     assert text.startswith(
@@ -1113,7 +1682,28 @@ async def test_start_trace_route_completed_answer_renders_the_paths(writes):
 
 
 @respx.mock
+async def test_start_trace_route_immediate_no_path_answer_is_rendered(writes):
+    """EXTRAPOLATED: the set RPC answering the zero-path status 4 (live it was the short
+    form's verdict, reached on polling) directly on registration: no wait hint, and the
+    footer explains — and hedges — the zero-path verdict."""
+    mock_nodes(PE1_NODE, PE2_NODE)
+    respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**NO_PATH)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        f"OAM trace route {QUERY_ID} completed immediately with 0 paths: completed (4): "
+        f"{NO_PATH_FOUND_MESSAGE}."
+    )
+    assert "cnc_wait_for_oam_trace_route" not in text.split("\n", 1)[0]
+    assert "## Paths" not in text
+    assert "Completed with ZERO paths" in text
+    handle = json.loads(text[text.rindex("{") :])
+    assert handle["status"] == 4 and handle["status_message"] == NO_PATH_FOUND_MESSAGE
+
+
+@respx.mock
 async def test_start_trace_route_without_query_id_is_an_error(writes):
+    mock_nodes(PE1_NODE, PE2_NODE)
     respx.post(rpc("set-oam-trace-route-by-calc")).mock(
         return_value=ok(out(**{"response-result": "valid"}))
     )
@@ -1123,6 +1713,7 @@ async def test_start_trace_route_without_query_id_is_an_error(writes):
 
 @respx.mock
 async def test_start_trace_route_response_result_error(writes):
+    mock_nodes(PE1_NODE, PE2_NODE)
     respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**RESULT_ERROR)))
     text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
     assert text == (
@@ -1132,6 +1723,7 @@ async def test_start_trace_route_response_result_error(writes):
 
 @respx.mock
 async def test_start_trace_route_empty_500_is_the_coe_hint_and_not_retried(writes):
+    mock_nodes(PE1_NODE, PE2_NODE)
     route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=EMPTY_500)
     text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
     assert route.call_count == 1
@@ -1141,12 +1733,33 @@ async def test_start_trace_route_empty_500_is_the_coe_hint_and_not_retried(write
 @respx.mock
 async def test_start_then_wait_shows_the_no_uuid_failure_text(writes, fake_clock):
     """The verified sequence for a query registered without resolvable devices."""
+    mock_nodes(PE1_NODE, PE2_NODE)
     respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
     mock_trace_route(ok(out(**FAILED_NO_UUID)))
     text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
     assert text.startswith(f"OAM trace route registered: query-id {QUERY_ID}")
     text = await call_tool_text(writes, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
     assert text.startswith(f"Trace route {QUERY_ID} FAILED after 0s: {MPLS_OAM_TEXT}")
+
+
+@respx.mock
+async def test_start_then_wait_shows_the_no_path_verdict(writes, fake_clock):
+    """EXTRAPOLATED: the full form the tool sends -> status 4 with 0 paths. Live (2026-09-14,
+    gNMI onboarded) the full form ended in status 5 (XR's 'mpls oam' text) and status 4 was
+    the SHORT form's answer; this pairs the verified full-form echo with that verdict."""
+    mock_nodes(PE1_NODE, PE2_NODE)
+    start = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FULL_REGISTERED))
+    )
+    mock_trace_route(ok(out(**RUNNING)), ok(out(**NO_PATH)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert sent(start) == FULL_START_BODY
+    assert text.startswith(f"OAM trace route registered: query-id {QUERY_ID}")
+    text = await call_tool_text(writes, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert text.startswith(
+        f"Trace route {QUERY_ID} finished after 5s with 0 paths: completed (4): "
+        f"{NO_PATH_FOUND_MESSAGE}"
+    )
 
 
 # --- cnc_reactivate_probe ------------------------------------------------------------

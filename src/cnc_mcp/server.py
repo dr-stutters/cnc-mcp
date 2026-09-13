@@ -149,8 +149,11 @@ def build_instructions(settings: Settings) -> str:
         "interfaces by inventory uuid + name, and answer an empty list for an unknown key "
         "as well as for no data.",
         "- OAM trace routes (cnc_start_oam_trace_route, then cnc_wait_for_oam_trace_route) "
-        "take the service yang-path plus head-end/tail-end inventory uuids and need gNMI "
-        "connectivity to the devices (a failed trace is a verdict, not an API error). "
+        "take the service yang-path plus head-end/tail-end inventory uuids (the tool resolves "
+        "names and router-ids itself) and need gNMI onboarded on the devices "
+        "(cnc_enable_device_gnmi, after cnc_update_credential_profile adds a gNMI login) plus "
+        "'mpls oam' on IOS-XR; a completed trace lists every ECMP path hop by hop, and a "
+        "failed one is a verdict, not an API error. "
         "Service Health (probes), Health Insights, Change Automation and Path Analytics "
         "are not installed on single-VM deployments; their prefixes answer the home "
         "application's 404 and the error text names the missing application. SWIM and "

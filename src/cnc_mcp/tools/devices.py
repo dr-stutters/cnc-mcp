@@ -19,10 +19,22 @@ Controller:
   a rejected write is HTTP 200 with ``state != JOB_COMPLETED``. All writes go
   through :func:`cnc_mcp.crosswork.check_job`. The collection URL is the only
   form — ``/nodes/{uuid}`` does not exist (500) — so DELETE carries a JSON body.
+- gNMI onboarding (verified live 2026-09-14 on admin-up devices) is a three-PATCH
+  sequence — admin-down, transport list + capability, admin-up — because a
+  capability change is refused while the node is admin-up and attached to a Data
+  Gateway. ``cnc_enable_device_gnmi`` performs it and restores the admin state it
+  READ: an admin-up device is bounced down and back up, an admin-down device gets
+  only the transport/capability PATCH (no admin-state PATCH at all), and an
+  unmanaged device is refused before anything is written. The verified run
+  paused 5 s after the admin-down and 3 s after the transport PATCH; the tool
+  keeps those settles (see :data:`GNMI_SETTLE_AFTER_DOWN`) because whether the
+  capability PATCH is accepted the instant the admin-down job answers is
+  UNVERIFIED.
 """
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 from typing import Annotated, Any
 
@@ -54,8 +66,50 @@ COLLECTION_SUMMARY = f"{INVENTORY}/networkelement/collectionstatussummary/query"
 
 REACHABLE = REACHABILITY_STATES["reachable"]
 REACH_CHECK = {True: "REACH_CHECK_ENABLE", False: "REACH_CHECK_DISABLE"}
+ADMIN_UP = ADMIN_STATES["up"]
+ADMIN_DOWN = ADMIN_STATES["down"]
+
+# gNMI transport (verified live 2026-09-14): ``encoding_type`` is a REQUIRED field of the
+# transport entry — without it the PATCH answers JOB_FAILED "Encoding Type is required for
+# adding a GNMI protocol". Enum from the DLM inventory spec (robotapiEncodingType).
+GNMI_ENCODINGS = (
+    "UNKNOWN_ENCODING_TYPE",
+    "ASCII",
+    "BYTES",
+    "PROTO",
+    "JSON",
+    "JSON_IETF",
+    "XML",
+    "YANG",
+)
+GNMI_TRANSPORT = TRANSPORTS["gnmi"]  # ROBOT_MSVC_TRANS_GNMI (plaintext gRPC)
+# The TLS variant, named in the DLM spec enum only: it has NOT been onboarded live (every
+# verified run used the plain transport), so it is kept out of crosswork.TRANSPORTS /
+# cnc_create_device and offered here behind ``secure=True`` as an unverified shape.
+GNMI_TRANSPORT_SECURE = "ROBOT_MSVC_TRANS_GNMI_SECURE"
+GNMI_TRANSPORTS = {GNMI_TRANSPORT, GNMI_TRANSPORT_SECURE}
+GNMI_CAPABILITY = CAPABILITIES["gnmi"]
+GNMI_TRANSPORT_TIMEOUT = "30"  # a string on the wire, as sent in the verified body
+SSH_TRANSPORT = TRANSPORTS["ssh"]
+GNMI_POLL_INTERVAL = 10
+# Settles between the gNMI PATCHes, copied from the live-verified run (2026-09-14): it
+# slept 5 s after the admin-down and 3 s after the transport PATCH. Whether the capability
+# PATCH is accepted the instant the admin-down job answers is UNVERIFIED (Data Gateway
+# detachment is asynchronous), so the verified timing is kept. ``asyncio.sleep`` is looked
+# up on this module's ``asyncio`` at call time so tests can fake the clock.
+GNMI_SETTLE_AFTER_DOWN = 5
+GNMI_SETTLE_AFTER_ADD = 3
 
 _TRANSPORT_NAMES = {wire: name for name, wire in TRANSPORTS.items()}
+# For rendering only: the secure gNMI variant gets a friendly name like every other
+# transport without becoming an accepted ``protocols`` value for cnc_create_device.
+_DISPLAY_TRANSPORTS = {**TRANSPORTS, "gnmi_secure": GNMI_TRANSPORT_SECURE}
+
+
+class _PatchNotAnswered(PlatformError):
+    """A workflow PATCH got no job envelope back (HTTP error after retries, or a
+    transport failure/timeout). Unlike a JOB_FAILED answer, the platform may already
+    have applied the change, so the caller's error text must say so."""
 
 
 def _short(table: dict[str, str], value: Any) -> Any:
@@ -197,6 +251,103 @@ def _node_summary(node: dict) -> dict[str, Any]:
         "dg_name": node.get("dg_name"),
         "errors": node.get("errors"),
     }
+
+
+def _transports(node: dict) -> list[dict]:
+    """The node's ``connectivity_info`` entries, exactly as read (dict entries only)."""
+    return [e for e in node.get("connectivity_info") or [] if isinstance(e, dict)]
+
+
+def _gnmi_transport(node: dict) -> dict | None:
+    """The node's gNMI transport entry (plain or secure), or None."""
+    for entry in _transports(node):
+        if entry.get("type") in GNMI_TRANSPORTS:
+            return entry
+    return None
+
+
+def _capability_list(node: dict) -> list[str]:
+    """The node's ``product_info.capability`` strings, exactly as read (may be empty)."""
+    product_info = node.get("product_info")
+    caps = product_info.get("capability") if isinstance(product_info, dict) else None
+    return [c for c in caps or [] if isinstance(c, str)]
+
+
+def _gnmi_encoding(encoding: str) -> str:
+    """Validate a gNMI encoding_type client-side (case-insensitive) -> wire value."""
+    key = encoding.strip().upper()
+    if key not in GNMI_ENCODINGS:
+        raise PlatformError(
+            f"Unknown gNMI encoding '{encoding}'. Use one of: {', '.join(GNMI_ENCODINGS)}."
+        )
+    return key
+
+
+def _gnmi_source_ipaddrs(transports: list[dict]) -> list[Any]:
+    """The ``ipaddrs`` the new gNMI transport copies: the SSH entry's, else the first
+    entry's that carries any. Verbatim from the read — the live-verified body re-sent
+    the read shape (``inet_af`` as a string) and Crosswork accepted it."""
+    ordered = sorted(transports, key=lambda e: e.get("type") != SSH_TRANSPORT)  # stable
+    for entry in ordered:
+        ipaddrs = entry.get("ipaddrs")
+        if isinstance(ipaddrs, list) and ipaddrs:
+            return ipaddrs
+    raise PlatformError(
+        "The device has no transport with an IP address to copy for gNMI (connectivity_info "
+        "is empty or FQDN-only). Add an SSH transport with an IP address first; nothing was "
+        "changed."
+    )
+
+
+def _transport_host(entry: dict) -> Any:
+    ipaddrs = entry.get("ipaddrs")
+    if isinstance(ipaddrs, list) and ipaddrs and isinstance(ipaddrs[0], dict):
+        return ipaddrs[0].get("inet_addr", "?")
+    fqdn = entry.get("fqdn")
+    if isinstance(fqdn, dict) and fqdn.get("host_name"):
+        domain = fqdn.get("domain_name")
+        return f"{fqdn['host_name']}.{domain}" if domain else fqdn["host_name"]
+    return "?"
+
+
+def _transport_line(entry: dict) -> str:
+    """``<protocol> <host>:<port> reach=<state>`` for one connectivity_info entry."""
+    line = (
+        f"{_short(_DISPLAY_TRANSPORTS, entry.get('type'))} {_transport_host(entry)}:"
+        f"{entry.get('port', '?')} reach="
+        f"{_short(REACHABILITY_STATES, entry.get('reachability_state', 'unknown'))}"
+    )
+    if entry.get("encoding_type"):
+        line += f" encoding={entry['encoding_type']}"
+    return line
+
+
+def _gnmi_brief(entry: dict | None) -> dict[str, Any] | None:
+    if entry is None:
+        return None
+    return {
+        "type": entry.get("type"),
+        "port": entry.get("port"),
+        "encoding_type": entry.get("encoding_type"),
+        "reachability_state": entry.get("reachability_state"),
+        "error": entry.get("error") or None,
+    }
+
+
+def _job_brief(job: dict) -> dict[str, Any]:
+    """The part of a successful job envelope worth reporting per workflow step."""
+    brief: dict[str, Any] = {"ok": True, "job_id": job.get("job_id"), "state": job.get("state")}
+    if job.get("warning"):
+        brief["warning"] = job["warning"]
+    return brief
+
+
+def _failed_step(e: Exception) -> dict[str, Any]:
+    return {"ok": False, "error": format_error(e).removeprefix("Error: ")}
+
+
+def _step_state(step: dict[str, Any]) -> str:
+    return str(step.get("state")) if step.get("ok") else f"FAILED ({step.get('error')})"
 
 
 def register(mcp: MCPServer, ctx: AppContext) -> None:
@@ -682,6 +833,403 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             result = await client.request_json("PATCH", NODES, json_body=body)
             job = check_job(result, f"Updating device {uuid}")
             return finalize(to_json(job), settings)
+        except Exception as e:
+            return format_error(e)
+
+    async def patch_node(changes: dict[str, Any], what: str) -> dict[str, Any]:
+        """One ``PATCH nodes`` step of a workflow, validated through check_job.
+
+        retryable=True: each body carries absolute state (an admin_state value or
+        the complete transport list), so re-sending it after a lost response or a
+        gateway 5xx cannot double-apply anything — and the admin-up step in
+        particular must not be abandoned on a transient error.
+
+        Raises :class:`_PatchNotAnswered` when no job envelope came back at all
+        (retries exhausted on a 5xx, or a transport error/timeout): the platform
+        may still have applied the change. A JOB_FAILED answer raises the plain
+        PlatformError from check_job — the platform rejected it, nothing changed.
+        """
+        try:
+            result = await client.request_json(
+                "PATCH", NODES, json_body={"data": [changes]}, retryable=True
+            )
+        except Exception as e:
+            raise _PatchNotAnswered(format_error(e).removeprefix("Error: ")) from e
+        return check_job(result, what)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_enable_device_gnmi",
+        title="Enable gNMI on a Device",
+        read_only=False,
+        destructive=False,
+        idempotent=True,
+    )
+    async def cnc_enable_device_gnmi(
+        uuid: Annotated[
+            str,
+            Field(
+                description="uuid of the device to enable gNMI on (from cnc_list_devices).",
+                min_length=1,
+                max_length=100,
+            ),
+        ],
+        port: Annotated[
+            int,
+            Field(description="gRPC/gNMI port the router listens on (e.g. 57400).", ge=1, le=65535),
+        ] = 57400,
+        encoding: Annotated[
+            str,
+            Field(
+                description=(
+                    "gNMI encoding_type: one of UNKNOWN_ENCODING_TYPE, ASCII, BYTES, PROTO, "
+                    "JSON, JSON_IETF, XML, YANG (e.g. 'JSON_IETF', the value verified on IOS-XR)."
+                ),
+                min_length=1,
+                max_length=30,
+            ),
+        ] = "JSON_IETF",
+        secure: Annotated[
+            bool,
+            Field(
+                description=(
+                    "false (default) adds ROBOT_MSVC_TRANS_GNMI (plaintext gRPC, 'grpc port "
+                    "57400 no-tls'; the variant verified live). true adds "
+                    "ROBOT_MSVC_TRANS_GNMI_SECURE (TLS) — UNVERIFIED live: the wire value is "
+                    "from the DLM spec enum only, no device has been onboarded with it."
+                )
+            ),
+        ] = False,
+        wait_seconds: Annotated[
+            int,
+            Field(
+                description=(
+                    "After the change, poll until the gNMI transport reports "
+                    "CONN_STATE_REACHABLE for up to this many seconds (e.g. 90; it typically "
+                    "takes about 60). 0 = one verification read, no waiting. Ignored (one "
+                    "read) for a device that is admin-down, which is not collected."
+                ),
+                ge=0,
+                le=600,
+            ),
+        ] = 90,
+    ) -> str:
+        """Add a gNMI transport and the GNMI capability to an existing device.
+
+        WRITE workflow — only registered when *_ENABLE_WRITES=true. Idempotent:
+        a device that already has BOTH a gNMI transport (plain or secure) AND
+        the GNMI capability is reported as "already has gNMI" and left untouched.
+        A device with the transport but not the capability (the two are set
+        independently in the UI) gets the capability added; a device with the
+        capability but no transport gets the transport added. Use it to onboard
+        gNMI-based collection (SR-policy PM over gNMI, OAM path traces) on a
+        device that was added with SSH/SNMP only; do not use it to change the
+        port or encoding of an existing gNMI transport (an existing transport is
+        kept verbatim and port/encoding/secure are ignored).
+
+        PRECONDITIONS (verified live 2026-09-14):
+        - The device's credential profile must already hold a gNMI credential
+          (a user_pass entry of type ROBOT_USERPASS_GNMI) — check with
+          cnc_get_credential_profile and add it with cnc_update_credential_profile
+          first. Without it the transport is added but stays unreachable.
+        - The router must serve gRPC on the port ('grpc port 57400 no-tls' on
+          IOS-XR for the default, plaintext transport).
+        - The device must be admin-up or admin-down. An UNMANAGED device (or an
+          unknown admin_state) is refused before anything is written: set it up
+          or down first with cnc_update_device admin_state='up'|'down'.
+        - An admin-up device is admin-down for roughly ten seconds during the
+          change, so collection pauses briefly; do not run it on a device
+          mid-deployment.
+
+        What it does (the ordering rule is enforced by the platform: a capability
+        change is refused while the node is admin-up and attached to a Data
+        Gateway — "Capability cannot be changed while the node is attached to a
+        VDG and in admin up state..."):
+        1. Reads the device (nodes/query). Stops without writing when gNMI is
+           fully present, when the device is neither admin-up nor admin-down, or
+           when a transport must be added and no existing transport carries an
+           IP address to copy (the SSH entry's ipaddrs are used, else the first
+           entry's).
+        2. Admin-up device only: PATCH admin_state ROBOT_ADMIN_STATE_DOWN, then
+           settle 5 s (the timing of the verified run). An admin-down device
+           skips this step — the refusal only applies to admin-up nodes — and
+           its admin state is never touched.
+        3. PATCH connectivity_info = the existing entries verbatim (+ the new
+           {type, ipaddrs, port, timeout "30", encoding_type} entry when the
+           transport is missing) and product_info.capability = existing ∪
+           {"GNMI"}.
+        4. Admin-up device only: settle 3 s, then PATCH admin_state
+           ROBOT_ADMIN_STATE_UP — ALWAYS sent once step 2 succeeded, even when
+           step 3 failed, so the device is restored to the admin state it was
+           read in. Both outcomes are reported.
+        5. Admin-up device: if wait_seconds > 0, polls the node until the gNMI
+           transport's reachability_state is CONN_STATE_REACHABLE or the time
+           is up. Admin-down device: one verification read, no waiting (the
+           transport is not checked while the device is admin-down).
+        Each PATCH normally answers JOB_COMPLETED_WITH_WARNING with the NSO
+        advisory ("Note, if device <uuid> is used in NSO, any updates to it needs
+        be done through NSO interface") — that is a success.
+
+        Returns:
+            str: A summary ("Enabled gNMI on <host> (<uuid>) ...") with the job
+            state of each step sent, the transport list after the change and the
+            gNMI transport's final reachability, then a JSON envelope:
+            {"uuid", "host_name", "changed": bool, "reachable": bool,
+             "waited_seconds": int, "admin_state_before", "admin_state_after",
+             "added": {"transport": bool, "capability": bool},
+             "gnmi": {"type", "port", "encoding_type", "reachability_state",
+             "error"}, "steps": {"admin_down"?, "add_gnmi", "admin_up"?:
+             {"ok", "job_id", "state", "warning"} | {"ok": false, "error"}},
+             "capability": [...], "connectivity_info": [...]}
+            (admin_down/admin_up appear only for an admin-up device).
+            "already has gNMI (...)" (changed false, no PATCH sent; the envelope
+            carries "capability" and "admin_state"), "not reachable yet after
+            Ns; current state ..." (the transport was added; call cnc_get_device
+            later or check the gNMI credential and the router's grpc config) and
+            "left admin-down ... not checked" are NOT errors.
+            "Error: ..." when the device is not found / is unmanaged / has no IP
+            transport (nothing sent); when the admin-down PATCH fails — a
+            JOB_FAILED answer means nothing changed, while an HTTP/transport
+            failure (no job answer) means the admin-down MAY have been applied,
+            so the message says to check cnc_get_device and run cnc_update_device
+            admin_state='up' if it is down; when the transport PATCH fails — the
+            platform's reason verbatim, e.g. "Encoding Type is required for adding
+            a GNMI protocol" or the capability/VDG refusal — together with the
+            outcome of the admin-up PATCH that was still sent; or when the
+            admin-up PATCH fails (the device is then admin-down: run
+            cnc_update_device admin_state='up').
+        """
+        try:
+            encoding_wire = _gnmi_encoding(encoding)
+            gnmi_type = GNMI_TRANSPORT_SECURE if secure else GNMI_TRANSPORT
+            selector = {"uuid": uuid}
+            node = await find_device(selector)
+            host = node.get("host_name")
+            label = f"{host} ({uuid})"
+            transports = _transports(node)
+            existing_caps = _capability_list(node)
+            has_capability = GNMI_CAPABILITY in existing_caps
+            existing = _gnmi_transport(node)
+            admin_before = node.get("admin_state")
+            if existing is not None and has_capability:
+                head = (
+                    f"Device {label} already has gNMI ({_transport_line(existing)}) and the "
+                    f"{GNMI_CAPABILITY} capability; nothing changed."
+                )
+                envelope = {
+                    "uuid": uuid,
+                    "host_name": host,
+                    "changed": False,
+                    "reachable": existing.get("reachability_state") == REACHABLE,
+                    "admin_state": admin_before,
+                    "gnmi": _gnmi_brief(existing),
+                    "capability": existing_caps,
+                    "connectivity_info": transports,
+                }
+                return finalize(f"{head}\n{to_json(envelope)}", settings)
+            # The admin-state bounce is only needed — and only verified — for an admin-up
+            # device: the refusal is about "admin up state", and an admin-down device's
+            # state must not be changed behind the operator's back.
+            if admin_before == ADMIN_UP:
+                bounce = True
+            elif admin_before == ADMIN_DOWN:
+                bounce = False
+            else:
+                raise PlatformError(
+                    f"Device {label} is admin_state {admin_before!r}; cnc_enable_device_gnmi "
+                    "only runs on an admin-up or admin-down device (an unmanaged device is "
+                    "not collected, and bouncing it through admin-down has not been verified). "
+                    "Set it with cnc_update_device admin_state='up' (or 'down') first. "
+                    "Nothing was changed."
+                )
+            if existing is None:
+                ipaddrs = _gnmi_source_ipaddrs(transports)
+                new_entry = {
+                    "type": gnmi_type,
+                    "ipaddrs": ipaddrs,
+                    "port": port,
+                    "timeout": GNMI_TRANSPORT_TIMEOUT,
+                    "encoding_type": encoding_wire,
+                }
+                connectivity = [*transports, new_entry]
+                change = f"{gnmi_type} port {port}, encoding {encoding_wire}"
+                if not has_capability:
+                    change += f" plus the {GNMI_CAPABILITY} capability"
+            else:
+                # Transport present, capability missing: re-send the transport list
+                # verbatim (the verified body shape) with the capability added.
+                connectivity = transports
+                change = (
+                    f"the existing {_transport_line(existing)} transport was kept and the "
+                    f"missing {GNMI_CAPABILITY} capability was added"
+                )
+            capability = sorted(set(existing_caps) | {GNMI_CAPABILITY})
+            add_what = (
+                f"Adding the gNMI transport to device {label} (gNMI step 2 of 3)"
+                if bounce
+                else f"Adding gNMI to device {label} (the only step: it is already admin-down)"
+            )
+
+            steps: dict[str, dict[str, Any]] = {}
+            if bounce:
+                # Step 2 — a failure here means nothing else is sent.
+                down_what = f"Setting device {label} admin-down (gNMI step 1 of 3)"
+                try:
+                    steps["admin_down"] = _job_brief(
+                        await patch_node({"uuid": uuid, "admin_state": ADMIN_DOWN}, down_what)
+                    )
+                except _PatchNotAnswered as e:
+                    raise PlatformError(
+                        f"{down_what} failed: {str(e).rstrip('.')}. Nothing else was sent, but "
+                        "the admin-down may already have been applied: check the device with "
+                        "cnc_get_device and run cnc_update_device with admin_state='up' if it "
+                        "reads admin-down."
+                    ) from e
+                except PlatformError as e:  # JOB_FAILED: rejected, so the state is unchanged
+                    raise PlatformError(
+                        f"{str(e).rstrip('.')}. Nothing else was sent; the platform rejected "
+                        "the change, so the device is still admin-up and unchanged."
+                    ) from e
+                await asyncio.sleep(GNMI_SETTLE_AFTER_DOWN)
+            # Step 3 — captured, never raised: the admin-up step must follow regardless.
+            add_error: Exception | None = None
+            try:
+                steps["add_gnmi"] = _job_brief(
+                    await patch_node(
+                        {
+                            "uuid": uuid,
+                            "connectivity_info": connectivity,
+                            "product_info": {"capability": capability},
+                        },
+                        add_what,
+                    )
+                )
+            except Exception as e:
+                add_error = e
+                steps["add_gnmi"] = _failed_step(e)
+            # Step 4 — always attempted once the device went admin-down.
+            up_error: Exception | None = None
+            if bounce:
+                await asyncio.sleep(GNMI_SETTLE_AFTER_ADD)
+                try:
+                    steps["admin_up"] = _job_brief(
+                        await patch_node(
+                            {"uuid": uuid, "admin_state": ADMIN_UP},
+                            f"Setting device {label} admin-up (gNMI step 3 of 3)",
+                        )
+                    )
+                except Exception as e:
+                    up_error = e
+                    steps["admin_up"] = _failed_step(e)
+
+            states = ", ".join(f"{name} {_step_state(step)}" for name, step in steps.items())
+            if add_error is not None or up_error is not None:
+                if add_error is not None:
+                    reason = str(steps["add_gnmi"]["error"]).rstrip(".")
+                    problem = f"Adding gNMI to device {label} failed: {reason}."
+                    unanswered = isinstance(add_error, _PatchNotAnswered)
+                    if unanswered:
+                        problem += (
+                            " No job answer came back, so the transport/capability change "
+                            "may or may not have been applied: check with cnc_get_device."
+                        )
+                    if not bounce:
+                        problem += (
+                            " The device was admin-down before the call and no admin-state "
+                            "PATCH was sent."
+                        )
+                    elif up_error is None:
+                        problem += " The device was set admin-up again"
+                        problem += "." if unanswered else " (nothing else changed)."
+                    else:
+                        problem += (
+                            " The follow-up admin-up PATCH ALSO failed, so the device is now "
+                            "admin-down: run cnc_update_device with admin_state='up'."
+                        )
+                else:
+                    problem = (
+                        f"gNMI was added to device {label} but the admin-up PATCH failed, so the "
+                        "device is now admin-down: run cnc_update_device with admin_state='up' "
+                        "(collection stays paused until then)."
+                    )
+                raise PlatformError(f"{problem} Steps: {states}. {to_json({'steps': steps})}")
+
+            # Step 5 — wait_seconds=0 makes wait_until do exactly one verification read;
+            # an admin-down device is not collected, so waiting on it would be pointless.
+            effective_wait = wait_seconds if bounce else 0
+            try:
+                finished, after, elapsed = await wait_until(
+                    lambda: find_device(selector),
+                    lambda n: (_gnmi_transport(n) or {}).get("reachability_state") == REACHABLE,
+                    timeout_seconds=effective_wait,
+                    interval_seconds=GNMI_POLL_INTERVAL,
+                )
+            except Exception as e:
+                restored = "it is admin-up again" if bounce else "it was left admin-down as found"
+                raise PlatformError(
+                    f"gNMI was added to device {label} and {restored} (steps: {states}), but "
+                    f"the verification read failed: {format_error(e).removeprefix('Error: ')} "
+                    "Re-read with cnc_get_device."
+                ) from e
+            gnmi_after = _gnmi_transport(after)
+            after_transports = _transports(after)
+            after_caps = (
+                _capability_list(after)
+                if isinstance(after.get("product_info"), dict)
+                else capability
+            )
+            head = f"Enabled gNMI on device {label}: {change}. "
+            if finished:
+                head += f"The gNMI transport is reachable after {elapsed:.0f}s."
+            elif not bounce:
+                current = gnmi_after.get("reachability_state") if gnmi_after else "not visible yet"
+                head += (
+                    "The device was admin-down before the call and was left admin-down (no "
+                    "admin-state PATCH was sent), so the transport's reachability was not "
+                    f"waited for; current state {current}. Not an error: set admin_state='up' "
+                    "with cnc_update_device when it should be collected again, then check "
+                    "with cnc_get_device."
+                )
+            elif gnmi_after is None:
+                head += (
+                    f"The gNMI transport is not visible on the device yet after {elapsed:.0f}s "
+                    "(not an error): re-read with cnc_get_device."
+                )
+            else:
+                head += (
+                    f"Not reachable yet after {elapsed:.0f}s; current state "
+                    f"{gnmi_after.get('reachability_state')}"
+                )
+                if gnmi_after.get("error"):
+                    head += f" (error: {gnmi_after['error']})"
+                head += (
+                    ". Not an error: it typically takes about 60s. Check again with "
+                    "cnc_get_device (connectivity_info[].reachability_state); if it stays "
+                    "unreachable, verify the profile's ROBOT_USERPASS_GNMI credential and the "
+                    "router's grpc configuration."
+                )
+            lines = [
+                head,
+                f"Steps: {states}.",
+                "Transports after: "
+                + ("; ".join(_transport_line(t) for t in after_transports) or "(none read back)"),
+            ]
+            envelope = {
+                "uuid": uuid,
+                "host_name": host,
+                "changed": True,
+                "reachable": finished,
+                "waited_seconds": round(elapsed),
+                "admin_state_before": admin_before,
+                "admin_state_after": after.get("admin_state"),
+                "added": {"transport": existing is None, "capability": not has_capability},
+                "gnmi": _gnmi_brief(gnmi_after),
+                "steps": steps,
+                "capability": after_caps,
+                "connectivity_info": after_transports,
+            }
+            return finalize("\n".join(lines) + "\n" + to_json(envelope), settings)
         except Exception as e:
             return format_error(e)
 

@@ -5,7 +5,8 @@ not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
 The EMPTY fixtures are verbatim from the answers verified live on Crosswork
 7.2 (2026-09-13, platform notes "SWIM" and "ZTP"): the preference list, the
 206 empty repository with its ``Content-Range``, the running-images failure
-texts, the empty job list, the ZTP code-200-without-data bodies, the code-400
+texts (and the inventory-uuid -> EMF instance id mapping verified 2026-09-14),
+the empty job list, the ZTP code-200-without-data bodies, the code-400
 "filter not provided" body, the device policy document, the configsvc /
 imagesvc empty pages with their bare-int counts and the types / platforms
 lists. The POPULATED fixtures follow the 7.2 OpenAPI documents (no populated
@@ -57,6 +58,8 @@ from cnc_mcp.tools.swim_ztp import (
     split_platform,
     string_list,
     svc_params,
+    swim_running_error,
+    validate_swim_device_id,
     ztp_image_line,
     ztp_past_the_end,
     ztp_query_body,
@@ -148,7 +151,11 @@ REPOSITORY = httpx.Response(
     json={"softwareImageListDTO": {"id": "imageId", "items": [IMAGE], "totalCount": 1}},
     headers={"Content-Range": "items=0-0/1"},
 )
-# Verified: the EMF nd.instanceId and a host name are both refused inside HTTP 200.
+# Verified 2026-09-14: the INVENTORY uuid is accepted — SWIM translates it to the EMF
+# nd.instanceId itself and answers that numeric id as ``id`` (454455 for the lab's XRd);
+# "Invalid Index" means SWIM holds no software-image inventory for the device (XRd is
+# DEVICE_SUPPORT_LEVEL_UNCERTIFIED), not that the id is wrong. The numeric id answers the same.
+DEVICE_UUID = "af1986fa-2b3c-4d5e-8f90-1234567890ab"
 RUNNING_INVALID_INDEX = {
     "runningSoftwareImageDTOList": {
         "id": "454455",
@@ -156,6 +163,8 @@ RUNNING_INVALID_INDEX = {
         "resultErrMsg": "Get running Image Failed for the Device : Invalid Index",
     }
 }
+# Verified: a host name is answered with Java's number-parse failure inside HTTP 200 — the
+# tool now refuses such an id before the call, so this body only reaches the helper test.
 RUNNING_NAME_REFUSED = {
     "runningSoftwareImageDTOList": {
         "id": "PE1",
@@ -751,15 +760,85 @@ async def test_list_software_images_empty_type_and_errors(make_settings):
 # --- cnc_get_device_running_images ----------------------------------------------------
 
 
+def test_validate_swim_device_id_accepts_uuid_or_digits_only():
+    """Verified: SWIM resolves the inventory uuid and the numeric EMF instance id; a host
+    name gets 'For input string' — refused here, before any call, with that explanation."""
+    assert validate_swim_device_id(f" {DEVICE_UUID} ") == DEVICE_UUID  # verbatim, stripped
+    assert validate_swim_device_id(DEVICE_UUID.upper()) == DEVICE_UUID.upper()
+    assert validate_swim_device_id("454455") == "454455"
+    for bad in ("PE1", "10.0.0.1", "af1986fa2b3c4d5e8f901234567890ab", "{" + DEVICE_UUID + "}"):
+        with pytest.raises(PlatformError) as info:
+            validate_swim_device_id(bad)
+        assert str(info.value).startswith(
+            f"device_id '{bad}' is neither an inventory uuid nor a numeric EMF instance id — "
+            f"SWIM would answer 'For input string: \"{bad}\"'"
+        )
+        assert SWIM_DEVICE_ID_CAVEAT in str(info.value)
+        assert f"cnc_get_device(host_name='{bad}')" in str(info.value)
+
+
+def test_swim_running_error_explains_each_verified_verdict():
+    invalid = swim_running_error(
+        DEVICE_UUID, "Get running Image Failed for the Device : Invalid Index", "454455"
+    )
+    assert str(invalid) == (
+        f"SWIM holds no software-image inventory for device {DEVICE_UUID} (SWIM answered: Get "
+        "running Image Failed for the Device : Invalid Index) — the device's platform is not "
+        "SWIM-certified (a containerised XRd is DEVICE_SUPPORT_LEVEL_UNCERTIFIED and SWIM's XR "
+        "image collector has nothing to parse there) or its image inventory was never "
+        "collected; the inventory uuid is the right id (SWIM maps it to EMF instance id 454455)."
+    )
+    # No ``id`` in the answer: the generic mapping sentence, never an invented id.
+    assert str(swim_running_error("454455", "Invalid Index")).endswith(
+        "the inventory uuid is the right id (SWIM maps it to the EMF instance id itself)."
+    )
+    # The verified host-name verdict (only reachable if SWIM's parsing changes).
+    parse = swim_running_error("PE1", 'For input string: "PE1"', "PE1")
+    assert str(parse) == (
+        "SWIM could not parse device id 'PE1' (SWIM answered: For input string: \"PE1\") — "
+        f"{SWIM_DEVICE_ID_CAVEAT}."
+    )
+    other = swim_running_error("454455", "Device not reachable", "454455")
+    assert str(other) == (
+        "SWIM could not read the running images of device 454455 (SWIM answered: Device not "
+        f"reachable); {SWIM_DEVICE_ID_CAVEAT}."
+    )
+
+
 @respx.mock
-async def test_get_device_running_images_success(make_settings):
+async def test_get_device_running_images_by_inventory_uuid(make_settings):
+    """Verified 2026-09-14: the inventory uuid is sent verbatim; SWIM answers the EMF
+    instance id it mapped it to as ``id``, which the tool surfaces."""
+    route = mock_get(f"{RUNNING_URL}/{DEVICE_UUID}", RUNNING_OK)
+    text = await call_tool_text(
+        build(make_settings()), "cnc_get_device_running_images", {"device_id": DEVICE_UUID}
+    )
+    assert route.calls[0].request.url.path.endswith(f"/getDeviceRunningImages/{DEVICE_UUID}")
+    assert text.startswith(
+        f"# Running images of ncs540-120.145 (device {DEVICE_UUID} = EMF instance id 460460): 1\n"
+    )
+    assert "- **ncs540-xr-24.2.1** v24.2.1: ACTIVE on disk0" in text
+    data = json.loads(
+        await call_tool_text(
+            build(make_settings()),
+            "cnc_get_device_running_images",
+            {"device_id": f" {DEVICE_UUID} ", "response_format": "json"},
+        )
+    )
+    assert data["device_id"] == DEVICE_UUID and data["emf_instance_id"] == "460460"
+    assert data["device_name"] == "ncs540-120.145" and data["total"] == 1
+    assert data["items"][0]["installableStatus"] == "ACTIVE"
+
+
+@respx.mock
+async def test_get_device_running_images_numeric_id_still_accepted(make_settings):
     route = mock_get(f"{RUNNING_URL}/460460", RUNNING_OK)
     text = await call_tool_text(
         build(make_settings()), "cnc_get_device_running_images", {"device_id": "460460"}
     )
     assert route.called
-    assert text.startswith("# Running images of ncs540-120.145 (SWIM device 460460): 1\n")
-    assert "- **ncs540-xr-24.2.1** v24.2.1: ACTIVE on disk0" in text
+    # The answer's id equals the given one: no "= EMF instance id" repetition.
+    assert text.startswith("# Running images of ncs540-120.145 (device 460460): 1\n")
     data = json.loads(
         await call_tool_text(
             build(make_settings()),
@@ -767,35 +846,54 @@ async def test_get_device_running_images_success(make_settings):
             {"device_id": "460460", "response_format": "json"},
         )
     )
-    assert data["device_name"] == "ncs540-120.145" and data["total"] == 1
-    assert data["items"][0]["installableStatus"] == "ACTIVE"
+    assert data["device_id"] == "460460" and data["emf_instance_id"] == "460460"
 
 
 @respx.mock
-async def test_get_device_running_images_refused_ids_are_errors(make_settings):
-    """Verified: the EMF instanceId and a host name are refused inside HTTP 200."""
-    mock_get(f"{RUNNING_URL}/454455", RUNNING_INVALID_INDEX)
+async def test_get_device_running_images_invalid_index_is_a_platform_limitation(make_settings):
+    """Verified 2026-09-14: the uuid maps to EMF instance id 454455 and "Invalid Index" says
+    SWIM holds no image inventory for that (uncertified XRd) device — not a wrong id."""
+    mock_get(f"{RUNNING_URL}/{DEVICE_UUID}", RUNNING_INVALID_INDEX)
     text = await call_tool_text(
-        build(make_settings()), "cnc_get_device_running_images", {"device_id": "454455"}
+        build(make_settings()), "cnc_get_device_running_images", {"device_id": DEVICE_UUID}
     )
     assert text == (
-        "Error: SWIM could not read the running images of '454455': Get running Image Failed "
-        f"for the Device : Invalid Index ({SWIM_DEVICE_ID_CAVEAT})."
+        f"Error: SWIM holds no software-image inventory for device {DEVICE_UUID} (SWIM answered: "
+        "Get running Image Failed for the Device : Invalid Index) — the device's platform is not "
+        "SWIM-certified (a containerised XRd is DEVICE_SUPPORT_LEVEL_UNCERTIFIED and SWIM's XR "
+        "image collector has nothing to parse there) or its image inventory was never "
+        "collected; the inventory uuid is the right id (SWIM maps it to EMF instance id 454455)."
     )
-    mock_get(f"{RUNNING_URL}/PE1", RUNNING_NAME_REFUSED)
+    # The numeric EMF instance id answers the same verdict (verified 2026-09-13).
+    mock_get(f"{RUNNING_URL}/454455", RUNNING_INVALID_INDEX)
+    text = await call_tool_text(
+        build(make_settings()),
+        "cnc_get_device_running_images",
+        {"device_id": "454455", "response_format": "json"},
+    )
+    assert text.startswith("Error: SWIM holds no software-image inventory for device 454455 (")
+    assert text.endswith("(SWIM maps it to EMF instance id 454455).")
+
+
+@respx.mock
+async def test_get_device_running_images_refuses_a_host_name_before_any_call(make_settings):
+    route = mock_get(f"{RUNNING_URL}/PE1", RUNNING_NAME_REFUSED)
     text = await call_tool_text(
         build(make_settings()), "cnc_get_device_running_images", {"device_id": "PE1"}
     )
     assert text.startswith(
-        "Error: SWIM could not read the running images of 'PE1': For input string: \"PE1\""
+        "Error: device_id 'PE1' is neither an inventory uuid nor a numeric EMF instance id — "
+        "SWIM would answer 'For input string: \"PE1\"'"
     )
-    # The same verdict in JSON form is still an Error string.
+    assert "cnc_get_device(host_name='PE1')" in text
+    # The same verdict in JSON form is still an Error string; still no call.
     text = await call_tool_text(
         build(make_settings()),
         "cnc_get_device_running_images",
         {"device_id": "PE1", "response_format": "json"},
     )
-    assert text.startswith("Error: SWIM could not read")
+    assert text.startswith("Error: device_id 'PE1' is neither")
+    assert not route.called
 
 
 @respx.mock
@@ -807,7 +905,18 @@ async def test_get_device_running_images_empty_and_errors(make_settings):
     text = await call_tool_text(
         build(make_settings()), "cnc_get_device_running_images", {"device_id": "7"}
     )
-    assert text.startswith("No running image reported for SWIM device 7 (SWIM answered Success")
+    assert text.startswith("No running image reported for device 7 (SWIM answered Success")
+    mock_get(
+        f"{RUNNING_URL}/{DEVICE_UUID}",
+        {"runningSoftwareImageDTOList": {"id": "7", "totalCount": 0, "resultErrMsg": "Success"}},
+    )
+    text = await call_tool_text(
+        build(make_settings()), "cnc_get_device_running_images", {"device_id": DEVICE_UUID}
+    )
+    assert text.startswith(
+        f"No running image reported for device {DEVICE_UUID} = EMF instance id 7 (SWIM answered "
+        "Success with an empty list)."
+    )
     respx.get(f"{RUNNING_URL}/8").mock(return_value=SERVER_ERROR)
     text = await call_tool_text(
         build(make_settings()), "cnc_get_device_running_images", {"device_id": "8"}

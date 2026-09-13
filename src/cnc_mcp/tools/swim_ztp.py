@@ -59,15 +59,24 @@ the latter):
   ``GET getImagesForRepository[/<imageType>]`` with ``Range: items=<a>-<b>``
   → HTTP **206** ``Content-Range: items=0-0/0`` ``{"softwareImageListDTO":
   {"id": "imageId", "totalCount": 0}}`` when the repository is empty
-  (``items[]`` when populated — unverified); ``GET getDeviceRunningImages/
-  <id>`` → HTTP 200 ``{"runningSoftwareImageDTOList": {"id", "totalCount":
-  0, "resultErrMsg": "Get running Image Failed for the Device : Invalid
-  Index"}}`` for the EMF ``nd.instanceId`` and ``"For input string:
-  \\"PE1\\""`` for a host name — **the SWIM device id is a numeric id of
-  SWIM's own**: the EMF instanceId and the host name were both refused on
-  the verified build (the inventory uuid was not tried — being non-numeric
-  it presumably is too) and no way to learn the id has been found yet
-  (``resultErrMsg`` is ``Success`` when it works, per the document);
+  (``items[]`` when populated — unverified; the guides' base
+  ``/crosswork/swim/v1`` is routed too and ``GET /crosswork/swim/v1/images``
+  is the same repository read with the same 206 answer — this module keeps
+  the ``op/swim/image`` spelling; ``devices`` / ``jobs`` under the guides'
+  base answer a Spring 404); ``GET getDeviceRunningImages/<id>`` → HTTP 200
+  ``{"runningSoftwareImageDTOList": {"id", "totalCount": 0, "resultErrMsg":
+  ...}}``. **The device id is the INVENTORY UUID (verified 2026-09-14)**:
+  ``getDeviceRunningImages/<inventory uuid>`` answers ``{"id": "454455",
+  ...}`` — SWIM translates the uuid to the EMF ``nd.instanceId`` itself and
+  the answer's ``id`` is that numeric id (which is accepted directly too).
+  ``resultErrMsg`` "Get running Image Failed for the Device : Invalid
+  Index" means SWIM holds NO software-image inventory for the device —
+  the lab's containerised XRd is ``DEVICE_SUPPORT_LEVEL_UNCERTIFIED`` and
+  SWIM's XR image collector has nothing to parse there — a platform
+  limitation, not an id problem; ``"For input string: \\"PE1\\""`` means a
+  non-uuid / non-numeric id (a host name) was given, which the tool now
+  refuses before the call; ``resultErrMsg`` is ``Success`` when it works
+  (per the document — no certified device was available to verify it);
   ``GET jobAllDetailsById/<n>`` → ``{"swimDashboardJobDetailsListDTO":
   {"identifier": "jobId", "count": 0, "totalCount": 0}}`` for an unknown
   job. Not called: ``jobResultDetailsById/<n>`` (a 500 NullPointer text for
@@ -159,11 +168,19 @@ ZTP_DEVICE_STATUSES = (
     "OnboardingError",
 )
 SWIM_DEVICE_ID_CAVEAT = (
-    "SWIM wants its own numeric device id; the EMF instanceId and the host name were both "
-    "refused on the verified build, and the non-numeric inventory uuid presumably is too"
+    "the device_id must be the device's inventory uuid (SWIM maps it to its EMF instance id "
+    "itself — verified) or that numeric EMF instance id; a host name is refused by SWIM with "
+    "'For input string: \"<name>\"'"
 )
+SWIM_INVALID_INDEX = "invalid index"
+SWIM_FOR_INPUT_STRING = "for input string"
 
 _CONTENT_RANGE_RE = re.compile(r"items=(\d+)-(\d+)/(\d+|\*)")
+# The two id spellings SWIM resolves (verified): the inventory uuid (canonical hyphenated form,
+# any hex case) and the numeric EMF instance id. Anything else gets "For input string".
+_SWIM_DEVICE_ID_RE = re.compile(
+    r"^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", re.IGNORECASE
+)
 
 _RESPONSE_FORMAT_DESC = "'markdown' for human-readable output, 'json' for complete data."
 _ZTP_PAGE_SIZE_DESC = "Entries per page (filterData.PageSize, e.g. 50)."
@@ -491,10 +508,64 @@ def running_image_line(view: dict[str, Any]) -> str:
     )
 
 
-def swim_running_error(device_id: str, message: str) -> PlatformError:
+def validate_swim_device_id(value: str) -> str:
+    """The stripped ``device_id`` when it is an inventory uuid or a numeric EMF instance id;
+    PlatformError (before any call) for anything else.
+
+    Verified live: SWIM resolves the inventory uuid (it maps it to the EMF
+    instance id itself) and the numeric id; a host name is answered inside
+    HTTP 200 with ``resultErrMsg`` ``For input string: "PE1"`` — Java's
+    number-parse failure — so the refusal is made here, with the same
+    explanation, and the accepted text is sent VERBATIM (SWIM did the uuid
+    translation on the spelling the inventory shows).
+    """
+    text = value.strip()
+    if _SWIM_DEVICE_ID_RE.match(text):
+        return text
+    raise PlatformError(
+        f"device_id '{text}' is neither an inventory uuid nor a numeric EMF instance id — SWIM "
+        f"would answer 'For input string: \"{text}\"' (a host name gets exactly that); "
+        f"{SWIM_DEVICE_ID_CAVEAT}. cnc_get_device(host_name='{text}') or cnc_list_devices "
+        "shows the uuid."
+    )
+
+
+def emf_mapping(device_id: str, emf_id: Any) -> str:
+    """``SWIM maps it to EMF instance id <id>`` from the answer's ``id`` (the EMF instance id
+    SWIM translated the given uuid to — verified), or the generic form when SWIM sent none."""
+    mapped = _text(emf_id, "")
+    if mapped:
+        return f"SWIM maps it to EMF instance id {mapped}"
+    return "SWIM maps it to the EMF instance id itself"
+
+
+def swim_running_error(device_id: str, message: str, emf_id: Any = None) -> PlatformError:
+    """The Error for a non-``Success`` ``resultErrMsg`` of ``getDeviceRunningImages``.
+
+    Verified meanings: "Invalid Index" = SWIM holds no software-image inventory
+    for the device (uncertified platform such as a containerised XRd, or
+    the inventory was never collected) — NOT a wrong id; "For input string"
+    = a non-uuid / non-numeric id (refused client-side before the call, so
+    only reachable if SWIM changes its parsing). Anything else is reported
+    verbatim with the id rule.
+    """
+    lowered = message.lower()
+    if SWIM_INVALID_INDEX in lowered:
+        return PlatformError(
+            f"SWIM holds no software-image inventory for device {device_id} (SWIM answered: "
+            f"{message}) — the device's platform is not SWIM-certified (a containerised XRd is "
+            "DEVICE_SUPPORT_LEVEL_UNCERTIFIED and SWIM's XR image collector has nothing to "
+            "parse there) or its image inventory was never collected; the inventory uuid is "
+            f"the right id ({emf_mapping(device_id, emf_id)})."
+        )
+    if lowered.startswith(SWIM_FOR_INPUT_STRING):
+        return PlatformError(
+            f"SWIM could not parse device id '{device_id}' (SWIM answered: {message}) — "
+            f"{SWIM_DEVICE_ID_CAVEAT}."
+        )
     return PlatformError(
-        f"SWIM could not read the running images of '{device_id}': {message} "
-        f"({SWIM_DEVICE_ID_CAVEAT})."
+        f"SWIM could not read the running images of device {device_id} (SWIM answered: "
+        f"{message}); {SWIM_DEVICE_ID_CAVEAT}."
     )
 
 
@@ -1035,9 +1106,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description=(
-                    "SWIM's numeric device id (e.g. '460460'). NOT the EMF instanceId or the "
-                    "host name (both refused on the verified build), and not the inventory uuid "
-                    "(non-numeric; untried)."
+                    "The device's INVENTORY uuid (e.g. 'af1986fa-2b3c-4d5e-8f90-1234567890ab', "
+                    "as cnc_get_device / cnc_list_devices show it) — SWIM maps it to its EMF "
+                    "instance id itself (verified). The numeric EMF instance id (e.g. '454455') "
+                    "is accepted too. NOT a host name (refused before the call: SWIM answers "
+                    "'For input string: \"PE1\"')."
                 ),
                 min_length=1,
                 max_length=100,
@@ -1052,65 +1125,84 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Read-only. ``GET /crosswork/api/v1/op/swim/image/getDeviceRunningImages/
         <device_id>`` -> HTTP 200 ``{"runningSoftwareImageDTOList": {"id",
         "totalCount", "resultErrMsg", "items": [...]}}``. **Device id
-        caveat (verified live)**: SWIM keys devices by a numeric id of its
-        own — the EMF ``nd.instanceId`` answers ``resultErrMsg`` "Get running
-        Image Failed for the Device : Invalid Index" and a host name answers
-        "For input string: \\"PE1\\"" (the inventory uuid was not tried —
-        non-numeric, so presumably refused too); no way to look the id up
-        has been found on this build, so the tool
-        exists for the day an id is known (the document's example is
-        ``460460``). Any ``resultErrMsg`` other than ``Success`` is reported
-        as "Error: SWIM could not read the running images of '<id>': <msg>";
-        a ``Success`` with no items is a non-error "No running image". The
-        item shape follows the 7.2 document (unverified): ``deviceName``,
-        ``imageName`` / ``imageFileName``, ``version``, ``imageType``,
-        ``imageFamily``, ``features``, ``size``, ``installableStatus``
-        (ACTIVE / INACTIVE / COMMITTED ...), ``installedLocation`` (disk0
-        ...), ``inRepository``. For the software version Crosswork's
-        inventory reports use cnc_get_device instead.
+        (verified live 2026-09-14)**: pass the device's INVENTORY uuid —
+        SWIM translates it to the EMF ``nd.instanceId`` itself and the
+        answer's ``id`` is that numeric id (reported as ``emf_instance_id``;
+        the numeric id is accepted directly too). The uuid is sent verbatim
+        (strip only); anything that is neither a uuid nor digits — a host
+        name — is refused BEFORE the call, because SWIM answers it with
+        ``resultErrMsg`` "For input string: \\"PE1\\"" (Java's number-parse
+        failure) inside HTTP 200. ``resultErrMsg`` "Get running Image Failed
+        for the Device : Invalid Index" means SWIM holds NO software-image
+        inventory for that device — the platform is not SWIM-certified
+        (the lab's containerised XRd is ``DEVICE_SUPPORT_LEVEL_UNCERTIFIED``
+        and SWIM's XR image collector has nothing to parse there) or its
+        image inventory was never collected — a platform limitation, NOT a
+        wrong id: reported as "Error: SWIM holds no software-image
+        inventory for device <id> ...". ``Success`` with no items is the
+        non-error "No running image". The item shape follows the 7.2
+        document (unverified — no SWIM-certified device was available):
+        ``deviceName``, ``imageName`` / ``imageFileName``, ``version``,
+        ``imageType``, ``imageFamily``, ``features``, ``size``,
+        ``installableStatus`` (ACTIVE / INACTIVE / COMMITTED ...),
+        ``installedLocation`` (disk0 ...), ``inRepository``. For the
+        software version Crosswork's inventory reports use cnc_get_device
+        instead — it works for every device, certified or not.
 
         Args:
-            device_id: SWIM's numeric device id.
+            device_id: the device's inventory uuid (or its numeric EMF instance id).
             response_format: markdown or json.
 
         Returns:
-            str: Markdown "# Running images of <deviceName> (SWIM device
-            <id>): N" with one "- **image** vversion: status on location,
-            type family, file ..." line each, or JSON {"device_id",
+            str: Markdown "# Running images of <deviceName> (device <id> =
+            EMF instance id <n>): N" with one "- **image** vversion: status
+            on location, type family, file ..." line each, or JSON
+            {"device_id" (as given), "emf_instance_id" (the answer's id),
             "device_name", "count", "total", "items": [<running image
-            view>]}. "No running image reported for SWIM device <id>."
-            when the list is empty. "Error: SWIM could not read the running
-            images of '<id>': <msg> (SWIM wants its own numeric device id;
-            ...)" for a refused id; "Error: ..." on an API failure.
+            view>]}. "No running image reported for device <id> ..." when
+            the list is empty. "Error: SWIM holds no software-image
+            inventory for device <id> (SWIM answered: <resultErrMsg>) — the
+            device's platform is not SWIM-certified ... or its image
+            inventory was never collected; the inventory uuid is the right
+            id (SWIM maps it to EMF instance id <n>)." for Invalid Index;
+            "Error: device_id '<text>' is neither an inventory uuid nor a
+            numeric EMF instance id ..." for a host name (no call made);
+            "Error: ..." on an API failure.
         """
         try:
-            wanted = device_id.strip()
+            wanted = validate_swim_device_id(device_id)
             data = await get_json(f"{SWIM_RUNNING_IMAGES_URL}/{quote(wanted, safe='')}")
             listing = running_list_of(data)
+            emf_id = listing.get("id")
             message = listing.get("resultErrMsg")
             if isinstance(message, str) and message.strip():
                 if message.strip().lower() != SWIM_SUCCESS.lower():
-                    raise swim_running_error(wanted, message.strip())
+                    raise swim_running_error(wanted, message.strip(), emf_id)
             images = dict_list(listing.get("items"))
             views = [running_image_view(i) for i in images]
             device_name = next((v["deviceName"] for v in views if v.get("deviceName")), None)
             if response_format is ResponseFormat.JSON:
                 payload = {
                     "device_id": wanted,
+                    "emf_instance_id": _text(emf_id, "") or None,
                     "device_name": device_name,
                     "count": len(views),
                     "total": as_int(listing.get("totalCount")),
                     "items": views,
                 }
                 return finalize(to_json(payload), settings)
+            mapped = _text(emf_id, "")
+            label = f"device {wanted}"
+            if mapped and mapped != wanted:
+                label += f" = EMF instance id {mapped}"
             if not views:
                 return finalize(
-                    f"No running image reported for SWIM device {wanted} (SWIM answered "
+                    f"No running image reported for {label} (SWIM answered "
                     f"{_text(message, 'no resultErrMsg')} with an empty list).",
                     settings,
                 )
             lines = [
-                f"# Running images of {device_name or '?'} (SWIM device {wanted}): {len(views)}",
+                f"# Running images of {device_name or '?'} ({label}): {len(views)}",
                 "",
             ]
             lines.extend(running_image_line(v) for v in views)

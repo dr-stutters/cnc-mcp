@@ -439,8 +439,16 @@ def vpn_service_url(layer: VpnLayer, vpn_id: str) -> str:
     return f"{vpn_services_url(layer)}={encode_key(vpn_id)}"
 
 
+# Verified 2026-09-14 with a live L3VPN: the batch list and the per-service
+# oper-status are readable ONLY with ``content=nonconfig`` — without it the batch
+# GET answers 409 data-missing even when services exist, and the ``/status/oper-status``
+# sub-path answers 409 for an existing service (only the node itself is readable).
+NONCONFIG = {"content": "nonconfig"}
+
+
 def vpn_oper_status_url(layer: VpnLayer, vpn_id: str) -> str:
-    return f"{vpn_service_url(layer, vpn_id)}/status/oper-status"
+    """The keyed CAT GET read with ``content=nonconfig`` — the oper-status view of one VPN."""
+    return vpn_service_url(layer, vpn_id)
 
 
 def vpn_underlay_url(layer: VpnLayer, vpn_id: str) -> str:
@@ -1772,24 +1780,25 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         """List the L3 (or L2) VPN services with their operational data from the CAT NBI.
 
         Read-only. ``GET /crosswork/nbi/cat-inventory/v1/restconf/data/
-        ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service?offset=N&limit=N``
-        (``ietf-l2vpn-ntw:l2vpn-ntw`` for l2) with ``Accept: application/
-        yang-data+json`` — the batch form; the same path without parameters
-        answers 400 missing-attribute and any other parameter 400
-        unknown-attribute (verified). **When no service exists the batch GET
-        answers 409 data-missing** (verified) — reported as "No L3 VPN
-        services." rather than an error. The 200 shape is the one in Cisco's
-        own capture of this GET (the service-inventory example of the CNC API
-        examples; not reproducible on the lab, whose PEs run no BGP):
+        ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service?offset=N&limit=N&
+        content=nonconfig`` (``ietf-l2vpn-ntw:l2vpn-ntw`` for l2) with
+        ``Accept: application/yang-data+json`` — the batch form. Verified
+        2026-09-14 with a live L3VPN: ``content=nonconfig`` is REQUIRED —
+        without it (or with config/all) the batch GET answers 409
+        data-missing even when services exist; without offset/limit it
+        answers 400 missing-attribute. **When no service exists the batch GET
+        answers 409 data-missing** too — reported as "No L3 VPN services."
+        rather than an error. The verified 200 shape:
         ``ietf-l3vpn-ntw:vpn-service[{vpn-id, status{oper-status{status
         "ietf-vpn-common:op-up|op-down|op-unknown", last-change?}},
         underlay-transport{cisco-l3vpn-ntw:discovered-underlay-transport
         {sr-policy-ref[{headend, color, endpoint}], te-tunnel-ref[{tunnel-id,
-        source, destination}]}}}]`` — **operational data only**: the
-        topology and the nodes are configuration intent and are NOT in this
-        answer (cnc_get_service on the NSO yang-path has them). Each line
-        shows vpn-id, oper-status and the discovered underlay counts; keys
-        the renderer does not know stay in the JSON output.
+        source, destination}]}}?}]`` — **operational data only** (op-unknown
+        while Service Health is not monitoring the VPN): the topology and the
+        nodes are configuration intent, read with cnc_get_vpn_service (the
+        keyed CAT GET carries them) or cnc_get_service. Each line shows
+        vpn-id, oper-status and the discovered underlay counts; keys the
+        renderer does not know stay in the JSON output.
 
         Args:
             layer: 'l3' | 'l2'.
@@ -1806,7 +1815,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         try:
             model = vpn_layer(layer)
             found, data = await restconf_get(
-                vpn_services_url(model), params={"offset": offset, "limit": limit}
+                vpn_services_url(model), params={"offset": offset, "limit": limit, **NONCONFIG}
             )
             services = (
                 [s for s in unwrap_list(data, model.module, "vpn-service") if isinstance(s, dict)]
@@ -1922,16 +1931,18 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     ) -> str:
         """Get the operational status (health) of one L3/L2 VPN service.
 
-        Read-only. ``GET .../vpn-service=<vpn-id>/status/oper-status`` on the
-        CAT NBI -> ``{"ietf-l3vpn-ntw:oper-status": {"status": "<identity>",
-        "last-change": "<date-and-time>"}}`` (the 7.2 operational-data
-        document's shape; the identities are ``ietf-vpn-common:op-up`` /
-        ``op-down`` / ``op-unknown`` — Cisco's own capture of the parent
-        entry shows ``op-unknown`` without ``last-change``; not reproducible
-        on the lab, no VPN could be committed). This is the service-assurance verdict
-        Crosswork derives for the VPN, distinct from NSO's plan status
-        (cnc_get_service_plan: did the commit apply?). A missing service
-        answers 409 data-missing (verified) -> "Error: no ... VPN service".
+        Read-only. ``GET .../vpn-service=<vpn-id>?content=nonconfig`` on the
+        CAT NBI -> ``{"ietf-l3vpn-ntw:vpn-service": [{"vpn-id", "status":
+        {"oper-status": {"status": "<identity>", "last-change"?}}}]}``
+        (verified 2026-09-14 on a live L3VPN: ``ietf-vpn-common:op-unknown``
+        while Service Health is not monitoring it; the identities are
+        ``op-up`` / ``op-down`` / ``op-unknown``). The document's
+        ``/status/oper-status`` sub-path answers 409 data-missing even for an
+        existing service (verified), so the tool reads the node itself. This
+        is the service-assurance verdict Crosswork derives for the VPN,
+        distinct from NSO's plan status (cnc_get_service_plan: did the commit
+        apply?). A missing service answers 409 data-missing (verified) ->
+        "Error: no ... VPN service".
 
         Args:
             vpn_id: the vpn-id.
@@ -1945,15 +1956,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         try:
             model = vpn_layer(layer)
             key = vpn_id.strip()
-            found, data = await restconf_get(vpn_oper_status_url(model, key))
+            found, data = await restconf_get(vpn_oper_status_url(model, key), params=NONCONFIG)
             if not found:
                 raise PlatformError(
                     f"no {model.layer.upper()} VPN service '{key}' (409 data-missing); list them "
                     "with cnc_list_vpn_services."
                 )
-            oper = field(data, "oper-status") if isinstance(data, dict) else None
+            entries = [
+                e for e in unwrap_list(data, model.module, "vpn-service") if isinstance(e, dict)
+            ]
+            status_node = field(entries[0], "status") if entries else None
+            oper = field(status_node, "oper-status") if isinstance(status_node, dict) else None
             if not isinstance(oper, dict):
-                oper = data if isinstance(data, dict) else {}
+                oper = {}
             status = _short_identity(field(oper, "status"))
             head = f"{model.layer.upper()} VPN service {key}: oper-status {status}"
             if field(oper, "last-change"):

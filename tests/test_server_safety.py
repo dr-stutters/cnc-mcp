@@ -59,6 +59,8 @@ WRITE_TOOLS = {
     "cnc_reactivate_probe",
     "cnc_run_inventory_scheduler_job",
     "cnc_suspend_inventory_scheduler_job",
+    "cnc_update_credential_profile",
+    "cnc_enable_device_gnmi",
 }
 
 

@@ -21,7 +21,7 @@ analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**233 tools** (174 read, 59 write) over 24 API areas. Every tool was built from
+**235 tools** (174 read, 61 write) over 24 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -105,8 +105,8 @@ the MCP `destructive` annotation:
 
 | Area | Tools |
 |---|---|
-| **Devices** | `cnc_create_device` · `cnc_update_device` · `cnc_delete_device` |
-| **Credential profiles** | `cnc_create_credential_profile` · `cnc_delete_credential_profile` |
+| **Devices** | `cnc_create_device` · `cnc_update_device` · `cnc_delete_device` · `cnc_enable_device_gnmi` |
+| **Credential profiles** | `cnc_create_credential_profile` · `cnc_update_credential_profile` · `cnc_delete_credential_profile` |
 | **Providers** | `cnc_create_provider` · `cnc_update_provider` · `cnc_delete_provider` |
 | **Data Gateway** | `cnc_map_devices_to_data_gateway` |
 | **NSO** | `cnc_nso_device_action` (check-sync / sync-from / connect / compare-config …) · `cnc_nso_sync_to_device` · `cnc_sync_inventory_with_nso` |
@@ -221,7 +221,9 @@ layers were used:
 The instance was a single-VM CNC 7.2.0 deployment with embedded NSO and
 Data Gateway, fed by a Cisco Modeling Labs fabric of five IOS-XRd routers
 running IS-IS + SR-MPLS, one of them acting as SR-PCE (BGP-LS + PCEP, feeding
-CNC over gRPC) with two PCE-delegated SR policies between the PEs. Each
+CNC over gRPC) with two PCE-delegated SR policies between the PEs, gNMI
+onboarded on every router, `mpls oam` and a vpnv4 iBGP pair on the PEs (so an
+L3VPN can be committed through the T-SDN function pack and traced end to end). Each
 module was also adversarially reviewed against the recorded facts before it
 was merged; that review caught bugs the tests had enshrined (a "not found"
 check that would have hidden an absent API, an NSO failure that would have
@@ -318,10 +320,21 @@ a platform-notes file kept outside this repository.
   `MISSING_TIME_DETAILS`, …). The NPM analytics service never validates its
   keys: an unknown LSP or interface answers the same empty list as "no data",
   so the tools refuse host names and a zero colour before sending anything.
-- **OAM trace routes resolve devices by inventory uuid only** (names and
-  router-ids are accepted and then fail with "empty device id item in list"),
-  need gNMI connectivity to the routers, and report their verdict in a
-  status code rather than an HTTP error.
+- **OAM trace routes need the full request form** (yang-path, both inventory
+  uuids, service type and name, node names and TE router-ids — with only the
+  uuids the engine answers "No path found" without tracing), gNMI
+  connectivity to the routers and `mpls oam` on them; they report their
+  verdict in a status code rather than an HTTP error. A successful trace
+  returns every ECMP path with per-hop labels and LSP-ping return codes.
+- **Onboarding gNMI on a device takes three PATCHes**: the capability cannot
+  change while the device is admin-up and attached to a Data Gateway, so the
+  tool bounces it admin-down, adds the `ROBOT_MSVC_TRANS_GNMI` transport
+  (whose `encoding_type` is mandatory) plus the `GNMI` capability, and brings
+  it back up. The credential profile must already carry a gNMI login — and a
+  credential PUT is a full replace: an entry left out is removed.
+- **CAT's VPN operational reads need `content=nonconfig`** (the batch list
+  answers 409 without it even when services exist; `/status/oper-status` is
+  never readable as a sub-path — only the service node itself).
 - **The EMS job scheduler takes raw text bodies** (`Failed Feature
   Sync:Inventory`, no JSON quoting) and answers a bare `true`/`false` with
   HTTP 200 either way; its job list refuses to answer without a `Range`

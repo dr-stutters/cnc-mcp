@@ -2671,6 +2671,189 @@
         "job_name": "Failed Feature Sync"
       },
       "phase": "write"
+    },
+    {
+      "tool": "cnc_create_credential_profile",
+      "args": {
+        "profile": "cml-xrd",
+        "ssh_username": "smoke",
+        "ssh_password": "smoke-not-a-real-secret"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_credential_profile",
+      "args": {
+        "profile": "smoke-gnmi-creds",
+        "ssh_username": "changeme",
+        "ssh_password": "changeme",
+        "gnmi_username": "changeme",
+        "gnmi_password": "changeme",
+        "grpc_username": "changeme",
+        "grpc_password": "changeme",
+        "snmpv2_read_community": "public"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "smoke-gnmi-creds"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_update_credential_profile",
+      "args": {
+        "profile": "smoke-gnmi-creds",
+        "ssh_username": "changeme",
+        "ssh_password": "changeme",
+        "gnmi_username": "changeme",
+        "gnmi_password": "changeme",
+        "snmpv2_read_community": "public"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "smoke-gnmi-creds",
+        "response_format": "json"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_update_credential_profile",
+      "args": {
+        "profile": "nope-profile",
+        "ssh_username": "changeme",
+        "ssh_password": "changeme"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_credential_profile",
+      "args": {
+        "profile": "smoke-gnmi-creds"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_update_credential_profile",
+      "args": {
+        "profile": "cml-xrd",
+        "ssh_username": "changeme",
+        "ssh_password": "changeme",
+        "http_username": "changeme",
+        "http_password": "changeme",
+        "grpc_username": "changeme",
+        "grpc_password": "changeme",
+        "gnmi_username": "changeme",
+        "gnmi_password": "changeme",
+        "snmpv2_read_community": "public"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_credential_profile",
+      "args": {
+        "profile": "cml-xrd"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_enable_device_gnmi",
+      "args": {
+        "uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "wait_seconds": 0
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_enable_device_gnmi",
+      "args": {
+        "uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "encoding": "BOGUS"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback91\", \"address\": \"10.91.2.1\", \"prefix_length\": 30, \"local_as\": 65000}]"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_service_plan",
+      "args": {
+        "plan_yang_path": "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=smoke-l3vpn-1",
+        "timeout_seconds": 90
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_list_vpn_services",
+      "args": {
+        "layer": "l3"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_vpn_service_health",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_start_oam_trace_route",
+      "args": {
+        "service_yang_path": "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=smoke-l3vpn-1",
+        "headend_uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "endpoint_uuid": "ec35be58-de93-49e5-891b-a1c4a11c72e4"
+      },
+      "capture": {
+        "oam_qid": "query_id"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_oam_trace_route",
+      "args": {
+        "query_id": "$oam_qid",
+        "timeout_seconds": 120,
+        "interval_seconds": 10
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_oam_trace_route",
+      "args": {
+        "query_id": "$oam_qid"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_oam_trace_route",
+      "args": {
+        "query_id": "$oam_qid",
+        "response_format": "json"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_vpn_service",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1"
+      },
+      "phase": "write"
     }
   ]
 }

@@ -491,11 +491,28 @@ L3VPN_SERVICE_WITH_NODES = {
         }
     ]
 }
+# Verified 2026-09-14: GET vpn-service=<id>?content=nonconfig answers the node with its
+# status only (the /status/oper-status sub-path answers 409 even for a live service).
 OPER_STATUS = {
-    "ietf-l3vpn-ntw:oper-status": {
-        "status": "ietf-vpn-common:op-up",
-        "last-change": "2026-09-13T11:00:00Z",
-    }
+    "ietf-l3vpn-ntw:vpn-service": [
+        {
+            "vpn-id": "mcp-l3vpn-91",
+            "status": {
+                "oper-status": {
+                    "status": "ietf-vpn-common:op-up",
+                    "last-change": "2026-09-13T11:00:00Z",
+                }
+            },
+        }
+    ]
+}
+OPER_STATUS_UNKNOWN = {
+    "ietf-l3vpn-ntw:vpn-service": [
+        {
+            "vpn-id": "smoke-l3vpn-1",
+            "status": {"oper-status": {"status": "ietf-vpn-common:op-unknown"}},
+        }
+    ]
 }
 # The document spells the augment's leaves with their module prefix; both spellings are read.
 UNDERLAY = {
@@ -1291,7 +1308,8 @@ async def test_list_vpn_services_l3(settings):
     )
     request = route.calls[0].request
     assert_yang(request, body=False)
-    assert dict(request.url.params) == {"offset": "0", "limit": "10"}
+    # Verified 2026-09-14: content=nonconfig is what makes the batch GET answer at all.
+    assert dict(request.url.params) == {"offset": "0", "limit": "10", "content": "nonconfig"}
     assert "# L3 VPN services (1 on this page, offset 0)" in text
     # Cisco's real payload: oper-status and the discovered underlay, never "nodes=0".
     assert (
@@ -1409,22 +1427,27 @@ async def test_get_vpn_service_cat_404_is_never_a_not_found(settings):
 
 @respx.mock
 async def test_get_vpn_service_health(settings):
-    route = respx.get(f"{L3VPN_LIST_URL}=mcp-l3vpn-91/status/oper-status").mock(
-        return_value=ok(OPER_STATUS)
-    )
+    route = respx.get(f"{L3VPN_LIST_URL}=mcp-l3vpn-91").mock(return_value=ok(OPER_STATUS))
     text = await call_tool_text(
         build(settings), "cnc_get_vpn_service_health", {"vpn_id": "mcp-l3vpn-91"}
     )
     assert_yang(route.calls[0].request, body=False)
+    assert dict(route.calls[0].request.url.params) == {"content": "nonconfig"}
     assert text.startswith(
         "L3 VPN service mcp-l3vpn-91: oper-status op-up (last change 2026-09-13T11:00:00Z)"
     )
     assert '"status": "ietf-vpn-common:op-up"' in text
+    respx.get(f"{L3VPN_LIST_URL}=smoke-l3vpn-1").mock(return_value=ok(OPER_STATUS_UNKNOWN))
+    text = await call_tool_text(
+        build(settings), "cnc_get_vpn_service_health", {"vpn_id": "smoke-l3vpn-1"}
+    )
+    assert text.startswith("L3 VPN service smoke-l3vpn-1: oper-status op-unknown")
+    assert "last change" not in text
 
 
 @respx.mock
 async def test_get_vpn_service_health_not_found(settings):
-    respx.get(f"{L2VPN_LIST_URL}=nope/status/oper-status").mock(return_value=DATA_MISSING_409)
+    respx.get(f"{L2VPN_LIST_URL}=nope").mock(return_value=DATA_MISSING_409)
     text = await call_tool_text(
         build(settings), "cnc_get_vpn_service_health", {"vpn_id": "nope", "layer": "l2"}
     )
@@ -1433,7 +1456,7 @@ async def test_get_vpn_service_health_not_found(settings):
 
 @respx.mock
 async def test_get_vpn_service_health_error(settings):
-    respx.get(f"{L3VPN_LIST_URL}=mcp-l3vpn-91/status/oper-status").mock(return_value=MALFORMED_400)
+    respx.get(f"{L3VPN_LIST_URL}=mcp-l3vpn-91").mock(return_value=MALFORMED_400)
     text = await call_tool_text(
         build(settings), "cnc_get_vpn_service_health", {"vpn_id": "mcp-l3vpn-91"}
     )

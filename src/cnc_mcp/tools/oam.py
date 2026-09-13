@@ -34,35 +34,59 @@ Wire facts (verified live on Crosswork 7.2, 2026-09-13 — platform notes,
   ServiceRoute. An unknown id is answered **HTTP 200 with status 6**,
   ``status-message "Route not found for selected ID"`` and every string
   empty — not an error on the wire; the tools report it as one.
-- ``set-oam-trace-route-by-calc`` ``{"input": {"yang-path",
-  "head-end-node-uuid", "tail-end-node-uuid"}}`` -> status 3 "Path trace
-  registered for calculation" with the new ``query-id``; polling then shows
-  status 3 "Path trace running for calculation" and, ~30 s later, the
-  verdict. Only **inventory uuids** identify the devices: node names
-  (``head-end-node-name``) and TE router-ids are accepted (status 3) but the
-  query fails within a second with status 5 "Path cannot be traced until the
-  device configuration is completed, please check the device for enabling
-  'mpls oam' configuration.(Could not register collection job ... empty device
-  id item in list)". ``transport-type`` 1/2/3 fails with "Invalid Transport
-  Type" — it is never sent (0 / absent).
-- Status codes seen: **3** registered / running, **5** failed (the reason is
-  the ``status-message``), **6** unknown query-id. A completed trace
-  presumably carries **4** (unverified: no trace could complete on the lab)
-  and the ``path-info-list``. Times are epoch-milliseconds sent as decimal
-  STRINGS (``"1789324616899.0"``), rendered ISO-8601 here.
+- ``set-oam-trace-route-by-calc`` -> status 3 "Path trace registered for
+  calculation" with the new ``query-id``; polling then shows status 3 "Path
+  trace running for calculation" and, 10-30 s later, the verdict. **The
+  input form matters (verified 2026-09-14 with gNMI on every device)**: the
+  short form ``{"input": {"yang-path", "head-end-node-uuid",
+  "tail-end-node-uuid"}}`` (with or without ``transport-type 0``) completes
+  at once with status 4 "No path found between the selected devices" WITHOUT
+  running anything on the router; only the FULL form ``{"yang-path",
+  "head-end-node-uuid", "tail-end-node-uuid", "service-type": "policy",
+  "service-name": "<key>", "head-end-node-name": "PE1", "tail-end-node-name":
+  "PE2", "head-end-te-router-id": "10.0.0.1", "tail-end-te-router-id":
+  "10.0.0.3"}`` makes the engine run the LSP trace over gNMI on the head-end
+  — ``service-type`` is the CAT label, ``service-name`` the yang-path's list
+  key, the node names the inventory ``host_name`` and the router-ids the
+  inventory ``routing_info.te_router_id``, so cnc_start_oam_trace_route
+  resolves them and always sends the full form. Still, only **inventory
+  uuids** identify the devices: node names and router-ids WITHOUT the uuids
+  are accepted (status 3) but the query fails within a second with status 5
+  "Path cannot be traced until the device configuration is completed, please
+  check the device for enabling 'mpls oam' configuration.(Could not register
+  collection job ... empty device id item in list)". ``transport-type`` 1/2/3
+  fails with "Invalid Transport Type" — it is never sent (0 / absent).
+- Status codes seen (all verified): **3** registered / running, **4**
+  completed (verified 2026-09-14: ``status 4, status-message "No path found
+  between the selected devices", available-path-count 0`` after ~10 s — a
+  completed verdict with zero paths, seen ONLY for the short form on a
+  ``policy`` service; a full-form status 4 has not been observed — the
+  verified full-form traces ended in status 5 — and a trace that finds
+  paths carries them in ``path-info-list`` per the document), **5** failed
+  (the reason is the ``status-message``), **6** unknown query-id. Times are
+  epoch-milliseconds sent as decimal STRINGS (``"1789324616899.0"``),
+  rendered ISO-8601 here.
 
-The lab limits. The lab devices are managed over SNMP + SSH only — no gNMI
-connectivity type in the inventory — so every trace there fails with status 5
-"Unable to trace the path and request got timed out. Check below and try
-again: - Devices are running IOS-XR 7.3.2 or later - GNMI is enabled on the
-devices. - GNMI port of device in crosswork is configured as per the device.
-- GNMI connectivity type specified in Crosswork for the devices". That text is
-the platform's verdict on the network, not an API failure, and the tools
-return it without an ``Error:`` prefix. The empty-500 rule of the other COE
-modules applies (a bare HTTP 500 with an empty body), but on the OAM RPCs
-every verified bad-input answer is an HTTP 200 (status 5 / 6), so an empty
-500 here points first at an absent or down Optimization Engine backend
-(:data:`OAM_EMPTY_500_HINT`).
+What the network needs. Without a **gNMI** connectivity type on the devices
+(the lab's state until 2026-09-14: SNMP + SSH only) every trace fails with
+status 5 "Unable to trace the path and request got timed out. Check below and
+try again: - Devices are running IOS-XR 7.3.2 or later - GNMI is enabled on
+the devices. - GNMI port of device in crosswork is configured as per the
+device. - GNMI connectivity type specified in Crosswork for the devices".
+With gNMI onboarded (cnc_enable_device_gnmi: the gNMI credential, the
+``ROBOT_MSVC_TRANS_GNMI`` transport and the ``GNMI`` capability, applied
+admin-down -> patch -> admin-up) but ``mpls oam`` not configured on IOS-XR,
+the full-form trace runs on the head-end and fails with status 5 "Path cannot
+be traced until the device configuration is completed, please check the
+device for enabling 'mpls oam' configuration.('mpls-lspv' detected the
+'resource not available' condition 'Failed to send a LWM message to the
+server')" — XR's own error (verified 2026-09-14 on the lab, whose routers
+lack ``mpls oam``). Those texts are the platform's verdict on the network,
+not an API failure, and the tools return them without an ``Error:`` prefix.
+The empty-500 rule of the other COE modules applies (a bare HTTP 500 with an
+empty body), but on the OAM RPCs every verified bad-input answer is an HTTP
+200 (status 4 / 5 / 6), so an empty 500 here points first at an absent or
+down Optimization Engine backend (:data:`OAM_EMPTY_500_HINT`).
 
 Service Health probe manager (``/crosswork/probemgr/v1``, plain JSON —
 verified live 2026-09-13). Service Health (the ``capp-aa`` application)
@@ -89,12 +113,14 @@ Not exposed: ``set-oam-delete-interval`` (not exercised live).
 from __future__ import annotations
 
 import uuid as uuid_lib
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
+from urllib.parse import unquote
 
 import httpx
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from cnc_mcp.crosswork import INVENTORY, query_body, unwrap
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, pagination_envelope, to_json
 from cnc_mcp.polling import wait_until
@@ -109,7 +135,12 @@ from cnc_mcp.restconf import (
 )
 from cnc_mcp.safety import AppContext, register_tool
 from cnc_mcp.tools.lcm_csm import dict_list, first_reason, text_of
-from cnc_mcp.tools.services import normalize_yang_path
+from cnc_mcp.tools.services import (
+    SERVICE_TYPE_LABELS,
+    SERVICE_TYPES,
+    normalize_yang_path,
+    service_type_qname,
+)
 
 # The YANG module of every OAM RPC (verified live 2026-09-13).
 OAM_MODULE = "cisco-crosswork-optimization-engine-oam-operations"
@@ -118,13 +149,17 @@ RPC_LIST_TRACE_ROUTES = "get-oam-trace-route-by-query"
 RPC_GET_TRACE_ROUTE = "get-oam-trace-route-by-query-id"
 RPC_START_TRACE_ROUTE = "set-oam-trace-route-by-calc"
 
+# The inventory lookup that turns a device uuid into the host_name and TE router-id
+# the full trace-route form carries (the verified nodes/query grammar of devices.py).
+NODES_QUERY_URL = f"{INVENTORY}/nodes/query"
+
 # Service Health probe manager (Go/JSON; verified routed on the lab).
 PROBEMGR = "/crosswork/probemgr/v1"
 PROBE_STATUS_URL = f"{PROBEMGR}/probeStatusReport"
 REACTIVATE_PROBE_URL = f"{PROBEMGR}/reactivateProbe"
 
-# Trace-route status codes. 3, 5 and 6 verified live; 4 is the presumed "completed"
-# (no trace could complete on the lab). Anything else is shown as "status <n>".
+# Trace-route status codes, all verified live (3, 5, 6 on 2026-09-13; 4 on 2026-09-14
+# once gNMI was onboarded). Anything else is shown as "status <n>".
 TRACE_IN_PROGRESS = 3
 TRACE_COMPLETED = 4
 TRACE_FAILED = 5
@@ -136,6 +171,13 @@ TRACE_STATUS_WORDS: dict[int, str] = {
     TRACE_NOT_FOUND: "not found",
 }
 NOT_FOUND_MESSAGE = "Route not found for selected ID"
+# The verified status-4 verdict with zero paths (completed, not failed).
+NO_PATH_FOUND_MESSAGE = "No path found between the selected devices"
+
+# Service list path (relative to the proxy's /data/) -> the CAT label the RPC's
+# ``service-type`` carries; the seven documented types of services.py.
+SERVICE_TYPE_OF_LIST: dict[str, str] = {t.service_path: t.label for t in SERVICE_TYPES}
+_LABEL_CHOICES = ", ".join(SERVICE_TYPE_LABELS)
 
 # Probe manager enums (7.2 document). Ints are mapped by proto enum order — the
 # document's example carries ints where the schema says strings (unverified).
@@ -189,8 +231,19 @@ _YANG_PATH_DESC = (
 _UUID_DESC = (
     "inventory uuid of the device (e.g. '3d95eb05-6f2a-4c1e-9b7d-0a1b2c3d4e5f'; "
     "cnc_get_device(host_name=...) shows it). Only uuids resolve the device — a node name or "
-    "router-id registers a query that fails within a second. Any uuid spelling is accepted and "
-    "sent in the canonical lower-case hyphenated form."
+    "router-id alone registers a query that fails within a second; the tool looks up the "
+    "device's host_name and te_router_id from the inventory itself. Any uuid spelling is "
+    "accepted and sent in the canonical lower-case hyphenated form."
+)
+_SERVICE_TYPE_DESC = (
+    "Optional override of the RPC's service-type — the CAT label of the service list "
+    f"({_LABEL_CHOICES}; e.g. 'policy'). '' (default) derives it from the yang-path's list "
+    "(cnc_list_service_types shows the labels); pass it only for a service list the tool does "
+    "not know."
+)
+_SERVICE_NAME_DESC = (
+    "Optional override of the RPC's service-name (e.g. 'mcp-policy-91'). '' (default) uses the "
+    "key of the yang-path's last '<list>=<key>' segment, percent-decoded."
 )
 
 
@@ -207,6 +260,36 @@ def oam_time(value: Any) -> str:
         return epoch_iso(int(float(text)))
     except (ValueError, OverflowError):
         return text
+
+
+def oam_epoch_ms(value: Any) -> int | None:
+    """The epoch-milliseconds of an OAM time (``"1789324616899.0"`` -> 1789324616899);
+    ``None`` when blank, zero / negative or unparseable."""
+    text = str(value).strip() if value not in (None, "") else ""
+    if not text:
+        return None
+    try:
+        ms = int(float(text))
+    except (ValueError, OverflowError):
+        return None
+    return ms if ms > 0 else None
+
+
+def verdict_delay_text(route: dict[str, Any]) -> str:
+    """``"; the verdict arrived 10s after registration"`` from ``update-time`` minus
+    ``create-time``, or ``""`` when either is missing or the order is wrong.
+
+    The verified short-form "No path found" verdict came within ~10 s of
+    registration without the engine running anything on the router, so the
+    delay is the one clue that tells a non-trace from a traced-but-empty
+    result; it is rendered so the agent does not have to subtract the ISO
+    times itself.
+    """
+    created = oam_epoch_ms(route.get("create-time"))
+    updated = oam_epoch_ms(route.get("update-time"))
+    if created is None or updated is None or updated < created:
+        return ""
+    return f"; the verdict arrived {(updated - created) / 1000:.0f}s after registration"
 
 
 def trace_status(route: dict[str, Any]) -> int | None:
@@ -279,6 +362,166 @@ def validate_device_uuid(value: str, what: str) -> str:
             f"'{text}') or cnc_list_devices shows the uuid."
         ) from None
     return canonical
+
+
+def split_service_path(yang_path: str) -> tuple[str, str]:
+    """``(list-path, key)`` of a service yang-path's last ``<list>=<key>`` segment.
+
+    ``cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=p91``
+    -> ``("cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy",
+    "p91")``; the key is returned as spelled (callers percent-decode).
+    PlatformError when the last segment carries no key.
+    """
+    head, _sep, last = yang_path.rpartition("/")
+    if "=" not in last:
+        raise PlatformError(
+            f"'{yang_path}' is not a keyed service path: the OAM trace route needs the "
+            "service's own yang-path ('.../<list>=<key>', e.g. 'cisco-sr-te-cfp:sr-te/"
+            "cisco-sr-te-cfp-sr-policies:policies/policy=mcp-policy-91') as cnc_list_services "
+            "returns it — its key is the RPC's service-name."
+        )
+    list_name, _eq, key = last.partition("=")
+    return (f"{head}/{list_name}" if head else list_name), key
+
+
+def service_type_of_list(list_path: str) -> str | None:
+    """The CAT label of one of the seven documented service lists, else ``None``.
+
+    Matches :data:`SERVICE_TYPE_OF_LIST` as given and, when the last segment
+    carries a module prefix (the proxy's ``.../policies/cisco-sr-te-cfp-sr-
+    policies:policy`` spelling next to CAT's ``.../policies/policy``), without it.
+    """
+    label = SERVICE_TYPE_OF_LIST.get(list_path)
+    if label is not None:
+        return label
+    head, _sep, last = list_path.rpartition("/")
+    if ":" not in last:
+        return None
+    bare = last.rsplit(":", 1)[1]
+    return SERVICE_TYPE_OF_LIST.get(f"{head}/{bare}" if head else bare)
+
+
+def canonical_service_type(value: str) -> str:
+    """A ``service_type`` override as the RPC wants it.
+
+    A known label, alias or QName (``sr-policy``, ``{...}policy``) becomes the
+    CAT label (``policy``); anything else — the escape hatch for a service
+    list the table does not know — is sent as given (stripped).
+    """
+    text = value.strip()
+    try:
+        qname = service_type_qname(text)
+    except PlatformError:
+        return text
+    return next((t.label for t in SERVICE_TYPES if t.qname == qname), text)
+
+
+def service_identity(
+    yang_path: str, service_type: str = "", service_name: str = ""
+) -> tuple[str, str]:
+    """``(service-type, service-name)`` for the full trace-route form.
+
+    Verified 2026-09-14: the engine only runs the LSP trace when both are
+    sent. ``service-name`` is the percent-decoded key of the yang-path's last
+    ``<list>=<key>`` segment; ``service-type`` is the CAT label of that list
+    (:data:`SERVICE_TYPE_OF_LIST` — ``policy``, ``odn-template``,
+    ``cs-sr-te-policy``, ``ietf-l3vpn``, ``ietf-l2vpn``, ``slice-service``,
+    ``tunnel``). Non-blank overrides win as given (the type through
+    :func:`canonical_service_type`). PlatformError for an unkeyed path, an
+    empty key, or a list the table does not know when no ``service_type`` is
+    given — all before any call.
+    """
+    type_text = service_type.strip()
+    name_text = service_name.strip()
+    if type_text and name_text:
+        return canonical_service_type(type_text), name_text
+    list_path, key = split_service_path(yang_path)
+    if not name_text:
+        name_text = unquote(key).strip()
+        if not name_text:
+            raise PlatformError(
+                f"'{yang_path}' has an empty key after '=': the RPC's service-name is the "
+                "service's list key (e.g. 'policy=mcp-policy-91'); pass the exact yang-path "
+                "cnc_list_services returns, or service_name explicitly."
+            )
+    if type_text:
+        return canonical_service_type(type_text), name_text
+    label = service_type_of_list(list_path)
+    if label is None:
+        raise PlatformError(
+            f"cannot derive the service-type of '{yang_path}': its list '{list_path}' is none "
+            f"of the seven documented service lists ({_LABEL_CHOICES} — cnc_list_service_types "
+            "shows them), and the engine only runs the trace when service-type is sent. Pass "
+            "service_type='<CAT label>' explicitly, or the yang-path exactly as "
+            "cnc_list_services returns it."
+        )
+    return label, name_text
+
+
+class TraceEnd(NamedTuple):
+    """One end of a trace as the full RPC form names it: uuid, host_name, TE router-id."""
+
+    uuid: str
+    name: str
+    te_router_id: str
+
+
+def trace_end_of_node(node: dict[str, Any], device_uuid: str, what: str) -> TraceEnd:
+    """The :class:`TraceEnd` of an inventory node; PlatformError when a field is missing.
+
+    The full form needs the ``host_name`` and ``routing_info.te_router_id``
+    the inventory holds for the device; a device without a TE router-id (it
+    is how Crosswork matches the inventory device to its topology node) is
+    refused before any RPC with the cnc_update_device fix.
+    """
+    name = text_of(node.get("host_name"))
+    routing = node.get("routing_info")
+    router_id = text_of(routing.get("te_router_id")) if isinstance(routing, dict) else ""
+    if not name:
+        raise PlatformError(
+            f"the inventory device {what} '{device_uuid}' has no host_name, which the OAM "
+            "trace route's full input form needs as the node name; cnc_get_device(uuid="
+            f"'{device_uuid}') shows the record."
+        )
+    if not router_id:
+        raise PlatformError(
+            f"{what} {name} ('{device_uuid}') has no te_router_id in the inventory. The OAM "
+            "trace route only runs on the FULL input form, which carries the head-end / "
+            "tail-end TE router-ids (verified: without the full form the engine answers 'No "
+            "path found' at once without tracing; omitting only the router-ids was not "
+            "tested), and Crosswork matches the device to its topology node by that id. Set "
+            "it with "
+            f"cnc_update_device(uuid='{device_uuid}', te_router_id='<the device's TE router-id "
+            "/ loopback, e.g. 10.0.0.1>') (cnc_list_topology_nodes shows the router-ids the "
+            "SR-PCE reports), then start the trace again."
+        )
+    return TraceEnd(device_uuid, name, router_id)
+
+
+def start_trace_body(
+    yang_path: str, service_type: str, service_name: str, head: TraceEnd, tail: TraceEnd
+) -> dict[str, dict[str, Any]]:
+    """The FULL ``set-oam-trace-route-by-calc`` input (verified 2026-09-14 — the only form
+    that makes the engine run the LSP trace over gNMI). ``transport-type`` is never sent."""
+    return rpc_body(
+        **{
+            "yang-path": yang_path,
+            "head-end-node-uuid": head.uuid,
+            "tail-end-node-uuid": tail.uuid,
+            "service-type": service_type,
+            "service-name": service_name,
+            "head-end-node-name": head.name,
+            "tail-end-node-name": tail.name,
+            "head-end-te-router-id": head.te_router_id,
+            "tail-end-te-router-id": tail.te_router_id,
+        }
+    )
+
+
+def completed_without_paths(route: dict[str, Any]) -> bool:
+    """True for a status-4 route carrying no ``path-info-list`` entries — the verified
+    "No path found between the selected devices" verdict (completed, zero paths)."""
+    return trace_status(route) == TRACE_COMPLETED and not dict_list(route.get("path-info-list"))
 
 
 def enum_word(value: Any, names: tuple[str, ...]) -> str:
@@ -394,8 +637,50 @@ def status_line(route: dict[str, Any]) -> str:
     return status_word(trace_status(route)) + (f": {message}" if message else "")
 
 
+# ``path-details`` is the UI's own markup (verified live 2026-09-14): hops separated
+# by newlines, fields by " | ", each field prefixed "#BOLD_WORD#" and spelled
+# "<name>:<value>" — e.g. "#BOLD_WORD#Hop index:0 | #BOLD_WORD#Hop origin IP:10.0.0.1
+# | #BOLD_WORD#Hop destination IP:10.1.4.1 | #BOLD_WORD#MRU:1500 |
+# #BOLD_WORD#Labels:[16003] | #BOLD_WORD#ret code:0 | #BOLD_WORD#multipaths:0".
+_DETAIL_MARK = "#BOLD_WORD#"
+
+
+def hop_lines(details: str) -> list[str]:
+    """Render the ``path-details`` markup as one readable line per hop.
+
+    Each hop keeps its fields in the platform's order with the markup and the
+    ``Hop `` prefixes stripped (``origin IP 10.0.0.1, destination IP 10.1.4.1,
+    MRU 1500, Labels [16003], ret code 0, multipaths 0``); a hop that does not
+    parse is emitted verbatim (minus the markup) so nothing is lost.
+    """
+    lines: list[str] = []
+    for raw in details.replace("\r", "").split("\n"):
+        hop = raw.strip()
+        if not hop:
+            continue
+        fields = [f.strip() for f in hop.replace(_DETAIL_MARK, "").split(" | ") if f.strip()]
+        rendered: list[str] = []
+        index = None
+        for field_text in fields:
+            name, sep, value = field_text.partition(":")
+            if not sep:
+                rendered.append(field_text)
+                continue
+            name = name.strip()
+            value = value.strip()
+            if name.lower() == "hop index":
+                index = value
+                continue
+            if name.lower().startswith("hop "):
+                name = name[4:]
+            rendered.append(f"{name} {value}")
+        label = f"hop {index}" if index is not None else "hop"
+        lines.append(f"    - {label}: {', '.join(rendered)}" if rendered else f"    - {label}")
+    return lines
+
+
 def path_line(entry: dict[str, Any]) -> str:
-    """One ``path-info-list[]`` entry (document shape, unverified live)."""
+    """One ``path-info-list[]`` entry (verified live 2026-09-14 on a successful L3VPN trace)."""
     info = entry.get("path-info") if isinstance(entry.get("path-info"), dict) else {}
     hops = f"{text_of(info.get('source')) or '?'} -> {text_of(info.get('destination')) or '?'}"
     next_hop = text_of(info.get("next-hop"))
@@ -411,10 +696,11 @@ def path_line(entry: dict[str, Any]) -> str:
     devices = str_list(info.get("device-uuids"))
     if devices:
         parts.append("devices " + ", ".join(devices))
+    line = "; ".join(parts)
     details = text_of(info.get("path-details"))
     if details:
-        parts.append(f"details {details}")
-    return "; ".join(parts)
+        line += "\n" + "\n".join(hop_lines(details))
+    return line
 
 
 def route_lines(route: dict[str, Any]) -> list[str]:
@@ -449,10 +735,34 @@ def route_footer(route: dict[str, Any], query_id: str) -> str:
         )
     if code == TRACE_FAILED:
         return (
-            "The status-message is the platform's verdict (typically: no gNMI connectivity "
-            "type configured for the devices in Crosswork, or 'mpls oam' missing on the "
-            "IOS-XR device). A failed query is not re-run — fix the cause and start a new "
-            "trace with cnc_start_oam_trace_route."
+            "The status-message is the platform's verdict (verified texts: the gNMI list — no "
+            "gNMI connectivity type on the devices in Crosswork, cnc_enable_device_gnmi adds "
+            "it; the 'mpls oam' text with XR's 'mpls-lspv ... resource not available' — the "
+            "head-end has no 'mpls oam' configured; the 'mpls oam' text with 'empty device id "
+            "item in list' — the query was registered without inventory uuids). A failed "
+            "query is not re-run — fix the cause and start a new trace with "
+            "cnc_start_oam_trace_route."
+        )
+    if completed_without_paths(route):
+        return (
+            "Completed with ZERO paths — the engine's verdict, not a failure (verified: status "
+            f"4 '{NO_PATH_FOUND_MESSAGE}'). Caveat: that verdict was verified only for the "
+            "SHORT input form (yang-path + the two uuids, as another client may register it) "
+            "on a 'policy' service, where the engine answers it at once WITHOUT tracing "
+            "anything on the router; a FULL-form query (the one cnc_start_oam_trace_route "
+            "registers: service-type/name, node names and TE router-ids) answering status 4 "
+            "has NOT been observed live — the verified full-form traces ended in status 5. So "
+            f"judge it by its timing (both times are shown above{verdict_delay_text(route)}): "
+            "a verdict within seconds of create-time (the short form's arrived within ~10 s) "
+            "most likely means the engine did not trace at all — re-check that service-type "
+            "is the CAT label the engine expects and service-name the service's list key "
+            "(only 'policy' is verified on the wire; cnc_list_services shows the yang-path, "
+            "and the service_type / service_name overrides of cnc_start_oam_trace_route pass "
+            "them explicitly). A verdict that took as long as a real trace points at the "
+            "service instead: check it is operational (cnc_get_service_plan / "
+            "cnc_list_sr_policies for the policy on the head-end) and that the two devices "
+            "are its real end-points. The query is auto-deleted after the OAM delete interval "
+            "(cnc_get_oam_settings)."
         )
     return (
         "Each path entry names the source, destination, next-hop and out-interface the "
@@ -467,14 +777,15 @@ def start_summary(route: dict[str, Any], query_id: str) -> str:
     Verified: the RPC answers status 3 (registered) and the verdict arrives
     on polling. Should it ever answer a terminal state directly — 5 (the
     "empty device id item in list" failure arrives within a second, so a slow
-    RPC could carry it), the presumed 4, or anything else — there is nothing
-    to wait for, so the "Next: wait" hint is only given for status 3.
+    RPC could carry it), 4 (the short form's immediate "No path found"), or
+    anything else — there is nothing to wait for, so the "Next: wait" hint is
+    only given for status 3.
     """
     code = trace_status(route)
     if code == TRACE_IN_PROGRESS:
         return (
             f"OAM trace route registered: query-id {query_id}, {status_line(route)}. "
-            f"Next: cnc_wait_for_oam_trace_route(query_id='{query_id}') (about 30 s to a "
+            f"Next: cnc_wait_for_oam_trace_route(query_id='{query_id}') (10-30 s to a "
             "verdict on the verified build)."
         )
     if code == TRACE_FAILED:
@@ -483,6 +794,11 @@ def start_summary(route: dict[str, Any], query_id: str) -> str:
             f"OAM trace route {query_id} was registered but FAILED immediately: {message}. "
             "Nothing to wait for — a failed query is not re-run; fix the cause and start a new "
             "trace with cnc_start_oam_trace_route."
+        )
+    if completed_without_paths(route):
+        return (
+            f"OAM trace route {query_id} completed immediately with 0 paths: "
+            f"{status_line(route)}. Nothing to wait for — see the note below."
         )
     if code == TRACE_COMPLETED:
         return (
@@ -641,6 +957,38 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "(empty output). Retry; if it persists the OAM backend is not answering."
             )
         return route
+
+    async def trace_end_of(device_uuid: str, what: str) -> TraceEnd:
+        """The host_name and TE router-id of one inventory device, by uuid.
+
+        ``POST /crosswork/inventory/v1/nodes/query {"filter": {"uuid": ...},
+        "filterData": {"PageSize": 1, "PageNum": 0, ...}}`` — the verified
+        grammar of devices.py (a read: auto-retried). The match is checked
+        client-side (an inventory filter Crosswork does not honour returns the
+        unfiltered set); an unknown uuid is a PlatformError before any RPC.
+        """
+        data = await client.request_json(
+            "POST",
+            NODES_QUERY_URL,
+            json_body=query_body({"uuid": device_uuid}, page_size=1, page=0),
+            retryable=True,
+        )
+        nodes, _result_count, _total = unwrap(data, "data")
+        node = next(
+            (
+                n
+                for n in nodes
+                if isinstance(n, dict) and text_of(n.get("uuid")).lower() == device_uuid
+            ),
+            None,
+        )
+        if node is None:
+            raise PlatformError(
+                f"{what} '{device_uuid}' is not an inventory device (nodes/query answered no "
+                "device with that uuid), so the trace was not registered. cnc_list_devices "
+                "shows the inventory; cnc_get_device(host_name='<name>') shows a device's uuid."
+            )
+        return trace_end_of_node(node, device_uuid, what)
 
     async def probemgr_post(url: str, service_id: str) -> tuple[httpx.Response, Any]:
         """POST ``{"serviceId": ...}`` to the probe manager; the response and its JSON body.
@@ -854,19 +1202,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         oam-operations:get-oam-trace-route-by-query-id`` with ``{"input":
         {"query-id": "<id>"}}`` (verified live) answers the ServiceRoute:
         ``status`` 3 = registered / running ("Path trace registered|running for
-        calculation"), 5 = failed (the ``status-message`` is the reason —
-        on the lab always the gNMI-connectivity text), 6 = unknown query-id
-        (answered as HTTP 200 with "Route not found for selected ID" and
-        every string empty — reported here as an error), presumably 4 =
-        completed (unverified) with ``path-info-list[] {path, path-info
-        {source, destination, next-hop, out-interface, device-uuids[],
-        path-details, path-status}}``; ``yang-path`` / ``service-name`` /
-        ``service-type``; ``head-end-*`` / ``tail-end-*`` node name, uuid
-        and TE router-id (the echoed inputs — names and router-ids are empty
-        when only uuids were sent); ``create-time`` / ``update-time``
-        (epoch-ms strings, rendered ISO-8601); ``available-path-count``.
-        This is the reliable read: the list RPC does not show fresh queries.
-        For a running query prefer cnc_wait_for_oam_trace_route.
+        calculation"), 4 = completed — verified as "No path found between the
+        selected devices" with ``available-path-count`` 0 (a completed verdict
+        with ZERO paths, not a failure — seen only for the short input form,
+        which the engine answers without tracing; a trace that finds paths
+        carries ``path-info-list[] {path, path-info {source, destination,
+        next-hop, out-interface, device-uuids[], path-details, path-status}}``
+        per the document), 5 = failed (the ``status-message`` is the reason: the gNMI
+        list when the devices have no gNMI connectivity type, XR's "'mpls
+        oam' ... 'mpls-lspv' detected the 'resource not available'" when the
+        head-end lacks ``mpls oam``), 6 = unknown query-id (answered as HTTP
+        200 with "Route not found for selected ID" and every string empty —
+        reported here as an error); ``yang-path`` / ``service-name`` /
+        ``service-type``; ``head-end-*`` / ``tail-end-*`` node name, uuid and
+        TE router-id (the echoed inputs — empty for whatever the registering
+        client did not send); ``create-time`` / ``update-time`` (epoch-ms
+        strings, rendered ISO-8601); ``available-path-count``. This is the
+        reliable read: the list RPC does not show fresh queries. For a running
+        query prefer cnc_wait_for_oam_trace_route.
 
         Args:
             query_id: the query id (e.g. 'SPQ-324616899').
@@ -877,9 +1230,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             "- status: ...: <message>", "- service: ...", "- head-end / tail-end:
             <name or uuid> (...)", "- created ...; updated ...",
             "- available-path-count: N", a "## Paths (N)" section when any,
-            and a next-step hint; or the JSON ``output``. "Error: no
-            trace-route query '<id>' (Route not found for selected ID) ..." for
-            status 6; "Error: get-oam-trace-route-by-query-id failed:
+            and a next-step hint (for status 4 with no paths: "Completed with
+            ZERO paths — the engine's verdict ..."); or the JSON ``output``.
+            "Error: no trace-route query '<id>' (Route not found for selected
+            ID) ..." for status 6; "Error: get-oam-trace-route-by-query-id failed:
             response-result <x>: ..." for a failure inside 200; "Error: the
             Optimization Engine answered 500 with an EMPTY body ..." for a bare
             empty 500; "Error: ..." on any other API failure.
@@ -918,10 +1272,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Read-only. Calls ``get-oam-trace-route-by-query-id`` every
         ``interval_seconds`` (the read of cnc_get_oam_trace_route) until
-        ``status`` is anything but 3. On the verified build a trace took ~30 s
-        to reach its verdict (there: status 5 with the gNMI-connectivity
-        text). Use it right after cnc_start_oam_trace_route instead of calling
-        cnc_get_oam_trace_route in a loop.
+        ``status`` is anything but 3. On the verified build a trace took
+        10-30 s to reach its verdict (status 4 "No path found between the
+        selected devices" with 0 paths, or status 5 with the gNMI /
+        'mpls oam' text). Use it right after cnc_start_oam_trace_route instead
+        of calling cnc_get_oam_trace_route in a loop.
 
         Args:
             query_id: the query id (e.g. 'SPQ-324616899').
@@ -929,16 +1284,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             interval_seconds: poll interval (default 5).
 
         Returns:
-            str: "Trace route <id> finished after <t>s: <status word> (<n>)
-            ..." followed by the full rendering of cnc_get_oam_trace_route
-            (paths included) when it completed; "Trace route <id> FAILED after
-            <t>s: <status-message>" plus the rendering when status 5 — the
-            platform's verdict on the network, NOT an error (no "Error:"
-            prefix); a timeout is not an error either: "Trace route <id> not
-            finished yet after <t>s; current status: in progress (3): ..." —
-            call again to keep waiting. "Error: no trace-route query '<id>'
-            ..." for status 6 (unknown id, or already auto-deleted); "Error:
-            ..." on any API failure during polling.
+            str: "Trace route <id> finished after <t>s: completed (4): ..."
+            followed by the full rendering of cnc_get_oam_trace_route (paths
+            included) when it completed — "... finished after <t>s with 0
+            paths: completed (4): No path found between the selected devices"
+            for the verified zero-path verdict (completed, not an error);
+            "Trace route <id> FAILED after <t>s: <status-message>" plus the
+            rendering when status 5 — the platform's verdict on the network,
+            NOT an error (no "Error:" prefix); a timeout is not an error
+            either: "Trace route <id> not finished yet after <t>s; current
+            status: in progress (3): ..." — call again to keep waiting.
+            "Error: no trace-route query '<id>' ..." for status 6 (unknown id,
+            or already auto-deleted); "Error: ..." on any API failure during
+            polling.
         """
         try:
             finished, route, elapsed = await wait_until(
@@ -965,9 +1323,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     f"Trace route {shown_id} FAILED after {elapsed:.0f}s: {message}\n\n{rendering}",
                     settings,
                 )
+            paths = " with 0 paths" if completed_without_paths(route) else ""
             return finalize(
-                f"Trace route {shown_id} finished after {elapsed:.0f}s: {status_line(route)}"
-                f"\n\n{rendering}",
+                f"Trace route {shown_id} finished after {elapsed:.0f}s{paths}: "
+                f"{status_line(route)}\n\n{rendering}",
                 settings,
             )
         except Exception as e:
@@ -1094,35 +1453,65 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         endpoint_uuid: Annotated[
             str, Field(description=f"Tail-end {_UUID_DESC}", min_length=1, max_length=64)
         ],
+        service_type: Annotated[str, Field(description=_SERVICE_TYPE_DESC, max_length=200)] = "",
+        service_name: Annotated[str, Field(description=_SERVICE_NAME_DESC, max_length=500)] = "",
     ) -> str:
         """Start an OAM trace route of a service between its head-end and tail-end devices
         — asynchronous: poll the returned query-id with cnc_wait_for_oam_trace_route.
 
         Write (registers a query; changes no network configuration). ``POST
         .../operations/cisco-crosswork-optimization-engine-oam-operations:
-        set-oam-trace-route-by-calc`` with ``{"input": {"yang-path":
-        "<service>", "head-end-node-uuid": "<uuid>", "tail-end-node-uuid":
-        "<uuid>"}}`` (verified live on a CFP SR policy service) answers the
-        new ServiceRoute: ``query-id`` (e.g. 'SPQ-324616899'), status 3
-        "Path trace registered for calculation", the echoed inputs and
+        set-oam-trace-route-by-calc`` with the FULL input form ``{"input":
+        {"yang-path", "head-end-node-uuid", "tail-end-node-uuid",
+        "service-type", "service-name", "head-end-node-name",
+        "tail-end-node-name", "head-end-te-router-id",
+        "tail-end-te-router-id"}}`` — verified 2026-09-14: with only the
+        yang-path and the two uuids the engine answers status 4 "No path
+        found between the selected devices" at once WITHOUT tracing anything;
+        the full form makes it run the LSP trace over gNMI on the head-end.
+        The extra fields are resolved before the call: ``service-name`` is
+        the percent-decoded key of the yang-path's last ``<list>=<key>``
+        segment, ``service-type`` the CAT label of that list (``policy`` for
+        ``.../policies/policy=``, ``odn-template``, ``cs-sr-te-policy``,
+        ``ietf-l3vpn`` / ``ietf-l2vpn`` for the ``vpn-service=`` lists,
+        ``slice-service``, ``tunnel`` — the table of cnc_list_service_types;
+        any other list is an error unless ``service_type`` is given), and the
+        node names / TE router-ids come from the inventory (``POST
+        /crosswork/inventory/v1/nodes/query`` by uuid -> ``host_name`` and
+        ``routing_info.te_router_id``; an unknown uuid, or a device without a
+        te_router_id, is an error naming the fix — cnc_update_device
+        (te_router_id=...) — before any RPC). The RPC answers the new
+        ServiceRoute: ``query-id`` (e.g. 'SPQ-324616899'), status 3 "Path
+        trace registered for calculation", the echoed inputs and
         ``available-path-count`` 0. Verified rules: only **inventory uuids**
-        resolve the devices (a node name or TE router-id registers a query
-        that fails within a second with "... 'mpls oam' ... empty device id
-        item in list") — non-uuid values are refused before sending, and any
-        uuid spelling (braces, urn:uuid:, upper-case, 32-hex) is sent in the
+        resolve the devices (names / router-ids alone register a query that
+        fails within a second with "... 'mpls oam' ... empty device id item
+        in list") — non-uuid values are refused before sending, and any uuid
+        spelling (braces, urn:uuid:, upper-case, 32-hex) is sent in the
         canonical lower-case hyphenated form the inventory shows;
         ``transport-type`` is never sent (1/2/3 fail with "Invalid Transport
-        Type"). Preconditions for a trace to complete: the devices need a
-        **gNMI connectivity type** configured in Crosswork (the lab has SNMP +
-        SSH only and every trace there fails with the platform's gNMI text)
-        and IOS-XR 7.3.2+ with ``mpls oam`` enabled. The query is auto-deleted
-        after the OAM delete interval (cnc_get_oam_settings). Not retried on
-        transport errors: a resend would register a second query.
+        Type"). Preconditions for the trace to run: the routers need **gNMI
+        onboarded** in Crosswork (cnc_enable_device_gnmi — the gNMI
+        credential, the ROBOT_MSVC_TRANS_GNMI transport and the GNMI
+        capability; without it the trace fails with the platform's gNMI
+        checklist text) AND ``mpls oam`` configured on IOS-XR 7.3.2+ (without
+        it the head-end's trace fails with XR's "'mpls oam' ... 'mpls-lspv'
+        detected the 'resource not available' condition" text). Status
+        meanings: 3 in progress, 4 completed ("No path found between the
+        selected devices" is a completed verdict with 0 paths, not a
+        failure), 5 failed (the status-message is the reason), 6 unknown
+        query-id. The query is auto-deleted after the OAM delete interval
+        (cnc_get_oam_settings). Not retried on transport errors: a resend
+        would register a second query.
 
         Args:
             service_yang_path: the service's yang-path from cnc_list_services.
             headend_uuid, endpoint_uuid: inventory uuids of the head-end and
                 tail-end devices (cnc_get_device shows them).
+            service_type, service_name: optional overrides of the derived
+                RPC fields ('' derives them from the yang-path); a known
+                label / alias is sent as its CAT label, anything else as
+                given.
 
         Returns:
             str: "OAM trace route registered: query-id <id>, in progress (3):
@@ -1134,23 +1523,29 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             directly, the first line fits it and gives no wait hint: "OAM
             trace route <id> was registered but FAILED immediately: <message>.
             Nothing to wait for ..." for status 5 (not an "Error:" — the
-            platform's verdict), "OAM trace route <id> completed immediately:
-            ..." for status 4, "... answered status <n> on registration ..."
-            otherwise.
-            "Error: headend_uuid '<x>' is not an inventory uuid ..." / "Error:
-            yang_path is empty ..." before any call; "Error:
-            set-oam-trace-route-by-calc failed: response-result <x>: ..." for a
-            failure inside 200; "Error: the Optimization Engine answered 500
-            with an EMPTY body ..." for a bare empty 500; "Error: ..." on any
-            other API failure.
+            platform's verdict), "OAM trace route <id> completed immediately
+            [with 0 paths]: ..." for status 4, "... answered status <n> on
+            registration ..." otherwise.
+            Before any call: "Error: headend_uuid '<x>' is not an inventory
+            uuid ...", "Error: yang_path is empty ...", "Error: '<path>' is
+            not a keyed service path ...", "Error: cannot derive the
+            service-type of '<path>' ... Pass service_type=..." ; after the
+            inventory lookups only: "Error: headend_uuid '<uuid>' is not an
+            inventory device ...", "Error: headend_uuid <name> ('<uuid>') has
+            no te_router_id in the inventory ... cnc_update_device(uuid=...,
+            te_router_id=...)". "Error: set-oam-trace-route-by-calc failed:
+            response-result <x>: ..." for a failure inside 200; "Error: the
+            Optimization Engine answered 500 with an EMPTY body ..." for a bare
+            empty 500; "Error: ..." on any other API failure.
         """
         try:
             yang_path = normalize_yang_path(service_yang_path)
-            head = validate_device_uuid(headend_uuid, "headend_uuid")
-            tail = validate_device_uuid(endpoint_uuid, "endpoint_uuid")
-            body = rpc_body(
-                **{"yang-path": yang_path, "head-end-node-uuid": head, "tail-end-node-uuid": tail}
-            )
+            type_label, name = service_identity(yang_path, service_type, service_name)
+            head_uuid = validate_device_uuid(headend_uuid, "headend_uuid")
+            tail_uuid = validate_device_uuid(endpoint_uuid, "endpoint_uuid")
+            head = await trace_end_of(head_uuid, "headend_uuid")
+            tail = await trace_end_of(tail_uuid, "endpoint_uuid")
+            body = start_trace_body(yang_path, type_label, name, head, tail)
             route = await call_rpc(RPC_START_TRACE_ROUTE, body)
             query_id = text_of(route.get("query-id"))
             if not query_id:
