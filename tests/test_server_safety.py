@@ -36,6 +36,9 @@ WRITE_TOOLS = {
     "cnc_clear_alarm",
     "cnc_deploy_config_template",
     "cnc_delete_device_backup",
+    "cnc_create_webhook_subscription",
+    "cnc_delete_notification_subscription",
+    "cnc_pause_lcm_recommendations",
 }
 
 

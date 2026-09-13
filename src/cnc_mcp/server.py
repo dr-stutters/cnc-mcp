@@ -122,6 +122,11 @@ def build_instructions(settings: Settings) -> str:
         "template). The EMF inventory (cnc_list_ems_nodes) is a separate view keyed by "
         "FDN ('MD=CISCO_EMS!ND=<name>'); a node must be MANAGED_AND_SYNCHRONIZED there for "
         "config management and device alarms to work.",
+        "- Notifications: a webhook subscription (cnc_create_webhook_subscription) needs a "
+        "client URL with an explicit port that answers 2xx to Crosswork's probe. LCM "
+        "(local congestion mitigation) and Circuit-Style SR are read through cnc_*_lcm_* / "
+        "cnc_*_cs_* (the lab has LCM disabled and no CS policies). Collection-service tools "
+        "default to the DLM's own CLI collector job.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

@@ -86,42 +86,75 @@ async def _run_plan(mcp, plan: dict, args) -> int:
                 failures += 1
                 print(f"FAIL capture {var}: path {path!r} not found in result")
             else:
-                captured[var] = str(value)
-                print(f"     captured {var}={captured[var]}")
+                captured[var] = value  # raw JSON value: a whole-string "$var" keeps its type
+                print(f"     captured {var}={value!r}")
 
     print(f"\n{'PASS' if not failures else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
 
 
 def _dig(text: str, path: str):
-    """Follow a dotted path (list indexes as integers) into a JSON result."""
-    try:
-        node = json.loads(text)
-    except ValueError:
+    """Follow a dotted path (list indexes as integers) into a JSON result.
+
+    A tool answer that is a sentence followed by a JSON block is parsed from its
+    first "{" or "[". Keys that themselves contain dots (RESTCONF names such as
+    "ietf-restconf:notification.subscription-id") match when the remaining path
+    equals the key, so "items.0.ietf-restconf:notification.subscription-id" works.
+    """
+    node = _parse_json_block(text)
+    if node is None:
         return None
-    for part in path.split("."):
-        if isinstance(node, list) and part.isdigit():
+    parts = path.split(".")
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if isinstance(node, dict):
+            rest = ".".join(parts[i:])
+            if rest in node:  # a key with dots in it
+                return node[rest]
+            node = node.get(part)
+        elif isinstance(node, list) and part.isdigit():
             idx = int(part)
             node = node[idx] if idx < len(node) else None
-        elif isinstance(node, dict):
-            node = node.get(part)
         else:
             return None
         if node is None:
             return None
+        i += 1
     return node
 
 
-def _substitute(value, captured: dict[str, str]):
-    """Replace "$var" references in step args with captured values."""
+def _parse_json_block(text: str):
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+    if not starts:
+        return None
+    try:
+        return json.loads(text[min(starts) :])
+    except ValueError:
+        return None
+
+
+def _substitute(value, captured: dict[str, object]):
+    """Replace "$var" references in step args with captured values.
+
+    An argument that is exactly "$var" takes the captured value with its JSON type
+    (an integer subscription id stays an integer); "$var" inside a longer string is
+    interpolated as text.
+    """
     if isinstance(value, dict):
         return {k: _substitute(v, captured) for k, v in value.items()}
     if isinstance(value, list):
         return [_substitute(v, captured) for v in value]
     if isinstance(value, str) and "$" in value:
+        if value.startswith("$") and value[1:] in captured:
+            return captured[value[1:]]
         # Longest names first so "$job" never clobbers the prefix of "$job_id".
         for var in sorted(captured, key=len, reverse=True):
-            value = value.replace(f"${var}", captured[var])
+            value = value.replace(f"${var}", str(captured[var]))
     return value
 
 

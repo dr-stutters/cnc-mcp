@@ -12,12 +12,13 @@ devices are unreachable?"*, *"what does the topology look like?"*, *"which SR
 policies are down and what path do they take?"*, *"is the
 Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
 enabled, onboard devices, manage credential profiles and providers, map
-devices to gateways, drive NSO sync and connect actions, and provision SR-TE
-policies through the SR-PCE — all
+devices to gateways, drive NSO sync and connect actions, provision SR-TE
+policies through the SR-PCE, subscribe webhooks to alarm/inventory events,
+inspect collection jobs, device groups and the LCM / Circuit-Style managers — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**143 tools** (104 read, 39 write) over 14 API areas. Every tool was built from
+**170 tools** (128 read, 42 write) over 18 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -86,6 +87,10 @@ Read tools — always registered:
 | **Device configuration** | `cnc_get_device_config_preferences` · `cnc_list_device_backups` · `cnc_get_device_backup` · `cnc_list_config_backup_jobs` · `cnc_get_config_backup_job` · `cnc_list_config_templates` · `cnc_get_config_template` · `cnc_list_template_deployments` · `cnc_get_template_deployment` · `cnc_wait_for_config_backup_job` · `cnc_wait_for_template_deployment` |
 | **EMF inventory** | `cnc_list_ems_nodes` · `cnc_get_ems_node` · `cnc_list_ems_interfaces` · `cnc_get_ems_interface` · `cnc_get_ems_inventory_summary` |
 | **Platform admin & RBAC** | `cnc_get_platform_version` · `cnc_get_cluster_health` · `cnc_list_cluster_nodes` · `cnc_get_cluster_node` · `cnc_list_microservices` · `cnc_list_application_status` · `cnc_list_app_manager_jobs` · `cnc_list_app_manager_events` · `cnc_get_maintenance_status` · `cnc_list_certificates` · `cnc_check_certificate_expiry` · `cnc_get_login_banner` · `cnc_get_session_config` · `cnc_list_active_sessions` · `cnc_get_user` · `cnc_list_roles` · `cnc_get_role_tasks` · `cnc_get_role_permissions` · `cnc_get_password_policy` · `cnc_list_secured_apis` |
+| **Notifications** | `cnc_list_notification_streams` · `cnc_list_notification_subscriptions` · `cnc_get_notification_subscription` · `cnc_list_kafka_subscriptions` |
+| **Collection service** | `cnc_get_collection_job_count` · `cnc_get_collection_job_summary` · `cnc_get_collection_job_state` · `cnc_list_export_collection_jobs` · `cnc_list_sensor_templates` · `cnc_get_collection_health` |
+| **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` |
+| **LCM & Circuit-Style** (Optimization Engine) | `cnc_list_lcm_domains` · `cnc_get_lcm_config` · `cnc_list_lcm_managed_interfaces` · `cnc_get_lcm_recommendation` · `cnc_get_lcm_recommendation_preview` · `cnc_list_csm_bandwidth_pools` · `cnc_list_cs_policy_paths` · `cnc_list_cs_policies_on_nodes` · `cnc_list_cs_policies_on_interface` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
 the MCP `destructive` annotation:
@@ -102,6 +107,8 @@ the MCP `destructive` annotation:
 | **Inventory extras** | `cnc_create_tag` · `cnc_delete_tag` · `cnc_assign_tags` · `cnc_unassign_tags` · `cnc_set_device_location` · `cnc_clear_device_location` · `cnc_lock_device` · `cnc_unlock_device` |
 | **Fault** | `cnc_acknowledge_alarm` · `cnc_annotate_alarm` · `cnc_clear_alarm` · `cnc_create_alarm_suppression_policy` · `cnc_delete_alarm_suppression_policy` |
 | **Device configuration** | `cnc_backup_device_config` · `cnc_delete_config_backup_job` · `cnc_delete_device_backup` · `cnc_create_config_template` · `cnc_delete_config_template` · `cnc_deploy_config_template` · `cnc_delete_template_deployment` |
+| **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` |
+| **LCM** | `cnc_pause_lcm_recommendations` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -268,6 +275,21 @@ a platform-notes file kept outside this repository.
   complete, so the tools fetch the collection and select the network
   client-side. Performance-metric containers cannot be listed, only read by
   key, and exist for IGP links and policies only.
+- **Webhook subscriptions need an explicit port** in the client URL
+  (`http://host:80/path`); without one the notification service answers a
+  bare 500. The receiver must answer 2xx or the subscription is created and
+  then dropped. A duplicate (same topic, URL and format) is refused with the
+  existing subscription's id.
+- **The collection service reports rejections inside HTTP 200**
+  (`result.request_result: REJECTED` with `result.error.error`), and a sensor
+  template lookup that matches nothing — the documented wildcard included —
+  is one such rejection ("Template for the given TemplateId does not exist"),
+  which the tools report as an empty result. Application-context queries need
+  both `application_id` and `context_id`; the built-in DLM job is
+  `cw.dlminvmgr0` / `dlm/cli-collector/group/te-tunnel-id/subscription`.
+- **Device grouping answers an empty list for an unknown classifier** rather
+  than an error, and the group-detail RPC takes the group's UUID (the root
+  groups are read by classifier name, e.g. `PortType`).
 
 ## Roadmap
 
@@ -275,13 +297,15 @@ The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
 this server covers the inventory (incl. tags, locks, locations), the EMF
 inventory, topology, TE state, SR-TE operations, fault management, device
 configuration (backups, templates, deployments), platform administration and
-RBAC, Data Gateway and NSO areas.
+RBAC, Data Gateway, NSO, notifications (webhook / Kafka subscriptions), the
+collection service, device grouping, and the LCM / Circuit-Style managers.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
 | `services` | service inventory and VPN / SR-TE service reads (Crosswork Active Topology) |
-| later | change automation, health insights, collection jobs, notifications, RBAC, optimization-engine operations |
+| `service_provisioning` | ODN templates, SR policies and VPN services through the NSO proxy (T-SDN function packs) |
+| later | change automation, health insights, performance / path analytics, SWIM, OAM (each gated on the application being present) |
 
 ## Project layout
 
@@ -301,7 +325,7 @@ src/cnc_mcp/
   probe.py        routing classification and availability probing
   tools/          devices, credentials, providers, inventory_extras, physical_inventory,
                   topology, te_state, sr_te_operations, platform, fault, device_config,
-                  data_gateway, nso, admin
+                  data_gateway, nso, admin, notifications, collection, grouping, lcm_csm
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

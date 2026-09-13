@@ -10,12 +10,16 @@ from mcp.server.mcpserver import MCPServer
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import (
     admin,
+    collection,
     credentials,
     data_gateway,
     device_config,
     devices,
     fault,
+    grouping,
     inventory_extras,
+    lcm_csm,
+    notifications,
     nso,
     physical_inventory,
     platform,
@@ -40,6 +44,10 @@ ALL_MODULES = [
     fault,  # alarm lifecycle (ack/note/clear), events, settings, suppression policies
     device_config,  # config backups and jobs, templates and deployments
     physical_inventory,  # EMF RESTCONF inventory: nodes, termination points
+    notifications,  # webhook subscriptions, notification streams
+    collection,  # collection-service job status
+    grouping,  # device/port groups: rule conditions, root groups, hierarchies, members
+    lcm_csm,  # LCM domains/config/recommendations, CSM bandwidth pools and CS policy paths
 ]
 
 

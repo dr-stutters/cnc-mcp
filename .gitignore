@@ -17,3 +17,4 @@ build/
 
 # Live smoke plan: instance-specific addresses and credentials stay local
 scripts/smoke_plan.json
+.coverage

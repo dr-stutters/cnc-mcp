@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2/PE2 (TE router-ids 10.0.0.1/.2/.4/.3), a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce' feeding CNC over gRPC with a PCC-initiated SR policy PE1<->PE2 color 100, the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, NSO check-sync/sync-from/sync-to on one device, a PCE-initiated SR policy (color 200) that it creates, updates and deletes, and a no-op login-banner update, a smoke-* tag / suppression policy / device lock / location cycle, and an ack + note + un-ack on one open alarm, a config backup job and two template deployments on P2 (Loopback99 added then removed); the cluster node id is the CNC management IP.",
+  "_comment": "Live smoke plan for the cnc-lab instance (5 XRd devices, SR-PCE provider cml-pce, credential profile cml-xrd). Read phase is side-effect free. Write phase creates smoke-* objects and removes them again (create -> verify -> delete), leaving the platform as found. Data Gateway steps target the embedded gateway: mapping 'remove' really unmaps but the embedded pool re-maps within ~2 s, and 'add' immediately after a remove succeeds (verified), so the write phase leaves mappings as found. NSO steps act on P2 only (check-sync, sync-from) and prove the zero-match and wildcard guards; sync-to and the inventory-wide sync are not run.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -722,6 +722,144 @@
         "deployment_id": "nope"
       },
       "expect_error": true
+    },
+    {
+      "tool": "cnc_list_notification_streams",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_notification_subscriptions",
+      "args": {
+        "all_users": true
+      }
+    },
+    {
+      "tool": "cnc_get_notification_subscription",
+      "args": {
+        "subscription_id": 1
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_kafka_subscriptions",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_collection_job_count",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_collection_job_summary",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_collection_job_state",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_export_collection_jobs",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_sensor_templates",
+      "args": {
+        "template_id": "*"
+      }
+    },
+    {
+      "tool": "cnc_get_collection_health",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_group_rule_conditions",
+      "args": {
+        "kind": "device"
+      }
+    },
+    {
+      "tool": "cnc_list_root_groups",
+      "args": {
+        "classifiers": "PortType,UserDefinedPorts",
+        "response_format": "json"
+      },
+      "capture": {
+        "root_group": "uuids.0"
+      }
+    },
+    {
+      "tool": "cnc_list_root_groups",
+      "args": {
+        "classifiers": "DeviceGroup"
+      }
+    },
+    {
+      "tool": "cnc_get_group_hierarchy",
+      "args": {
+        "group_uuids": "$root_group"
+      }
+    },
+    {
+      "tool": "cnc_get_group_details",
+      "args": {
+        "group_uuid": "$root_group"
+      }
+    },
+    {
+      "tool": "cnc_list_lcm_domains",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_lcm_config",
+      "args": {
+        "domain_id": "0"
+      }
+    },
+    {
+      "tool": "cnc_list_lcm_managed_interfaces",
+      "args": {
+        "domain_id": "0"
+      }
+    },
+    {
+      "tool": "cnc_get_lcm_recommendation",
+      "args": {
+        "domain_id": "0"
+      }
+    },
+    {
+      "tool": "cnc_get_lcm_recommendation",
+      "args": {
+        "domain_id": "9"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_csm_bandwidth_pools",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_cs_policy_paths",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_cs_policies_on_nodes",
+      "args": {
+        "nodes": "PE1,P1"
+      }
+    },
+    {
+      "tool": "cnc_list_cs_policies_on_nodes",
+      "args": {
+        "nodes": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_cs_policies_on_interface",
+      "args": {
+        "node": "P1",
+        "interface": "GigabitEthernet0/0/0/0"
+      }
     },
     {
       "tool": "cnc_list_tags",
@@ -1595,6 +1733,59 @@
       "tool": "cnc_delete_config_template",
       "args": {
         "name": "smoke-revert"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_webhook_subscription",
+      "args": {
+        "client_url": "http://192.0.2.17/notifications",
+        "topic": "alarm"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_webhook_subscription",
+      "args": {
+        "client_url": "http://192.0.2.17:80/notifications",
+        "topic": "alarm",
+        "format": "json"
+      },
+      "capture": {
+        "sub_id": "ietf-restconf:notification.subscription-id"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_webhook_subscription",
+      "args": {
+        "client_url": "http://192.0.2.17:80/notifications",
+        "topic": "alarm",
+        "format": "json"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_notification_subscription",
+      "args": {
+        "subscription_id": "$sub_id"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_notification_subscription",
+      "args": {
+        "subscription_id": "$sub_id"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_notification_subscription",
+      "args": {
+        "subscription_id": "$sub_id"
       },
       "expect_error": true
     }
