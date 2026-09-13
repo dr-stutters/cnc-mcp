@@ -8,6 +8,9 @@ what likely went wrong and what to try next — without leaking internals
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 import httpx
 
 
@@ -27,24 +30,94 @@ _STATUS_HINTS: dict[int, str] = {
     ),
     404: "Resource not found. Check that the ID or name is correct and still exists.",
     409: "Conflict. The resource may already exist or is locked by another change.",
+    415: "Unsupported media type: set Content-Type to the type this endpoint documents.",
     422: "The platform could not process the payload. Check required fields and value formats.",
     429: "Rate limit exceeded. Retries were exhausted; wait before making more requests.",
 }
 
 
-def _extract_detail(response: httpx.Response, max_chars: int = 300) -> str:
-    """Pull a short, human-readable detail string out of an API error response."""
+# Crosswork's home app answers unrouted paths with a Spring error document whose
+# ``path`` is the SSO login redirect it tried to make (verified live); the same
+# document is served as YAML ("--- !<java.util.LinkedHashMap>\npath: /crosswork/sso/login/...")
+# or as Spring JSON depending on the Accept header.
+_HOME_APP_PATH_PREFIX = "/crosswork/sso/login/"
+_YAML_PATH_RE = re.compile(r"^\s*path:\s*['\"]?(\S+)", re.MULTILINE)
+
+
+def _parse_json(response: httpx.Response) -> Any | None:
+    """The parsed JSON body, or None when the body is not JSON (never raises)."""
     try:
-        data = response.json()
+        return response.json()
     except ValueError:
+        return None
+
+
+def _restconf_errors(data: Any) -> list[dict[str, Any]]:
+    """The ``error`` entries of a RESTCONF error document, else an empty list.
+
+    Crosswork's RESTCONF NBIs use the bare ``errors`` key (verified live on
+    ``nbi/topology/v3``); the NSO proxy (``/crosswork/proxy/nso/restconf``) uses
+    the RFC 8040 ``ietf-restconf:errors`` key (verified live: its 415 answer to
+    an ``application/json`` body).
+    """
+    if not isinstance(data, dict):
+        return []
+    for key in ("errors", "ietf-restconf:errors"):
+        block = data.get(key)
+        if isinstance(block, dict) and isinstance(block.get("error"), list):
+            return [e for e in block["error"] if isinstance(e, dict)]
+    return []
+
+
+def _restconf_detail(errors: list[dict[str, Any]]) -> str:
+    """Render RESTCONF error entries as ``RESTCONF <tag>: <message>`` (joined with '; ')."""
+    parts = []
+    for err in errors:
+        tag = str(err.get("error-tag") or "error").strip()
+        message = str(err.get("error-message") or "").strip()
+        parts.append(f"RESTCONF {tag}: {message}" if message else f"RESTCONF {tag}")
+    return "; ".join(parts)
+
+
+def _home_app_fallback_path(data: Any, text: str) -> str | None:
+    """The ``path`` of a home-app fallback document (YAML or Spring JSON), else None.
+
+    Only a path under :data:`_HOME_APP_PATH_PREFIX` counts: that is the signature
+    of "nothing is routed here" (verified live), whereas a Spring 404 from a real
+    service carries the requested path instead.
+    """
+    path: Any = None
+    if isinstance(data, dict):
+        path = data.get("path")
+    elif text.startswith("---"):
+        match = _YAML_PATH_RE.search(text)
+        path = match.group(1) if match else None
+    if isinstance(path, str) and path.startswith(_HOME_APP_PATH_PREFIX):
+        return path
+    return None
+
+
+def _extract_detail(response: httpx.Response, max_chars: int = 300) -> str:
+    """Pull a short, human-readable detail string out of an API error response.
+
+    HTML pages and YAML documents (Crosswork's home app answers unrouted paths
+    with ``--- !<java.util.LinkedHashMap>`` YAML) are dropped rather than dumped
+    into the agent's context. RESTCONF error documents are rendered as
+    ``RESTCONF <error-tag>: <error-message>``.
+    """
+    data = _parse_json(response)
+    if data is None:
         text = response.text.strip()
-        # Avoid dumping HTML error pages into the agent's context.
-        if text.startswith("<"):
+        # Avoid dumping HTML error pages or YAML documents into the agent's context.
+        if text.startswith(("<", "---")):
             return ""
         return text[:max_chars]
+    restconf = _restconf_errors(data)
+    if restconf:
+        return _restconf_detail(restconf)[:max_chars]
     if isinstance(data, dict):
-        # Common error-message keys across platform APIs.
-        for key in ("message", "detail", "error", "description", "response"):
+        # Common error-message keys across platform APIs (``errorMessage`` is Spring's).
+        for key in ("message", "detail", "error", "errorMessage", "description", "response"):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()[:max_chars]
@@ -55,8 +128,17 @@ def _extract_detail(response: httpx.Response, max_chars: int = 300) -> str:
     return str(data)[:max_chars]
 
 
+# Shared by the Spring "No static resource" forms and Go-mux "404 page not found":
+# in both cases a real service answered, so the prefix is routed and only the path is wrong.
+_ROUTED_NO_RESOURCE_HINT = (
+    "The service is present but does not serve this path on this build. Check the path "
+    "against the API document for this Crosswork version; the prefix is routed, the "
+    "resource is not."
+)
+
 # Crosswork hides several distinct conditions behind generic status codes
-# (verified live). Matched case-insensitively against the extracted detail and
+# (verified live). Matched case-insensitively against the whole response body
+# (so a marker in a key ``_extract_detail`` does not surface still counts) and
 # checked before the generic status hint.
 _DETAIL_HINTS: list[tuple[int, str, str]] = [
     (
@@ -87,22 +169,99 @@ _DETAIL_HINTS: list[tuple[int, str, str]] = [
         "usually means a malformed request body rather than an outage — check the "
         "payload (valid JSON, expected field names) before retrying.",
     ),
+    # dg-manager (and other proto-backed services) reject unknown body fields outright,
+    # unlike inventory which silently ignores them.
+    (
+        400,
+        "unable to unmarshal payload to proto",
+        "This service rejects unknown fields — the request body has a field the API does "
+        "not define. Remove it (check the field name and casing against the API document).",
+    ),
+    # Spring-served services answer a path they do not serve with
+    # {"code":500,"errorMessage":"No static resource ..."} or a 404 that names
+    # NoResourceFoundException; Go-mux services (probemgr, authconfig) answer a plain
+    # text "404 page not found". The service is routed and alive; the path is wrong
+    # for this build (verified live — see "Routing detection, refined" in the notes).
+    (500, "no static resource", _ROUTED_NO_RESOURCE_HINT),
+    (404, "no static resource", _ROUTED_NO_RESOURCE_HINT),
+    (404, "noresourcefoundexception", _ROUTED_NO_RESOURCE_HINT),
+    (404, "404 page not found", _ROUTED_NO_RESOURCE_HINT),
 ]
 
+_RESTCONF_TAG_HINTS: dict[tuple[int, str], str] = {
+    (400, "unknown-element"): (
+        "RESTCONF path or key problem: an element in the data path does not exist in the "
+        "YANG model at this position. Check module prefixes, list names and key names."
+    ),
+    (400, "missing-attribute"): (
+        "RESTCONF path or key problem: a required key is missing — a sub-list cannot be "
+        "read without its parent's key (e.g. network=<id> before node=<id>)."
+    ),
+    (409, "data-missing"): (
+        "RESTCONF: no such object — the keyed resource does not exist (a keyed GET that "
+        "finds nothing answers 409 data-missing on this platform, not 404)."
+    ),
+    # Verified live on /crosswork/proxy/nso/restconf: an application/json request body is
+    # answered 415 {"ietf-restconf:errors":{"error":[{"error-tag":"malformed-message",
+    # "error-message":"Unsupported media type..."}]}} — the path and body are fine, the
+    # Content-Type header is the problem.
+    (415, "malformed-message"): (
+        "The NSO proxy rejected the request media type: send request bodies with "
+        "Content-Type: application/yang-data+json (application/json is answered with 415 "
+        "on /crosswork/proxy/nso/restconf)."
+    ),
+}
 
-def http_error(response: httpx.Response) -> PlatformError:
-    """Build a PlatformError for a non-success HTTP response."""
-    status = response.status_code
-    detail = _extract_detail(response)
-    hint = next(
-        (h for st, marker, h in _DETAIL_HINTS if st == status and marker in detail.lower()),
-        None,
-    ) or _STATUS_HINTS.get(
+
+def _hint_for(status: int, response: httpx.Response, data: Any) -> str:
+    """Pick the most specific agent-facing hint for a failed response (verified cases first)."""
+    text = response.text
+    restconf = _restconf_errors(data)
+    if restconf:
+        for err in restconf:
+            hint = _RESTCONF_TAG_HINTS.get((status, str(err.get("error-tag", "")).lower()))
+            if hint:
+                return hint
+        return (
+            "The RESTCONF service rejected the request (see the error-tag). Check the data "
+            "path, keys and body against the YANG model."
+        )
+    if status == 404 and _home_app_fallback_path(data, text) is not None:
+        return (
+            "This path is not routed on this Crosswork instance (application not installed "
+            "or not licensed): the request fell through to the home app's login redirect. "
+            "It is not a bad ID — the whole API prefix is absent."
+        )
+    if status == 500 and not text.strip():
+        return (
+            "The backend behind this call is not available on this deployment (the gateway "
+            "answered 500 with an empty body). Retrying will not help; the feature is absent "
+            "or its service is down."
+        )
+    lowered = text.lower()
+    for st, marker, hint in _DETAIL_HINTS:
+        if st == status and marker in lowered:
+            return hint
+    return _STATUS_HINTS.get(
         status,
         "The platform API request failed."
         if status < 500
         else "The platform returned a server error. It may be busy or mid-deploy; try again.",
     )
+
+
+def http_error(response: httpx.Response) -> PlatformError:
+    """Build a PlatformError for a non-success HTTP response.
+
+    The hint is chosen from the body, not just the status, because Crosswork
+    overloads its status codes (verified live): RESTCONF error documents, the
+    home app's unrouted-path fallback, Spring "No static resource" answers,
+    proto unmarshal rejections and empty-bodied 500s each mean something
+    specific that the generic status text would hide.
+    """
+    status = response.status_code
+    detail = _extract_detail(response)
+    hint = _hint_for(status, response, _parse_json(response))
     message = f"API request failed with status {status}. {hint}"
     if detail:
         message += f" Platform said: {detail}"

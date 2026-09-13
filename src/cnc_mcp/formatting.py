@@ -58,7 +58,6 @@ def finalize(text: str, settings: Settings) -> str:
     if len(text) <= limit:
         return text
     return (
-        text[:limit]
-        + f"\n\n[Truncated: response exceeded {limit} characters. "
+        text[:limit] + f"\n\n[Truncated: response exceeded {limit} characters. "
         "Narrow the query with filters, or page through results with limit/offset.]"
     )

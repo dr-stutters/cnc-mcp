@@ -30,7 +30,8 @@ async def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="include write-phase steps")
     parser.add_argument(
-        "--plan", default=str(Path(__file__).with_name("smoke_plan.json")),
+        "--plan",
+        default=str(Path(__file__).with_name("smoke_plan.json")),
         help="path to the smoke plan JSON",
     )
     args = parser.parse_args()

@@ -75,8 +75,10 @@ def main() -> None:
 
     old_pkg.rename(root / "src" / f"{snake}_mcp")
 
-    print(f"Specialized as '{service}': package {snake}_mcp, env prefix {upper}_MCP_, "
-          f"script {dashed}-mcp. {len(changed)} files rewritten.")
+    print(
+        f"Specialized as '{service}': package {snake}_mcp, env prefix {upper}_MCP_, "
+        f"script {dashed}-mcp. {len(changed)} files rewritten."
+    )
     print("Next: uv sync && make test  (the suite must pass before changing logic)")
 
     # Post-rename sanity check: nothing (outside skips) should mention skeleton now.

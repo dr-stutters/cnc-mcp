@@ -11,6 +11,26 @@ Wraps httpx.AsyncClient with the behaviors every platform server needs:
 - a concurrency cap so an agent fanning out tool calls can't hammer the platform
 - TLS-verification toggle for lab gear with self-signed certificates
 - non-success responses raised as PlatformError with agent-actionable messages
+- per-call body and status controls for Crosswork's other API dialects: a
+  per-call Content-Type that overrides httpx's ``application/json`` default
+  (verified live 2026-09-12: RESTCONF RPCs and the NSO proxy need
+  ``application/yang-data+json`` — the proxy answers ``application/json`` with
+  415), ``ok_statuses`` so a caller can accept a non-2xx answer that is a normal
+  outcome for that endpoint (206 for ``Range`` paging, 409 ``data-missing`` on a
+  keyed RESTCONF GET) without an exception, and a raw ``content=`` body for the
+  Inventory Job Scheduler (``rs`` prefix, ``POST
+  /crosswork/rs/json/jobSchedulerServiceInv/v1/{runJob,suspendJob,resumeJob}``,
+  documented in ``job_scheduler_ap_is_7_2_0.json`` as an unquoted string such
+  as ``Switch Inventory:Inventory`` sent as ``application/json``). The raw-body
+  path is UNVERIFIED: ``rs`` is unrouted on the lab instance, and it is the only
+  documented consumer — the EMF RESTCONF endpoints take JSON/XML, never raw text.
+
+Accepted statuses (``ok_statuses``) and the re-auth pass: an accepted status is
+never retried by the backoff loop, but it is still subject to the one
+transparent re-authentication when the auth strategy classifies it as an auth
+failure (Crosswork 403 ``Unauthorized request`` / 500 ``Middleware error``) —
+that retry is what tells a stale JWT from an unrouted path, and ``probe.py``
+relies on it.
 """
 
 from __future__ import annotations
@@ -30,6 +50,16 @@ logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = {429, 502, 503, 504}
 IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
+# httpx sets no Content-Type for a raw ``content=`` body. The only documented raw-body
+# consumer (Inventory Job Scheduler runJob/suspendJob/resumeJob, ``rs`` prefix) declares
+# ``application/json`` for its unquoted-string body — UNVERIFIED live (``rs`` is unrouted
+# on the lab). Callers pass their own Content-Type header to override it.
+DEFAULT_RAW_CONTENT_TYPE = "application/json"
+
+
+def _has_header(headers: dict[str, str] | None, name: str) -> bool:
+    """Case-insensitive presence check for a header name in a plain dict."""
+    return any(k.lower() == name.lower() for k in (headers or {}))
 
 
 class ApiClient:
@@ -55,26 +85,55 @@ class ApiClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: Any = None,
+        content: str | bytes | None = None,
         headers: dict[str, str] | None = None,
         raise_on_error: bool = True,
         retryable: bool | None = None,
+        ok_statuses: set[int] | None = None,
     ) -> httpx.Response:
         """Make a request with auth, retries, and one re-auth on auth failure. Returns the response.
+
+        Body: pass EITHER ``json_body`` (serialised as JSON, Content-Type
+        ``application/json`` unless ``headers`` carries its own — RESTCONF RPC
+        bodies and the NSO proxy need ``application/yang-data+json``; the proxy
+        answers ``application/json`` with 415) OR ``content`` (sent verbatim;
+        Content-Type from ``headers`` or :data:`DEFAULT_RAW_CONTENT_TYPE` when
+        none is given). The only documented raw-body consumer is the Inventory
+        Job Scheduler (``POST /crosswork/rs/json/jobSchedulerServiceInv/v1/
+        {runJob,suspendJob,resumeJob}``, body an unquoted string such as
+        ``Switch Inventory:Inventory`` under ``application/json`` per
+        ``job_scheduler_ap_is_7_2_0.json``) — UNVERIFIED live, ``rs`` is
+        unrouted on the lab instance. Passing both is a programming error and
+        raises ValueError before anything is sent.
 
         retryable=None (default) auto-retries 5xx/transport errors only for
         idempotent methods; pass True when a write is known-safe to re-send on
         this platform, or False to disable even idempotent retries.
 
+        ok_statuses: extra status codes that count as success for this call —
+        they are returned as-is and never raised (e.g. ``{206}`` for ``Range``
+        paging, ``{409}`` for a keyed RESTCONF GET that answers
+        ``data-missing``). 2xx is always accepted. An accepted status is never
+        retried by the backoff loop, but it is still subject to the one
+        transparent re-authentication when the auth strategy classifies it as an
+        auth failure (Crosswork 403 ``Unauthorized request`` / 500 ``Middleware
+        error``): the request is re-sent once with a fresh token and the second
+        answer is returned. That retry is what tells a stale JWT from an
+        unrouted path (``probe.py`` depends on it).
+
         Raises PlatformError for non-success responses unless raise_on_error=False,
         and for transport failures that survive all retries.
         """
+        if content is not None and json_body is not None:
+            raise ValueError("ApiClient.request(): pass either json_body or content, not both")
         if retryable is None:
             retryable = method.upper() in IDEMPOTENT_METHODS
+        accepted = ok_statuses or set()
         async with self._semaphore:
             response = await self._request_with_retries(
-                method, path, params, json_body, headers, retryable
+                method, path, params, json_body, content, headers, retryable, accepted
             )
-        if raise_on_error and not response.is_success:
+        if raise_on_error and not response.is_success and response.status_code not in accepted:
             raise http_error(response)
         return response
 
@@ -85,13 +144,25 @@ class ApiClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: Any = None,
+        content: str | bytes | None = None,
         headers: dict[str, str] | None = None,
         retryable: bool | None = None,
+        ok_statuses: set[int] | None = None,
     ) -> Any:
-        """request(), then parse the body as JSON (empty body -> None)."""
+        """request(), then parse the body as JSON (empty body -> None).
+
+        Takes the same body/status controls as :meth:`request`; a response whose
+        status is in ``ok_statuses`` is parsed and returned like a 200.
+        """
         response = await self.request(
-            method, path, params=params, json_body=json_body, headers=headers,
+            method,
+            path,
+            params=params,
+            json_body=json_body,
+            content=content,
+            headers=headers,
             retryable=retryable,
+            ok_statuses=ok_statuses,
         )
         if not response.content:
             return None
@@ -112,17 +183,24 @@ class ApiClient:
         path: str,
         params: dict[str, Any] | None,
         json_body: Any,
+        content: str | bytes | None,
         extra_headers: dict[str, str] | None,
         retryable: bool,
+        accepted: set[int],
     ) -> httpx.Response:
         attempt = 0
         reauth_attempted = False
         while True:
             await self._auth.ensure_authenticated(self._http)
             headers = {**self._auth.headers(), **(extra_headers or {})}
+            if content is not None and not _has_header(extra_headers, "Content-Type"):
+                headers["Content-Type"] = DEFAULT_RAW_CONTENT_TYPE
             try:
+                # A per-call Content-Type in ``headers`` overrides the one httpx
+                # derives from ``json=`` (verified against httpx 0.28: request
+                # headers take precedence over the encoder's defaults).
                 response = await self._http.request(
-                    method, path, params=params, json=json_body, headers=headers
+                    method, path, params=params, json=json_body, content=content, headers=headers
                 )
             except httpx.TransportError as e:
                 if retryable and attempt < self._settings.max_retries:
@@ -145,9 +223,13 @@ class ApiClient:
                 if await self._auth.handle_unauthorized(self._http, headers):
                     continue
 
-            if attempt < self._settings.max_retries and (
-                response.status_code == 429  # rejected before processing: safe for any method
-                or (retryable and response.status_code in RETRYABLE_STATUS)
+            if (
+                attempt < self._settings.max_retries
+                and response.status_code not in accepted
+                and (
+                    response.status_code == 429  # rejected before processing: safe for any method
+                    or (retryable and response.status_code in RETRYABLE_STATUS)
+                )
             ):
                 await self._backoff(attempt, retry_after=response.headers.get("Retry-After"))
                 attempt += 1

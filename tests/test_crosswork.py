@@ -6,7 +6,15 @@ import pytest
 
 from cnc_mcp.crosswork import (
     ADMIN_STATES,
+    ALARMS_MAX_LIMIT,
+    DG_TABLES,
+    alarms_criteria,
+    check_alarm_v1,
+    check_collection_result,
     check_job,
+    collection_next_token,
+    collection_query_body,
+    dg_query_body,
     ipaddr,
     page_envelope,
     parse_impacted,
@@ -119,3 +127,149 @@ def test_wire_enum_accepts_friendly_and_wire_values():
 def test_ipaddr_write_shape():
     assert ipaddr("198.18.140.11", 18) == {"inet_af": 0, "inet_addr": "198.18.140.11", "mask": "18"}
     assert ipaddr("198.18.140.15") == {"inet_af": 0, "inet_addr": "198.18.140.15"}
+
+
+# --- module 0: the other JSON-over-POST dialects ---------------------------------------
+
+
+def test_dg_query_body_default_criteria_per_table():
+    assert dg_query_body("gateways") == {
+        "filterData": {"Criteria": "select * from RobotDataGateway"}
+    }
+    assert dg_query_body("Pools") == {"filterData": {"Criteria": "select * from HAPool"}}
+    # the wire table name is accepted too
+    assert dg_query_body("HAPool") == dg_query_body("pools")
+    assert set(DG_TABLES) == {"gateways", "pools"}
+
+
+def test_dg_query_body_carries_nothing_but_filterdata():
+    """dg-manager rejects unknown fields (400 unmarshal-to-proto), so the body is minimal."""
+    body = dg_query_body("gateways")
+    assert list(body) == ["filterData"] and list(body["filterData"]) == ["Criteria"]
+
+
+def test_dg_query_body_explicit_criteria_and_unknown_table():
+    custom = "select * from RobotDataGateway where duuid = 'x'"
+    assert dg_query_body("gateways", custom) == {"filterData": {"Criteria": custom}}
+    assert dg_query_body("whatever", custom) == {"filterData": {"Criteria": custom}}
+    with pytest.raises(PlatformError, match="Unknown Data Gateway table 'nope'.*gateways, pools"):
+        dg_query_body("nope")
+
+
+def test_collection_query_body_defaults_match_the_verified_echo():
+    assert collection_query_body() == {
+        "query_options": {"page_size": 100, "page_token": "0", "filter_list": []}
+    }
+
+
+def test_collection_query_body_with_token_and_filters():
+    flt = {"operator": "OPERATOR_AND", "field_list": [{"field": "CollectionState", "value": "x"}]}
+    body = collection_query_body(page_size=50, page_token="abc", filters=[flt])
+    assert body["query_options"] == {"page_size": 50, "page_token": "abc", "filter_list": [flt]}
+    body["query_options"]["filter_list"].append({})  # the caller's list is not aliased
+    assert collection_query_body(filters=[flt])["query_options"]["filter_list"] == [flt]
+
+
+def test_collection_next_token_stops_on_empty_or_unchanged_token():
+    """End of data is UNVERIFIED live: the document says an empty page_token ends paging, but
+    the lab's empty jobs/query echoed the "0" it was sent — so both must read as 'no more'."""
+    echoed_zero = {
+        "result": {"request_result": "ACCEPTED", "error": {"error": ""}},
+        "query_options": {"page_token": "0", "page_size": 100, "filter_list": []},
+        "jobs": [],
+    }
+    assert collection_next_token(echoed_zero, "0") is None  # unchanged token
+    assert collection_next_token({"query_options": {"page_token": ""}}, "0") is None  # documented
+    assert collection_next_token({"query_options": {"page_token": ""}}) is None
+    # a changed, non-empty token is the next page (document example: an opaque hash)
+    nxt = {"query_options": {"page_token": "a7859eb217ee381541afe2f911dfd21c", "page_size": 100}}
+    assert collection_next_token(nxt, "0") == "a7859eb217ee381541afe2f911dfd21c"
+    assert collection_next_token(nxt) == "a7859eb217ee381541afe2f911dfd21c"
+
+
+def test_collection_next_token_tolerates_missing_or_garbage_options():
+    assert collection_next_token({}) is None
+    assert collection_next_token({"query_options": {}}) is None
+    assert collection_next_token({"query_options": "nope"}) is None
+    assert collection_next_token({"query_options": {"page_token": 7}}) is None
+    assert collection_next_token(None) is None
+    assert collection_next_token([]) is None
+
+
+def test_check_collection_result_accepts_and_returns_data():
+    data = {
+        "result": {"request_result": "ACCEPTED", "error": {"error": ""}},
+        "query_options": {"page_token": "0", "page_size": 100, "filter_list": []},
+        "jobs": [],
+    }
+    assert check_collection_result(data, "List collection jobs") is data
+
+
+def test_check_collection_result_raises_on_rejection_with_reason():
+    data = {
+        "result": {"request_result": "REJECTED", "error": {"error": "empty request"}},
+        "jobs": [],
+    }
+    with pytest.raises(PlatformError, match="List collection jobs was REJECTED: empty request"):
+        check_collection_result(data, "List collection jobs")
+
+
+def test_check_collection_result_tolerates_missing_reason_and_missing_envelope():
+    with pytest.raises(PlatformError, match="was REJECTED: no reason given"):
+        check_collection_result({"result": {"request_result": "REJECTED"}}, "Query")
+    with pytest.raises(PlatformError, match="did not return a collection result envelope"):
+        check_collection_result({"jobs": []}, "Query")
+    with pytest.raises(PlatformError, match="did not return a collection result envelope"):
+        check_collection_result(None, "Query")
+
+
+def test_check_alarm_v1_raises_on_200_fail_document():
+    with pytest.raises(
+        PlatformError, match=r"Query alarms failed \(code 0\): Input Request is invalid"
+    ):
+        check_alarm_v1(
+            {"error": "Fail", "code": 0, "message": "Input Request is invalid"}, "Query alarms"
+        )
+    with pytest.raises(PlatformError, match="Query alarms failed: no reason given"):
+        check_alarm_v1({"error": "FAIL"}, "Query alarms")
+
+
+def test_check_alarm_v1_passes_through_everything_else():
+    ok = {"alarms": [{"AlarmId": "1"}], "error": ""}
+    assert check_alarm_v1(ok, "Query alarms") is ok
+    assert check_alarm_v1([], "Query alarms") == []
+    assert check_alarm_v1(None, "Query alarms") is None
+    # an "error" key with another value is data, not the Fail document
+    assert check_alarm_v1({"error": "Success"}, "Query alarms") == {"error": "Success"}
+
+
+def test_alarms_criteria_grammar_and_bounds():
+    assert alarms_criteria(20, 0) == "select * from alarm limit 20 page 0"
+    assert (
+        alarms_criteria(ALARMS_MAX_LIMIT, 3)
+        == f"select * from alarm limit {ALARMS_MAX_LIMIT} page 3"
+    )
+    with pytest.raises(PlatformError, match="between 1 and 200, got 0"):
+        alarms_criteria(0, 0)
+    with pytest.raises(PlatformError, match="between 1 and 200, got 201"):
+        alarms_criteria(201, 0)
+    with pytest.raises(PlatformError, match="0 or greater, got -1"):
+        alarms_criteria(10, -1)
+
+
+def test_alarms_criteria_where_and_order_clauses_are_appended_verbatim():
+    """The documented (UNVERIFIED live) grammar from the 7.2 alarms document:
+    'select * from event limit 100 page 0 where eventCategory=3 order userName asc'."""
+    assert (
+        alarms_criteria(100, 0, where="eventCategory=3", order="userName asc")
+        == "select * from alarm limit 100 page 0 where eventCategory=3 order userName asc"
+    )
+    assert alarms_criteria(20, 1, where=" Acknowledge=false ") == (
+        "select * from alarm limit 20 page 1 where Acknowledge=false"
+    )
+    assert alarms_criteria(20, 1, order="Created desc") == (
+        "select * from alarm limit 20 page 1 order Created desc"
+    )
+    # blank clauses leave the verified form untouched
+    assert alarms_criteria(20, 0, where="", order="  ") == "select * from alarm limit 20 page 0"
+    assert alarms_criteria(20, 0, where=None, order=None) == "select * from alarm limit 20 page 0"

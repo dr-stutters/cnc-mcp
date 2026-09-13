@@ -10,6 +10,22 @@ Controller (see the platform notes). The two rules that matter most:
 - Inventory writes answer with a *job envelope* (``job_id``, ``state``, ...),
   and a failed write is an HTTP 200 whose ``state`` is ``JOB_FAILED``. Every
   write must go through :func:`check_job`.
+
+The inventory idiom does not generalise. The other JSON-over-POST services
+behind the same gateway each have their own grammar (verified live
+2026-09-12) and get their own helpers here:
+
+- **dg-manager** (``/crosswork/dg-manager/v1|v2``): bodies are
+  ``{"filterData": {"Criteria": "select * from <Table>"}}`` (or ``{}``) and
+  unknown fields are *rejected* with 400 — :func:`dg_query_body`.
+- **collection/v1**: ``query_options`` token paging and a
+  ``result.request_result`` verdict — :func:`collection_query_body`,
+  :func:`collection_next_token`, :func:`check_collection_result`.
+- **alarm/v1**: failures ride inside HTTP 200 as
+  ``{"error": "Fail", "code": n, "message": ...}`` — :func:`check_alarm_v1`.
+- **alarms/v1** (the UI's endpoint; marked deprecated in the 7.2 document but
+  answering live): a SQL-like ``criteria`` string with ``limit N page M``
+  paging — :func:`alarms_criteria`.
 """
 
 from __future__ import annotations
@@ -23,7 +39,21 @@ INVENTORY = "/crosswork/inventory/v1"
 TOPOLOGY = "/crosswork/topology/v1/topology-service/topology"
 AAA = "/crosswork/aaa/v1"
 ALARMS = "/crosswork/alarms/v1"
+# The documented alarm lifecycle API (POST .../query); distinct from the UI's ALARMS above.
+ALARM_V1 = "/crosswork/alarm/v1"
 PLATFORM = "/crosswork/platform/v2"
+DG_MANAGER = "/crosswork/dg-manager/v1"
+COLLECTION = "/crosswork/collection/v1"
+
+# dg-manager query tables (verified: ``select * from RobotDataGateway`` lists gateways;
+# ``hapool/query`` answers on v1 and v2 with different address shapes).
+DG_TABLES = {"gateways": "RobotDataGateway", "pools": "HAPool"}
+
+# alarms/v1 criteria paging bound exposed by the tools (the platform's own maximum is
+# not verified; 20 was the UI's page size).
+ALARMS_MAX_LIMIT = 200
+
+COLLECTION_ACCEPTED = "ACCEPTED"
 
 JOB_COMPLETED = "JOB_COMPLETED"
 # Verified: a no-op or partially applied write answers JOB_COMPLETED_WITH_WARNING with the
@@ -204,3 +234,155 @@ def ipaddr(address: str, prefix_length: int | None = None) -> dict[str, Any]:
     if prefix_length is not None:
         obj["mask"] = str(prefix_length)
     return obj
+
+
+def dg_query_body(table: str, criteria: str | None = None) -> dict[str, Any]:
+    """Build a dg-manager ``*/query`` body: ``{"filterData": {"Criteria": ...}}``.
+
+    Verified live: dg-manager reads take ``{"filterData": {"Criteria":
+    "select * from RobotDataGateway"}}`` (or a bare ``{}``), NOT the inventory
+    ``filter``/``PageSize`` grammar, and unlike inventory the service rejects
+    unknown fields with ``400 unable to unmarshal payload to proto`` — so this
+    body contains nothing else. ``table`` is a :data:`DG_TABLES` key
+    (``gateways``, ``pools``) or a wire table name; ``criteria`` replaces the
+    default ``select * from <Table>`` when given.
+    """
+    if criteria is None:
+        key = table.strip().lower()
+        if key in DG_TABLES:
+            wire = DG_TABLES[key]
+        elif table in DG_TABLES.values():
+            wire = table
+        else:
+            raise PlatformError(
+                f"Unknown Data Gateway table '{table}'. Use one of: {', '.join(sorted(DG_TABLES))}."
+            )
+        criteria = f"select * from {wire}"
+    return {"filterData": {"Criteria": criteria}}
+
+
+def collection_query_body(
+    page_size: int = 100,
+    page_token: str = "0",
+    filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a collection/v1 ``*/query`` body with ``query_options`` token paging.
+
+    UNVERIFIED-as-request: the live call that was verified sent ``{}`` and the
+    platform echoed ``"query_options": {"page_token": "0", "page_size": 100,
+    "filter_list": []}`` in the response, from which this request shape is
+    inferred. The published Collection Service document agrees
+    (``QueryOptions{page_token, page_size, filter_list}``; its examples use
+    ``page_token: ""``). Pass the ``page_token`` the previous response echoed to
+    fetch the next page; ``filters`` are ``{"operator": "OPERATOR_AND",
+    "field_list": [{"field": ..., "value": ...}]}`` entries.
+
+    End of data is UNVERIFIED: the document says an empty ``page_token`` means
+    no more pages ("If collection_job_device_sets is empty or the page token
+    are empty, there are no more results"), but the lab's empty ``jobs/query``
+    echoed ``"0"`` — stop on an empty item list OR an empty/unchanged token
+    until verified live. :func:`collection_next_token` applies that rule.
+    """
+    return {
+        "query_options": {
+            "page_size": page_size,
+            "page_token": page_token,
+            "filter_list": list(filters or []),
+        }
+    }
+
+
+def collection_next_token(data: Any, sent_token: str | None = None) -> str | None:
+    """The ``page_token`` to send for the next collection/v1 page, or None at the end.
+
+    Returns None when the response carries no ``query_options.page_token``, when
+    the token is empty (the documented end-of-data signal), or when it equals
+    ``sent_token`` (the lab's empty ``jobs/query`` echoed the ``"0"`` it was sent,
+    so an unchanged token cannot mean "more"). Callers must ALSO stop on an empty
+    item list — the stop condition is UNVERIFIED live, see
+    :func:`collection_query_body`.
+    """
+    if not isinstance(data, dict):
+        return None
+    options = data.get("query_options")
+    token = options.get("page_token") if isinstance(options, dict) else None
+    if not isinstance(token, str) or token == "":
+        return None
+    if sent_token is not None and token == sent_token:
+        return None
+    return token
+
+
+def check_collection_result(data: Any, what: str) -> dict[str, Any]:
+    """Validate a collection/v1 response's ``result`` verdict; raise PlatformError on rejection.
+
+    Verified live: every collection/v1 answer carries ``{"result":
+    {"request_result": "ACCEPTED"|"REJECTED", "error": {"error": "<reason>"}}}``
+    alongside the payload, and a rejected request is still HTTP 200. Returns
+    ``data`` when the verdict is ``ACCEPTED``.
+    """
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict) or "request_result" not in result:
+        raise PlatformError(
+            f"{what}: Crosswork did not return a collection result envelope. "
+            f"Response: {str(data)[:300]}"
+        )
+    verdict = result.get("request_result")
+    if verdict != COLLECTION_ACCEPTED:
+        error = result.get("error")
+        reason = error.get("error") if isinstance(error, dict) else error
+        raise PlatformError(
+            f"{what} was {verdict or 'not accepted'}: {reason or 'no reason given'}"
+        )
+    return data
+
+
+def check_alarm_v1(data: Any, what: str) -> Any:
+    """Raise PlatformError when an alarm/v1 HTTP 200 body is an error document; else return data.
+
+    Verified live: ``POST /crosswork/alarm/v1/query`` reports failures as HTTP
+    200 with ``{"error": "Fail", "code": 0, "message": "Input Request is
+    invalid"}``, so the HTTP status proves nothing and every alarm/v1 response
+    must pass through here.
+    """
+    if isinstance(data, dict) and str(data.get("error", "")).strip().lower() == "fail":
+        message = data.get("message") or "no reason given"
+        code = data.get("code")
+        suffix = f" (code {code})" if code is not None else ""
+        raise PlatformError(f"{what} failed{suffix}: {message}")
+    return data
+
+
+def alarms_criteria(
+    limit: int,
+    page: int,
+    *,
+    where: str | None = None,
+    order: str | None = None,
+) -> str:
+    """The ``criteria`` string for ``POST /crosswork/alarms/v1/query``.
+
+    Verified live: only ``select * from alarm limit {limit} page {page}`` with a
+    0-based page (the UI sends ``limit 20 page 0``). The 7.2 alarms document
+    (``crosswork_alarms_and_events_ap_is_7_2_0.json``) shows the same grammar
+    taking ``where`` and ``order`` clauses — e.g. ``select * from event limit
+    100 page 0 where eventCategory=3 order userName asc`` — and marks
+    ``POST /crosswork/alarms/v1/query`` ``deprecated: true`` (it still answers
+    on the lab). ``where``/``order`` are appended verbatim as ``where {where}``
+    / ``order {order}`` and are UNVERIFIED live for alarms; leave them unset for
+    the verified form. ``limit`` must be 1..:data:`ALARMS_MAX_LIMIT` and
+    ``page`` >= 0 — enforced here so a bad value is a clear PlatformError
+    rather than a 500 from the platform.
+    """
+    if not 1 <= limit <= ALARMS_MAX_LIMIT:
+        raise PlatformError(
+            f"Alarm page size must be between 1 and {ALARMS_MAX_LIMIT}, got {limit}."
+        )
+    if page < 0:
+        raise PlatformError(f"Alarm page number must be 0 or greater, got {page}.")
+    criteria = f"select * from alarm limit {limit} page {page}"
+    if where and where.strip():
+        criteria += f" where {where.strip()}"
+    if order and order.strip():
+        criteria += f" order {order.strip()}"
+    return criteria
