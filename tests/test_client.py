@@ -714,11 +714,11 @@ def test_empty_500_means_backend_unavailable():
     from cnc_mcp.errors import http_error
 
     msg = str(http_error(httpx.Response(500)))
-    assert "not available on this deployment" in msg
-    assert msg.endswith("or its service is down.")  # no dangling "Platform said:"
+    assert "EMPTY body" in msg and "not available here" in msg
+    assert msg.endswith("the feature is not available here.")  # no dangling "Platform said:"
     # a 500 WITH a body keeps the generic/marker hints
     msg = str(http_error(httpx.Response(500, json={"error": "boom"})))
-    assert "not available on this deployment" not in msg and "boom" in msg
+    assert "EMPTY body" not in msg and "boom" in msg
 
 
 def test_restconf_multiple_errors_are_joined():
@@ -759,3 +759,20 @@ async def test_restconf_error_surfaces_through_client(settings):
         assert "required key is missing" in str(excinfo.value)
     finally:
         await client.aclose()
+
+
+@respx.mock
+async def test_aclose_logs_the_auth_strategy_out(make_settings):
+    """ApiClient.aclose() releases the platform session before closing the pool."""
+    from cnc_mcp.auth import CrossworkCasAuth
+
+    settings = make_settings(api_token="", username="mcp-admin", password="secret")
+    tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
+    respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
+    respx.post(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200, text="a.b.c"))
+    respx.get(f"{BASE_URL}/v1/thing").mock(return_value=httpx.Response(200, json={}))
+    logout = respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
+    client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
+    await client.request_json("GET", "/v1/thing")
+    await client.aclose()
+    assert logout.call_count == 1

@@ -69,6 +69,7 @@ def link_url(encoded_link: str, network: str = "Default-network") -> str:
 TP_ATTRS = "cisco-crosswork-topology-state:termination-point-attributes"
 L3_NODE = "ietf-l3-unicast-topology-state:l3-node-attributes"
 SR_MPLS = "ietf-sr-mpls-topology-state:sr-mpls"
+SPF_ALGORITHM = "ietf-segment-routing-common:prefix-sid-algorithm-shortest-path"
 PCEP = "cisco-crosswork-l3-te-topology:node-pcep-sessions"
 L3_LINK = "ietf-l3-unicast-topology-state:l3-link-attributes"
 L2_LINK = "ietf-l2-topology-state:l2-link-attributes"
@@ -112,13 +113,15 @@ def l3_attributes(node_id: str, index: int, pcep: bool) -> dict[str, Any]:
             {
                 "prefix": f"{router_id}/32",
                 SR_MPLS: [
-                    {
+                    {  # verified shape: an SRGB index; the label is lower-bound + start-sid
                         "algorithm-value": 0,
-                        "algorithm": "spf",
-                        "sid": index,
+                        "algorithm": SPF_ALGORITHM,
                         "value-type": "index",
-                        "is-local": True,
+                        "is-local": False,
+                        "range": 1,
+                        "last-hop-behavior": "php",
                         "is-node": True,
+                        "start-sid": index,
                     }
                 ],
             },
@@ -720,7 +723,8 @@ async def test_get_node_markdown_encodes_key_and_renders_details(mcp):
     assert "IS-IS: level level-2 system-id 0000.0000.0001" in text
     assert "SR-MPLS: srgb=16000-23999 srlb=15000-15999 msd=10" in text
     assert "Prefixes (2, 1 with SR-MPLS SIDs):" in text
-    assert "- 10.0.0.1/32 -> sid 1 algorithm spf (0)" in text
+    # the index (1) is rendered as the absolute label (SRGB 16000 + 1)
+    assert "- 10.0.0.1/32 -> sid 16001 (index 1) algorithm 0" in text
     assert "- 10.1.1.0/30 -> no SID" in text
     assert "PCEP sessions (1):" in text
     assert (
@@ -1264,3 +1268,17 @@ async def test_tools_registered_read_only_and_flat(mcp):
         assert tool.description and len(tool.description) > 40, tool.name
         for prop in tool.input_schema.get("properties", {}).values():
             assert prop.get("type") != "object", tool.name
+
+
+def test_prefix_sid_label_adds_index_to_srgb_and_passes_absolute_through():
+    from cnc_mcp.tools.topology import prefix_sid_label, srgb_lower_bound
+
+    l3 = {SR_MPLS: {"srgb": [{"lower-bound": 16000, "upper-bound": 23999}]}}
+    assert srgb_lower_bound(l3) == 16000
+    assert srgb_lower_bound({}) is None
+    assert prefix_sid_label({"value-type": "index", "start-sid": 4}, 16000) == 16004
+    assert prefix_sid_label({"value-type": "absolute", "start-sid": 16004}, 16000) == 16004
+    assert prefix_sid_label({"sid": 16004}, None) == 16004  # OpenAPI spelling: a label
+    assert prefix_sid_label({"value-type": "index", "start-sid": 4}, None) is None
+    assert prefix_sid_label({"start-sid": "x"}, 16000) is None
+    assert prefix_sid_label({}, 16000) is None

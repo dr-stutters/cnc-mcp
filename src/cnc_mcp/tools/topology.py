@@ -352,6 +352,44 @@ def prefix_sids_of(prefix: dict[str, Any]) -> list[dict[str, Any]]:
     return dict_items(field(prefix, SR_MPLS))
 
 
+def srgb_lower_bound(l3: dict[str, Any]) -> int | None:
+    """The first SRGB block's ``lower-bound`` (16000 on the lab), or None."""
+    sr = sr_mpls_of(l3)
+    for block in dict_items(field(sr, "srgb") if sr else None):
+        lower = field(block, "lower-bound")
+        try:
+            return int(lower)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def prefix_sid_label(entry: dict[str, Any], srgb_lower: int | None) -> int | None:
+    """The absolute MPLS label of one prefix-SID entry, or None.
+
+    Verified live: the feed publishes prefix-SIDs as
+    ``{"value-type": "index", "start-sid": 4, "range": 1, "algorithm-value": 0,
+    ...}`` — an INDEX into the SRGB, so the label is ``srgb.lower-bound +
+    start-sid`` (16000 + 4 = 16004, the value the PCE expects in
+    ``node-ipv4-sid``). ``value-type: "absolute"`` carries the label itself in
+    ``start-sid``. A bare ``sid`` key (the OpenAPI spelling) is accepted as an
+    absolute label too. An index without a known SRGB yields None.
+    """
+    for key in ("start-sid", "sid"):
+        raw = field(entry, key)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        kind = str(field(entry, "value-type") or ("absolute" if key == "sid" else "index"))
+        if kind.lower() == "absolute":
+            return value
+        return srgb_lower + value if srgb_lower is not None else None
+    return None
+
+
 def prefix_sid_count(l3: dict[str, Any]) -> int:
     """How many of the node's prefixes carry SR-MPLS SID entries."""
     return sum(1 for p in prefixes_of(l3) if prefix_sids_of(p))
@@ -651,9 +689,12 @@ def _node_markdown(network_id: str, node: dict[str, Any]) -> str:
         for prefix in prefixes:
             sids = prefix_sids_of(prefix)
             if sids:
+                srgb_lower = srgb_lower_bound(l3)
                 sid_text = ", ".join(
-                    f"sid {field(s, 'sid', '?')} algorithm {field(s, 'algorithm', '?')} "
-                    f"({field(s, 'algorithm-value', '?')})"
+                    f"sid {prefix_sid_label(s, srgb_lower) or '?'} "
+                    f"({field(s, 'value-type', '?')} "
+                    f"{field(s, 'start-sid', field(s, 'sid', '?'))}) "
+                    f"algorithm {field(s, 'algorithm-value', '?')}"
                     for s in sids
                 )
             else:

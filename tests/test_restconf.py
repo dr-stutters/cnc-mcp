@@ -531,7 +531,7 @@ def test_explain_empty_500_only_for_empty_body_500():
     assert explain_empty_500(500, "") == EMPTY_500_EXPLANATION
     assert explain_empty_500(500, None) == EMPTY_500_EXPLANATION
     assert explain_empty_500(500, "  \n") == EMPTY_500_EXPLANATION
-    assert "not available on this deployment" in EMPTY_500_EXPLANATION
+    assert "EMPTY body" in EMPTY_500_EXPLANATION and "could not resolve" in EMPTY_500_EXPLANATION
 
 
 def test_explain_empty_500_uses_the_same_text_as_http_error():

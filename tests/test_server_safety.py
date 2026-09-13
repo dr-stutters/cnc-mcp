@@ -26,6 +26,8 @@ WRITE_TOOLS = {
     "cnc_delete_credential_profile",
     "cnc_create_provider",
     "cnc_delete_provider",
+    "cnc_create_sr_policy",
+    "cnc_delete_sr_policy",
 }
 
 

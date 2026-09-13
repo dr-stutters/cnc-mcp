@@ -243,9 +243,12 @@ def _hint_for(status: int, response: httpx.Response, data: Any) -> str:
         )
     if status == 500 and not text.strip():
         return (
-            "The backend behind this call is not available on this deployment (the gateway "
-            "answered 500 with an empty body). Retrying will not help; the feature is absent "
-            "or its service is down."
+            "The gateway answered 500 with an EMPTY body. On this platform that means either the "
+            "backend behind the call is absent or down (e.g. the OPM package service — retrying "
+            "will not help) or, on the Optimization Engine RPCs, an input the engine could not "
+            "resolve (an unknown node or interface name, a router-id where a host name belongs "
+            "or vice versa, an explicit hop without its SID). Check the inputs against the "
+            "topology first; if they are right, the feature is not available here."
         )
     lowered = text.lower()
     for st, marker, hint in _DETAIL_HINTS:

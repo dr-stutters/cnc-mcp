@@ -12,11 +12,12 @@ devices are unreachable?"*, *"what does the topology look like?"*, *"which SR
 policies are down and what path do they take?"*, *"is the
 Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
 enabled, onboard devices, manage credential profiles and providers, map
-devices to gateways, and drive NSO sync and connect actions — all
+devices to gateways, drive NSO sync and connect actions, and provision SR-TE
+policies through the SR-PCE — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**59 tools** (47 read, 12 write) over 8 API areas. Every tool was built from
+**71 tools** (55 read, 16 write) over 9 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -76,6 +77,7 @@ Read tools — always registered:
 | **Providers** (SR-PCE, NSO, …) | `cnc_list_providers` · `cnc_get_provider` |
 | **Topology** (RESTCONF NBI) | `cnc_get_topology_summary` · `cnc_list_topology_nodes` · `cnc_get_topology_node` · `cnc_list_node_interfaces` · `cnc_get_node_interface` · `cnc_list_topology_links` · `cnc_get_topology_link` |
 | **TE state** (SR-PCE feed) | `cnc_get_te_summary` · `cnc_list_sr_policies` · `cnc_get_sr_policy` · `cnc_list_p2mp_policies` · `cnc_get_p2mp_policy` · `cnc_list_rsvp_te_tunnels` · `cnc_get_rsvp_te_tunnel` · `cnc_get_link_performance_metrics` · `cnc_get_sr_policy_performance_metrics` · `cnc_get_rsvp_tunnel_performance_metrics` |
+| **SR-TE operations** (Optimization Engine) | `cnc_list_sr_policies_on_nodes` · `cnc_list_sr_policies_on_interface` · `cnc_get_sr_policy_routes` · `cnc_get_sr_policy_metrics` · `cnc_preview_sr_policy_route` · `cnc_dryrun_sr_policy` · `cnc_get_sr_policy_path_notification_state` · `cnc_wait_for_sr_policy_oper_state` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
 | **Data Gateway** | `cnc_list_data_gateways` · `cnc_get_data_gateway` · `cnc_list_data_gateway_pools` · `cnc_get_data_gateway_load_metrics` · `cnc_list_data_gateway_outages` · `cnc_get_data_gateway_health` · `cnc_get_data_gateway_global_parameters` · `cnc_list_data_destinations` · `cnc_list_data_gateway_files` |
 | **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_wait_for_device_nso_state` |
@@ -90,6 +92,7 @@ the MCP `destructive` annotation:
 | **Providers** | `cnc_create_provider` · `cnc_update_provider` · `cnc_delete_provider` |
 | **Data Gateway** | `cnc_map_devices_to_data_gateway` |
 | **NSO** | `cnc_nso_device_action` (check-sync / sync-from / connect / compare-config …) · `cnc_nso_sync_to_device` · `cnc_sync_inventory_with_nso` |
+| **SR-TE operations** | `cnc_create_sr_policy` · `cnc_update_sr_policy` · `cnc_delete_sr_policy` · `cnc_set_sr_policy_path_notifications` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -239,6 +242,15 @@ a platform-notes file kept outside this repository.
   provider reports "Reachable" forever while the topology stays L2-only —
   the HTTP leg is just the reachability probe (and RSVP/Tree-SID/PCEP data).
   The HTTP leg itself must use `authentication digest` on the router.
+- **The Optimization Engine rejects bad input with a bare, empty 500** — the same
+  answer as an absent backend — so the SR-TE tools validate node names, router-ids
+  and explicit hops against the topology before every RPC, and explicit hops are
+  sent with both the address *and* the prefix-SID (the documented one-of does not
+  work). Failures otherwise ride inside HTTP 200 (`results[].state: failure` with
+  the platform's message, e.g. "SR Policy name is empty.").
+- **Crosswork caps concurrent SSO sessions per user** (API sessions idle out after
+  8 h by default); the client deletes its ticket-granting ticket on close so a
+  restart loop or a run of scripts cannot lock the service account out.
 - **Topology NBI keys must be fully percent-encoded** (interface names carry
   `/`, link ids carry spaces and `:`); an unencoded `/` breaks the route and
   the gateway answers a plain 404, while a properly encoded key that matches
@@ -251,8 +263,8 @@ a platform-notes file kept outside this repository.
 ## Roadmap
 
 The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
-this server covers the inventory, topology, TE state, platform, Data Gateway
-and NSO areas.
+this server covers the inventory, topology, TE state, SR-TE operations,
+platform, Data Gateway and NSO areas.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
@@ -279,7 +291,8 @@ src/cnc_mcp/
   restconf.py     RESTCONF NBI helpers
   emf.py          EMF RESTCONF helpers
   probe.py        routing classification and availability probing
-  tools/          devices, credentials, providers, topology, te_state, platform, data_gateway, nso
+  tools/          devices, credentials, providers, topology, te_state, sr_te_operations,
+                  platform, data_gateway, nso
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

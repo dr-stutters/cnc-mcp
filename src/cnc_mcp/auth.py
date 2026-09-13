@@ -67,6 +67,13 @@ class AuthStrategy:
     def invalidate(self) -> None:
         """Drop any cached credentials/tokens."""
 
+    async def logout(self, http: httpx.AsyncClient) -> None:
+        """Release the platform-side session, if the scheme has one.
+
+        Called by ApiClient.aclose(). Must never raise: a failed logout is
+        logged and forgotten, since the caller is shutting down anyway.
+        """
+
 
 class NoAuth(AuthStrategy):
     """No authentication (rare; useful for local mocks)."""
@@ -265,6 +272,16 @@ class CrossworkCasAuth(LoginTokenAuth):
        ``aud`` claim is that service URL, ``sub`` is the username).
     3. Every API call carries ``Authorization: Bearer <JWT>``. The JWT lives
        about 8 hours; re-login simply repeats both legs.
+    4. ``DELETE /crosswork/sso/v1/tickets/{TGT}`` **with the Bearer JWT** ends
+       the SSO session (without the header it answers ``400 "Authorization
+       header is missing"`` and the session stays). This matters: Crosswork
+       enforces a **per-user concurrent session limit** (RBAC
+       ``NumParallelSessionsPerUser``; API sessions idle out only after
+       ``IdleSessionTimeoutAPI``, 480 min by default), and leg 1 answers
+       ``503 {"error": "Per user session limit reached. Close unused sessions
+       or try after sometime."}`` once it is hit (verified live after a run of
+       short-lived scripts that logged in and never out). ApiClient.aclose()
+       therefore calls logout(), which deletes the TGT.
 
     The gateway never answers 401. A missing or garbage token is a 403
     (``"Missing Authorization header"`` / ``"Unauthorized request"``) and a
@@ -275,8 +292,12 @@ class CrossworkCasAuth(LoginTokenAuth):
 
     TICKETS_PATH = "/crosswork/sso/v1/tickets"
     SERVICE_PATH = "/app-dashboard"
+    # Verified live: a bad/expired JWT is 403 "Unauthorized request"; no header is 403
+    # "Missing Authorization header"; a session terminated server-side (an admin ending
+    # it, or the TGT deleted) is 403 "Your session has ended. Log into the system again
+    # to continue." — all three mean "log in again", none is a permission problem.
     _AUTH_FAILURE_BODIES: dict[int, tuple[str, ...]] = {
-        403: ("missing authorization header", "unauthorized request"),
+        403: ("missing authorization header", "unauthorized request", "your session has ended"),
         500: ("middleware error",),
     }
 
@@ -298,6 +319,7 @@ class CrossworkCasAuth(LoginTokenAuth):
             auth_scheme="Bearer",
         )
         self._service_path = service_path
+        self._tgt: str | None = None
 
     def is_auth_failure(self, response: httpx.Response) -> bool:
         if response.status_code == 401:
@@ -320,6 +342,14 @@ class CrossworkCasAuth(LoginTokenAuth):
                 "*_USERNAME and *_PASSWORD environment variables. Crosswork returns the "
                 "same 'Invalid credentials' for a wrong password and for a username that "
                 "does not exist, so confirm the account under Administration > Users and Roles."
+            )
+        if first.status_code == 503 and "session limit" in _error_text(first):
+            raise PlatformError(
+                "Login to Crosswork failed: this user has reached its concurrent-session "
+                "limit ('Per user session limit reached'). Sessions left open by other "
+                "clients (or earlier runs that did not log out) must expire or be closed "
+                "first; Crosswork's session timeout controls how long that takes. Use a "
+                "dedicated service account for this server."
             )
         if not first.is_success:
             raise PlatformError(
@@ -348,4 +378,21 @@ class CrossworkCasAuth(LoginTokenAuth):
                 "expects the JWT flow used by Crosswork Network Controller."
             )
         self._token = token
+        self._tgt = tgt
         logger.info("Authenticated to Crosswork (JWT acquired)")
+
+    async def logout(self, http: httpx.AsyncClient) -> None:
+        """Delete the ticket-granting ticket so the SSO session is released."""
+        tgt, self._tgt = self._tgt, None
+        if not tgt:
+            return
+        try:
+            response = await http.delete(f"{self._login_path}/{tgt}", headers=self.headers())
+        except httpx.HTTPError as exc:
+            logger.warning("Crosswork SSO logout failed: %s", type(exc).__name__)
+            return
+        if response.is_success:
+            logger.info("Crosswork SSO session released")
+        else:
+            logger.warning("Crosswork SSO logout answered %s", response.status_code)
+        self._token = None

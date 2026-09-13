@@ -175,6 +175,11 @@ class ApiClient:
             ) from e
 
     async def aclose(self) -> None:
+        """Release the platform session (if the auth scheme has one), then the pool."""
+        try:
+            await self._auth.logout(self._http)
+        except Exception:  # never let shutdown fail because of a logout
+            logger.warning("Auth logout raised during close", exc_info=True)
         await self._http.aclose()
 
     async def _request_with_retries(

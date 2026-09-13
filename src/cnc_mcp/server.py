@@ -96,6 +96,13 @@ def build_instructions(settings: Settings) -> str:
         "the list tools print them; the tools handle URL encoding. Performance metrics "
         "exist for IGP links and policies only (keyed reads, no listing). An all-ETHERNET "
         "topology means the SR-PCE gRPC feed is not up.",
+        "- SR-TE operations (cnc_create_sr_policy, cnc_dryrun_sr_policy, ...) go through the "
+        "Optimization Engine and the SR-PCE: policies created here are PCE-initiated "
+        "(pcep-flag-c 1) and appear on the headend within seconds; PCC-initiated policies "
+        "(pcep-flag-c 0) are router configuration and cannot be removed through the PCE. "
+        "Head-ends/end-points may be given as hostnames or TE router-ids; explicit hops as "
+        "node names. Dry-run before creating; a bare 500 from the engine means an input it "
+        "could not resolve.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

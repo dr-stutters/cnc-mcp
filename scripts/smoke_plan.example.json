@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2/PE2 (TE router-ids 10.0.0.1/.2/.4/.3), a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce' feeding CNC over gRPC with a PCE-delegated SR policy PE1->PE2 color 100, the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, and NSO check-sync/sync-from/sync-to on one device.",
+  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2/PE2 (TE router-ids 10.0.0.1/.2/.4/.3), a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce' feeding CNC over gRPC with a PCC-initiated SR policy PE1<->PE2 color 100, the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, NSO check-sync/sync-from/sync-to on one device, and a PCE-initiated SR policy (color 200) that it creates, updates and deletes.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -301,6 +301,117 @@
         "tunnel_id": 1
       },
       "expect_error": true
+    },
+    {
+      "tool": "cnc_list_sr_policies_on_nodes",
+      "args": {
+        "nodes": "PE1,P1"
+      }
+    },
+    {
+      "tool": "cnc_list_sr_policies_on_nodes",
+      "args": {
+        "nodes": "P1",
+        "relation": "through",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_sr_policies_on_nodes",
+      "args": {
+        "nodes": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_sr_policies_on_interface",
+      "args": {
+        "node": "P1",
+        "interface": "GigabitEthernet0/0/0/0"
+      }
+    },
+    {
+      "tool": "cnc_list_sr_policies_on_interface",
+      "args": {
+        "node": "P1",
+        "interface": "GigabitEthernet0/0/0/9"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_sr_policy_routes",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      }
+    },
+    {
+      "tool": "cnc_get_sr_policy_routes",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 999
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_sr_policy_metrics",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_preview_sr_policy_route",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2"
+      }
+    },
+    {
+      "tool": "cnc_preview_sr_policy_route",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "hops": "P2,PE2",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_dryrun_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "objective": "delay",
+        "disjointness_type": "node",
+        "association_group": 1
+      }
+    },
+    {
+      "tool": "cnc_dryrun_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "path_type": "explicit",
+        "hops": "P2,PE2"
+      }
+    },
+    {
+      "tool": "cnc_dryrun_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "path_type": "bandwidth",
+        "bandwidth_mbps": 100
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_sr_policy_path_notification_state",
+      "args": {}
     },
     {
       "tool": "cnc_list_tags",
@@ -705,6 +816,109 @@
         "profile": "smoke-cred"
       },
       "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200,
+        "path_name": "smoke-explicit",
+        "description": "cnc-mcp smoke",
+        "path_type": "explicit",
+        "hops": "P2,PE2"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200,
+        "path_name": "smoke-explicit",
+        "path_type": "explicit",
+        "hops": "P2,PE2"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_wait_for_sr_policy_oper_state",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200,
+        "timeout_seconds": 60
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_sr_policy_routes",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200,
+        "path_name": "smoke-explicit",
+        "description": "cnc-mcp smoke (dynamic now)",
+        "path_type": "dynamic",
+        "objective": "te-metric"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 200
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 200
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_sr_policy_path_notifications",
+      "args": {
+        "enabled": false
+      }
     }
   ]
 }

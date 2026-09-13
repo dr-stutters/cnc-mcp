@@ -266,3 +266,68 @@ def test_default_strategy_only_treats_401_as_auth_failure():
     assert auth.is_auth_failure(httpx.Response(401)) is True
     denied = httpx.Response(403, json={"error": "Unauthorized request"})
     assert auth.is_auth_failure(denied) is False
+
+
+@respx.mock
+async def test_crosswork_logout_deletes_the_tgt_and_forgets_the_token():
+    """Crosswork caps concurrent sessions per user: closing must release the SSO session."""
+    _mock_cas()
+    delete = respx.delete(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(200))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+        await auth.logout(http)
+        await auth.logout(http)  # idempotent: nothing to release the second time
+    assert delete.call_count == 1
+    # verified live: without the Bearer JWT the delete answers 400 and the session stays
+    assert delete.calls[0].request.headers["Authorization"] == f"Bearer {JWT}"
+    assert auth.headers() == {}
+
+
+@respx.mock
+async def test_crosswork_logout_never_raises():
+    _mock_cas()
+    respx.delete(f"{TICKETS}/TGT-1-abc").mock(side_effect=httpx.ConnectError("gone"))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+        await auth.logout(http)  # must not raise
+    assert not auth._tgt
+
+
+async def test_crosswork_logout_without_login_is_a_noop():
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.logout(http)
+
+
+@respx.mock
+async def test_crosswork_session_limit_503_is_explained():
+    # Verified live: leg 1 answers 503 with this body once the user's session cap is hit.
+    respx.post(TICKETS).mock(
+        return_value=httpx.Response(
+            503,
+            json={
+                "error": (
+                    "Per user session limit reached. Close unused sessions or try after sometime."
+                )
+            },
+        )
+    )
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        with pytest.raises(PlatformError, match="concurrent-session limit"):
+            await auth.ensure_authenticated(http)
+
+
+@respx.mock
+async def test_crosswork_terminated_session_403_is_an_auth_failure():
+    # verified live: after the TGT is deleted (or an admin ends the session) every call
+    # answers 403 "Your session has ended..." — the client must log in again, not give up
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    ended = httpx.Response(
+        403, json={"error": "Your session has ended. Log into the system again to continue."}
+    )
+    assert auth.is_auth_failure(ended)
+    denied = httpx.Response(403, json={"error": "Permission denied for role"})
+    assert not auth.is_auth_failure(denied)

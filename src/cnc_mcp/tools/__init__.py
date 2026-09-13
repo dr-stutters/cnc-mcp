@@ -15,6 +15,7 @@ from cnc_mcp.tools import (
     nso,
     platform,
     providers,
+    sr_te_operations,
     te_state,
     topology,
 )
@@ -25,6 +26,7 @@ ALL_MODULES = [
     providers,  # SR-PCE / NSO / ... providers
     topology,  # topology graph on the RESTCONF NBI (SR-PCE gRPC feed + LLDP)
     te_state,  # TE state on the NBI: SR / P2MP / RSVP-TE policies, performance metrics
+    sr_te_operations,  # Optimization Engine: SR policy create/modify/delete, dry run, routes
     platform,  # tags, users, applications, alarms, inventory jobs
     data_gateway,  # Crosswork Data Gateway: gateways, pools, metrics, destinations, mapping
     nso,  # NSO integration: device actions, policy, NSO's own device view, sync waits
