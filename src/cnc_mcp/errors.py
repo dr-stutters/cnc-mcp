@@ -55,17 +55,27 @@ def _parse_json(response: httpx.Response) -> Any | None:
 def _restconf_errors(data: Any) -> list[dict[str, Any]]:
     """The ``error`` entries of a RESTCONF error document, else an empty list.
 
-    Crosswork's RESTCONF NBIs use the bare ``errors`` key (verified live on
-    ``nbi/topology/v3``); the NSO proxy (``/crosswork/proxy/nso/restconf``) uses
-    the RFC 8040 ``ietf-restconf:errors`` key (verified live: its 415 answer to
-    an ``application/json`` body).
+    Three spellings, all verified live: Crosswork's RESTCONF NBIs use the bare
+    ``errors`` key (``nbi/topology/v3``); the NSO proxy
+    (``/crosswork/proxy/nso/restconf``) uses the RFC 8040
+    ``ietf-restconf:errors`` key (its 415 answer to an ``application/json``
+    body); the EMF RESTCONF services (``/crosswork/inventory/restconf``,
+    ``/crosswork/alarm/restconf``) use ``rc.errors`` whose ``error`` is a single
+    object, not a list (e.g. ``{"rc.errors":{"error":{"error-tag":"invalid-value",
+    "error-app-tag":"FW.0089","error-message":"Cannot find device with Node
+    Name: nope"}}}``).
     """
     if not isinstance(data, dict):
         return []
-    for key in ("errors", "ietf-restconf:errors"):
+    for key in ("errors", "ietf-restconf:errors", "rc.errors"):
         block = data.get(key)
-        if isinstance(block, dict) and isinstance(block.get("error"), list):
-            return [e for e in block["error"] if isinstance(e, dict)]
+        if not isinstance(block, dict):
+            continue
+        entries = block.get("error")
+        if key == "rc.errors" and isinstance(entries, dict):
+            entries = [entries]  # the EMF spelling carries one object, not a list
+        if isinstance(entries, list):
+            return [e for e in entries if isinstance(e, dict)]
     return []
 
 

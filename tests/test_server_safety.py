@@ -34,6 +34,8 @@ WRITE_TOOLS = {
     "cnc_lock_device",
     "cnc_acknowledge_alarm",
     "cnc_clear_alarm",
+    "cnc_deploy_config_template",
+    "cnc_delete_device_backup",
 }
 
 

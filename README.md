@@ -17,7 +17,7 @@ policies through the SR-PCE — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**120 tools** (88 read, 32 write) over 12 API areas. Every tool was built from
+**143 tools** (104 read, 39 write) over 14 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -83,6 +83,8 @@ Read tools — always registered:
 | **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_wait_for_device_nso_state` |
 | **Inventory extras** | `cnc_get_device_summary` · `cnc_get_inventory_config` · `cnc_get_collection_cadence` · `cnc_get_device_tags` |
 | **Fault** | `cnc_get_alarm` · `cnc_search_alarms` · `cnc_list_events` · `cnc_list_device_alarms` · `cnc_get_alarm_settings` · `cnc_get_alarm_manager_settings` · `cnc_list_event_types` · `cnc_get_event_type_recommendation` · `cnc_list_alarm_suppression_policies` |
+| **Device configuration** | `cnc_get_device_config_preferences` · `cnc_list_device_backups` · `cnc_get_device_backup` · `cnc_list_config_backup_jobs` · `cnc_get_config_backup_job` · `cnc_list_config_templates` · `cnc_get_config_template` · `cnc_list_template_deployments` · `cnc_get_template_deployment` · `cnc_wait_for_config_backup_job` · `cnc_wait_for_template_deployment` |
+| **EMF inventory** | `cnc_list_ems_nodes` · `cnc_get_ems_node` · `cnc_list_ems_interfaces` · `cnc_get_ems_interface` · `cnc_get_ems_inventory_summary` |
 | **Platform admin & RBAC** | `cnc_get_platform_version` · `cnc_get_cluster_health` · `cnc_list_cluster_nodes` · `cnc_get_cluster_node` · `cnc_list_microservices` · `cnc_list_application_status` · `cnc_list_app_manager_jobs` · `cnc_list_app_manager_events` · `cnc_get_maintenance_status` · `cnc_list_certificates` · `cnc_check_certificate_expiry` · `cnc_get_login_banner` · `cnc_get_session_config` · `cnc_list_active_sessions` · `cnc_get_user` · `cnc_list_roles` · `cnc_get_role_tasks` · `cnc_get_role_permissions` · `cnc_get_password_policy` · `cnc_list_secured_apis` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
@@ -99,6 +101,7 @@ the MCP `destructive` annotation:
 | **Platform admin** | `cnc_set_login_banner` · `cnc_set_maintenance_mode` · `cnc_restart_microservice` |
 | **Inventory extras** | `cnc_create_tag` · `cnc_delete_tag` · `cnc_assign_tags` · `cnc_unassign_tags` · `cnc_set_device_location` · `cnc_clear_device_location` · `cnc_lock_device` · `cnc_unlock_device` |
 | **Fault** | `cnc_acknowledge_alarm` · `cnc_annotate_alarm` · `cnc_clear_alarm` · `cnc_create_alarm_suppression_policy` · `cnc_delete_alarm_suppression_policy` |
+| **Device configuration** | `cnc_backup_device_config` · `cnc_delete_config_backup_job` · `cnc_delete_device_backup` · `cnc_create_config_template` · `cnc_delete_config_template` · `cnc_deploy_config_template` · `cnc_delete_template_deployment` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -269,15 +272,15 @@ a platform-notes file kept outside this repository.
 ## Roadmap
 
 The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
-this server covers the inventory (incl. tags, locks, locations), topology, TE
-state, SR-TE operations, fault management, platform administration and RBAC,
-Data Gateway and NSO areas.
+this server covers the inventory (incl. tags, locks, locations), the EMF
+inventory, topology, TE state, SR-TE operations, fault management, device
+configuration (backups, templates, deployments), platform administration and
+RBAC, Data Gateway and NSO areas.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
 | `services` | service inventory and VPN / SR-TE service reads (Crosswork Active Topology) |
-| `device_config` | configuration backup / restore, templates, deployments |
 | later | change automation, health insights, collection jobs, notifications, RBAC, optimization-engine operations |
 
 ## Project layout
@@ -296,8 +299,9 @@ src/cnc_mcp/
   restconf.py     RESTCONF NBI helpers
   emf.py          EMF RESTCONF helpers
   probe.py        routing classification and availability probing
-  tools/          devices, credentials, providers, inventory_extras, topology, te_state,
-                  sr_te_operations, platform, fault, data_gateway, nso, admin
+  tools/          devices, credentials, providers, inventory_extras, physical_inventory,
+                  topology, te_state, sr_te_operations, platform, fault, device_config,
+                  data_gateway, nso, admin
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

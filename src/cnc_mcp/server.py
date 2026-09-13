@@ -115,6 +115,13 @@ def build_instructions(settings: Settings) -> str:
         "are a separate list (cnc_list_device_alarms). Tags are assigned by PATCHing the device "
         "(cnc_assign_tags), which briefly flips it to ROBOT_OPER_STATE_CHECKING; a device lock "
         "(cnc_lock_device) needs the device in ROBOT_OPER_STATE_OK.",
+        "- Device configuration (cnc_*_device_backup*, cnc_*_config_template*, "
+        "cnc_deploy_config_template): backups and template deployments are asynchronous "
+        "jobs — schedule, then use the matching cnc_wait_for_* tool; a deployment changes "
+        "the device configuration within seconds and there is no undo (deploy a reverting "
+        "template). The EMF inventory (cnc_list_ems_nodes) is a separate view keyed by "
+        "FDN ('MD=CISCO_EMS!ND=<name>'); a node must be MANAGED_AND_SYNCHRONIZED there for "
+        "config management and device alarms to work.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

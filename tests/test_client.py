@@ -553,6 +553,23 @@ _HOME_APP_YAML = (
             "no such object",
             "RESTCONF data-missing: no node",
         ),
+        # EMF RESTCONF form: rc.errors with a single error OBJECT (verified live on the
+        # inventory RESTCONF: an unknown ndFdn)
+        (
+            400,
+            {
+                "rc.errors": {
+                    "error": {
+                        "error-type": "application",
+                        "error-tag": "invalid-value",
+                        "error-app-tag": "FW.0089",
+                        "error-message": "Cannot find device with Node Name: nope",
+                    }
+                }
+            },
+            "wrong type for the YANG model",
+            "RESTCONF invalid-value: Cannot find device with Node Name: nope",
+        ),
         # RFC 8040 namespaced form (NSO proxy)
         (
             409,

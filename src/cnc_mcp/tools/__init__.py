@@ -12,10 +12,12 @@ from cnc_mcp.tools import (
     admin,
     credentials,
     data_gateway,
+    device_config,
     devices,
     fault,
     inventory_extras,
     nso,
+    physical_inventory,
     platform,
     providers,
     sr_te_operations,
@@ -36,6 +38,8 @@ ALL_MODULES = [
     admin,  # platform admin: cluster/node/microservice health, app manager, certs, RBAC
     inventory_extras,  # device summaries, tags assign/unassign, device lock, geo-coordinates
     fault,  # alarm lifecycle (ack/note/clear), events, settings, suppression policies
+    device_config,  # config backups and jobs, templates and deployments
+    physical_inventory,  # EMF RESTCONF inventory: nodes, termination points
 ]
 
 
