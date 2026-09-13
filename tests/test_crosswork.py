@@ -15,6 +15,7 @@ from cnc_mcp.crosswork import (
     collection_query_body,
     dg_query_body,
     ipaddr,
+    is_job_pending,
     page_envelope,
     parse_impacted,
     query_body,
@@ -275,3 +276,20 @@ def test_alarms_criteria_where_and_order_clauses_are_appended_verbatim():
     # blank clauses leave the verified form untouched
     assert alarms_criteria(20, 0, where="", order="  ") == "select * from alarm limit 20 page 0"
     assert alarms_criteria(20, 0, where=None, order=None) == "select * from alarm limit 20 page 0"
+
+
+def test_check_job_pending_states_are_returned_not_raised():
+    """Verified: NSO device actions answer JOB_ACCEPTED immediately (they finish later)."""
+    env = check_job(
+        {"job_id": "j4", "state": "JOB_ACCEPTED", "type": "NSO device check sync"},
+        "NSO check-sync",
+    )
+    assert env["pending"] is True and env["impacted_objects"] == []
+    assert is_job_pending(env) and not is_job_pending({"state": "JOB_COMPLETED"})
+
+
+def test_check_job_rejected_and_partial():
+    with pytest.raises(PlatformError, match="state JOB_REJECTED"):
+        check_job({"job_id": "j5", "state": "JOB_REJECTED", "error": "nope"}, "x")
+    env = check_job({"job_id": "j6", "state": "JOB_PARTIAL", "error": "1 of 2 failed"}, "x")
+    assert env["warning"] == "1 of 2 failed"

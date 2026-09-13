@@ -8,7 +8,15 @@ from __future__ import annotations
 from mcp.server.mcpserver import MCPServer
 
 from cnc_mcp.safety import AppContext
-from cnc_mcp.tools import credentials, data_gateway, devices, platform, providers, topology
+from cnc_mcp.tools import (
+    credentials,
+    data_gateway,
+    devices,
+    nso,
+    platform,
+    providers,
+    topology,
+)
 
 ALL_MODULES = [
     devices,  # network devices (inventory nodes)
@@ -17,6 +25,7 @@ ALL_MODULES = [
     topology,  # topology graph (LLDP + SR-PCE)
     platform,  # tags, users, applications, alarms, inventory jobs
     data_gateway,  # Crosswork Data Gateway: gateways, pools, metrics, destinations, mapping
+    nso,  # NSO integration: device actions, policy, NSO's own device view, sync waits
 ]
 
 

@@ -108,8 +108,9 @@ def _substitute(value, captured: dict[str, str]):
     if isinstance(value, list):
         return [_substitute(v, captured) for v in value]
     if isinstance(value, str) and "$" in value:
-        for var, val in captured.items():
-            value = value.replace(f"${var}", val)
+        # Longest names first so "$job" never clobbers the prefix of "$job_id".
+        for var in sorted(captured, key=len, reverse=True):
+            value = value.replace(f"${var}", captured[var])
     return value
 
 

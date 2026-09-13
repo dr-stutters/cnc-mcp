@@ -20,10 +20,10 @@ from cnc_mcp.auth import StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.errors import PlatformError
+from cnc_mcp.formatting import epoch_iso
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import data_gateway
 from cnc_mcp.tools.data_gateway import (
-    epoch_iso,
     flatten_param_value,
     name_matches,
     parse_uuid_list,

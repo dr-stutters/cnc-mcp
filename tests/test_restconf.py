@@ -534,3 +534,24 @@ def test_explain_empty_500_uses_the_same_text_as_http_error():
 )
 def test_explain_empty_500_is_none_otherwise(status, body):
     assert explain_empty_500(status, body) is None
+
+
+def test_is_not_found_404_with_restconf_error_document_is_not_found():
+    """Verified on the NSO proxy: a missing device is 404 + ietf-restconf:errors invalid-value."""
+    body = {
+        "ietf-restconf:errors": {
+            "error": [
+                {
+                    "error-type": "application",
+                    "error-tag": "invalid-value",
+                    "error-message": "uri keypath not found",
+                }
+            ]
+        }
+    }
+    assert is_not_found(404, body) is True
+    assert (
+        is_not_found(404, {"path": "/crosswork/sso/login/x", "status": 404}) is False
+    )  # home-app fallback
+    assert is_not_found(404, {"errorMessage": "No static resource x."}) is False  # Spring
+    assert is_not_found(404, "404 page not found") is False

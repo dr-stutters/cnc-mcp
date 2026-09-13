@@ -188,18 +188,26 @@ def restconf_error_message(status: int, data: Any) -> str | None:
 def is_not_found(status: int, data: Any) -> bool:
     """True when a RESTCONF response means "no such entry".
 
-    Verified: a keyed GET on a nested list (``node=nope``) answers ``409`` with
-    error-tag ``data-missing`` — this platform's spelling of not-found — and
-    only that combination counts. A 409 with any other tag (a real conflict)
-    is not a not-found, and neither is a ``404``: on this gateway a 404 is the
-    home app's unrouted-path fallback (``path`` under ``/crosswork/sso/login/``)
-    or Spring's ``No static resource``, meaning the API prefix or path is
-    absent, never that an entry is missing. Leave 404s to
-    :func:`cnc_mcp.errors.http_error`, which explains them.
+    Two verified spellings:
+
+    - Crosswork's own NBI: a keyed GET on a nested list (``node=nope``) answers
+      ``409`` with error-tag ``data-missing``; a 409 with any other tag is a
+      real conflict.
+    - The NSO proxy: a missing device answers ``404`` **with a RESTCONF error
+      document** (``ietf-restconf:errors``, tag ``invalid-value``, message
+      ``uri keypath not found``).
+
+    A bare 404 (no RESTCONF error document) is never a not-found on this
+    gateway: it is the home app's unrouted-path fallback or Spring's ``No
+    static resource``, meaning the API prefix or path is absent. Those are
+    left to :func:`cnc_mcp.errors.http_error`, which explains them.
     """
-    if status != 409:
-        return False
-    return any((e["tag"] or "").lower() == TAG_DATA_MISSING for e in parse_restconf_errors(data))
+    errors = parse_restconf_errors(data)
+    if status == 409:
+        return any((e["tag"] or "").lower() == TAG_DATA_MISSING for e in errors)
+    if status == 404:
+        return bool(errors)
+    return False
 
 
 def unwrap_list(data: Any, module: str, name: str) -> list[Any]:

@@ -60,10 +60,16 @@ ALARMS_MAX_LIMIT = 200
 COLLECTION_ACCEPTED = "ACCEPTED"
 
 JOB_COMPLETED = "JOB_COMPLETED"
+# RobotNodeJob.state (documented enum): JOB_INVALID, JOB_REJECTED, JOB_ACCEPTED,
+# JOB_DB_UPDATED, JOB_NOTIFICATION_PUBLISHED, JOB_COMPLETED, JOB_FAILED, JOB_RUNNING,
+# JOB_PARTIAL, JOB_COMPLETED_WITH_WARNING.
 # Verified: a no-op or partially applied write answers JOB_COMPLETED_WITH_WARNING with the
-# note in "error". It is a success with an advisory, not a failure.
-JOB_SUCCESS_STATES = {JOB_COMPLETED, "JOB_COMPLETED_WITH_WARNING"}
-JOB_TERMINAL_STATES = JOB_SUCCESS_STATES | {"JOB_FAILED", "JOB_CANCELLED", "JOB_ABORTED"}
+# note in "error" — a success with an advisory. Asynchronous actions (the NSO device
+# actions) answer JOB_ACCEPTED immediately and finish later — accepted, not failed.
+JOB_SUCCESS_STATES = {JOB_COMPLETED, "JOB_COMPLETED_WITH_WARNING", "JOB_PARTIAL"}
+JOB_PENDING_STATES = {"JOB_ACCEPTED", "JOB_RUNNING", "JOB_DB_UPDATED", "JOB_NOTIFICATION_PUBLISHED"}
+JOB_FAILURE_STATES = {"JOB_FAILED", "JOB_REJECTED", "JOB_INVALID", "JOB_CANCELLED", "JOB_ABORTED"}
+JOB_TERMINAL_STATES = JOB_SUCCESS_STATES | JOB_FAILURE_STATES
 
 # Wire enums (verified). UI labels in comments.
 ADMIN_STATES = {
@@ -194,17 +200,24 @@ def page_envelope(
 def check_job(result: Any, what: str) -> dict[str, Any]:
     """Validate an inventory write's job envelope; raise PlatformError on failure.
 
-    Crosswork returns HTTP 200 for failed writes with ``state`` outside
-    :data:`JOB_SUCCESS_STATES` and the reason in ``error``. Returns the envelope
-    (with ``impacted`` parsed into ``impacted_objects`` and any advisory from a
-    ``JOB_COMPLETED_WITH_WARNING`` state copied to ``warning``) when the job
-    completed.
+    Crosswork returns HTTP 200 for failed writes with ``state`` in
+    :data:`JOB_FAILURE_STATES` and the reason in ``error``. Success states
+    return the envelope with ``impacted`` parsed into ``impacted_objects`` and
+    any advisory (``JOB_COMPLETED_WITH_WARNING`` / ``JOB_PARTIAL``) copied to
+    ``warning``. Pending states (:data:`JOB_PENDING_STATES` — what an
+    asynchronous action such as an NSO device action answers) are returned with
+    ``pending: True`` so the caller can point the agent at a wait tool; they
+    are not failures.
     """
     if not isinstance(result, dict) or "state" not in result:
         raise PlatformError(
             f"{what}: Crosswork did not return a job envelope. Response: {str(result)[:300]}"
         )
     state = result.get("state")
+    if state in JOB_PENDING_STATES:
+        result["pending"] = True
+        result["impacted_objects"] = parse_impacted(result.get("impacted"))
+        return result
     if state not in JOB_SUCCESS_STATES:
         reason = result.get("error") or result.get("type") or "no reason given"
         raise PlatformError(f"{what} failed (job {result.get('job_id')}, state {state}): {reason}")
@@ -212,6 +225,11 @@ def check_job(result: Any, what: str) -> dict[str, Any]:
         result["warning"] = result["error"]
     result["impacted_objects"] = parse_impacted(result.get("impacted"))
     return result
+
+
+def is_job_pending(result: Any) -> bool:
+    """True when a job envelope's state is one of :data:`JOB_PENDING_STATES`."""
+    return isinstance(result, dict) and result.get("state") in JOB_PENDING_STATES
 
 
 def parse_impacted(impacted: Any) -> list[dict[str, str]]:

@@ -92,6 +92,13 @@ def build_instructions(settings: Settings) -> str:
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "
         "(EMBEDDED_DEF_CDG in pool EMBEDDED_DEF_POOL) that maps devices automatically, "
         "reports no health vitals, and serves no OAM ping/traceroute.",
+        "- NSO: devices are associated with the NSO provider per the DLM->NSO policy; a "
+        "device's nso_state (SYNCED, CONNECT_FAILED, *_STARTED, ...) is Crosswork's view, "
+        "while cnc_list_nso_devices shows NSO's own view (NED, oper-state). NSO device "
+        "actions are asynchronous: they answer JOB_ACCEPTED and nso_state settles a few "
+        "seconds later — use cnc_wait_for_device_nso_state with the after_timestamp the "
+        "action returned. cnc_nso_sync_to_device overwrites device configuration; run "
+        "compare-config first.",
         "- Newly added devices show reachability 'CONN_STATE_UNKNOWN' / operational "
         "'ROBOT_OPER_STATE_CHECKING' for a minute or two; cnc_wait_for_device_reachable "
         "waits for the check to finish.",
@@ -112,6 +119,8 @@ def build_instructions(settings: Settings) -> str:
 def build_server(settings: Settings | None = None) -> MCPServer:
     """Wire settings, auth, client, and tools into an MCPServer."""
     settings = settings or Settings()  # type: ignore[call-arg]  # env supplies base_url
+    # Every embedding (server, smoke runner, tests) must keep the TGT out of logs.
+    quiet_http_logging()
     auth = create_auth(settings)
     client = ApiClient(settings, auth)
     ctx = AppContext(settings=settings, client=client)

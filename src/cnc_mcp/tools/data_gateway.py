@@ -51,7 +51,6 @@ CRUD, and software-file upload/download.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
@@ -60,7 +59,7 @@ from pydantic import Field
 from cnc_mcp.client import ApiClient
 from cnc_mcp.crosswork import INVENTORY, check_job, dg_query_body, page_envelope, unwrap, wire_enum
 from cnc_mcp.errors import PlatformError, format_error, http_error
-from cnc_mcp.formatting import ResponseFormat, finalize, to_json
+from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, to_json
 from cnc_mcp.safety import AppContext, register_tool
 
 DG_BASE = "/crosswork/dg-manager"
@@ -117,34 +116,6 @@ def flatten_param_value(wrapper: Any) -> Any:
     if isinstance(wrapper, dict) and len(wrapper) == 1:
         return next(iter(wrapper.values()))
     return wrapper
-
-
-def epoch_iso(value: Any) -> str:
-    """Render an epoch timestamp as ISO-8601 UTC, whatever unit dg-manager used.
-
-    dg-manager mixes units per field (``createdTime`` in nanoseconds,
-    ``lastUpdatedTime`` in seconds, file ``modifiedTime`` in seconds, outage
-    timestamps in nanoseconds) and sends them as ints or numeric strings; the
-    unit is inferred from the magnitude. ``0``/empty/unparseable -> ``-`` /
-    the raw text.
-    """
-    if value in (None, ""):
-        return "-"
-    try:
-        n = int(str(value).strip())
-    except ValueError:
-        return str(value)
-    if n <= 0:
-        return "-"
-    seconds: float = n
-    for threshold, divisor in ((10**17, 10**9), (10**14, 10**6), (10**11, 10**3)):
-        if n >= threshold:
-            seconds = n / divisor
-            break
-    try:
-        return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except (OverflowError, OSError, ValueError):
-        return str(value)
 
 
 def _total_count(data: Any) -> int | None:

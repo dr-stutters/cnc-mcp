@@ -9,12 +9,13 @@ service-provider networks — through its REST APIs.
 
 With this server connected, an agent can answer questions like *"which
 devices are unreachable?"*, *"what does the topology look like?"*, *"is the
-Data Gateway collecting?"*, and, when writes are enabled, onboard devices,
-manage credential profiles and providers, and map devices to gateways — all
+Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
+enabled, onboard devices, manage credential profiles and providers, map
+devices to gateways, and drive NSO sync and connect actions — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**37 tools** (28 read, 9 write) over 6 API areas. Every tool was built from
+**46 tools** (34 read, 12 write) over 7 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -75,6 +76,7 @@ Read tools — always registered:
 | **Topology** | `cnc_get_topology_summary` · `cnc_get_topology` · `cnc_list_topology_nodes` · `cnc_list_topology_links` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
 | **Data Gateway** | `cnc_list_data_gateways` · `cnc_get_data_gateway` · `cnc_list_data_gateway_pools` · `cnc_get_data_gateway_load_metrics` · `cnc_list_data_gateway_outages` · `cnc_get_data_gateway_health` · `cnc_get_data_gateway_global_parameters` · `cnc_list_data_destinations` · `cnc_list_data_gateway_files` |
+| **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_wait_for_device_nso_state` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
 the MCP `destructive` annotation:
@@ -85,6 +87,7 @@ the MCP `destructive` annotation:
 | **Credential profiles** | `cnc_create_credential_profile` · `cnc_delete_credential_profile` |
 | **Providers** | `cnc_create_provider` · `cnc_update_provider` · `cnc_delete_provider` |
 | **Data Gateway** | `cnc_map_devices_to_data_gateway` |
+| **NSO** | `cnc_nso_device_action` (check-sync / sync-from / connect / compare-config …) · `cnc_nso_sync_to_device` · `cnc_sync_inventory_with_nso` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -216,6 +219,12 @@ a platform-notes file kept outside this repository.
   errors use a bare `errors` key (NSO's proxy uses the standard
   `ietf-restconf:errors`); RPC failures ride inside HTTP 200 as
   `output.status: "error"` (COE) or `result: false` (NSO).
+- **NSO device actions are fire-and-forget.** `POST /inventory/v1/nso/<action>`
+  answers `JOB_ACCEPTED` at once and never validates its node filter, so a
+  typo matches nothing and still "succeeds"; the outcome only appears in the
+  device's `nso_state` a few seconds later. The tools resolve the selector to
+  at least one device first and hand back the timestamp to wait from.
+  `nso/sync` is global: the body is ignored and every device is re-checked.
 - **A 404 means "no such route"**, never "no such object": the home
   application's fallback page identifies an API that is not installed on the
   deployment (Service Health, Change Automation and Health Insights are
@@ -227,12 +236,12 @@ a platform-notes file kept outside this repository.
 ## Roadmap
 
 The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
-this server covers the inventory, topology, platform and Data Gateway areas.
+this server covers the inventory, topology, platform, Data Gateway and NSO
+areas.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
-| `nso` | NSO sync / connect / device actions through the Crosswork proxy; onboarding policy |
 | `inventory_extras` | device counts and summaries, tags, device lock, sysoid catalogue |
 | `topology` (migrate) + `te_state` | move to the RESTCONF NBI; SR / P2MP / RSVP-TE policy state; performance metrics |
 | `services` | service inventory and VPN / SR-TE service reads (Crosswork Active Topology) |
@@ -256,7 +265,7 @@ src/cnc_mcp/
   restconf.py     RESTCONF NBI helpers
   emf.py          EMF RESTCONF helpers
   probe.py        routing classification and availability probing
-  tools/          devices, credentials, providers, topology, platform, data_gateway
+  tools/          devices, credentials, providers, topology, platform, data_gateway, nso
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

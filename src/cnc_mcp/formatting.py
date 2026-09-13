@@ -11,6 +11,7 @@ truncated with a note instead of flooding the agent's context.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -61,3 +62,31 @@ def finalize(text: str, settings: Settings) -> str:
         text[:limit] + f"\n\n[Truncated: response exceeded {limit} characters. "
         "Narrow the query with filters, or page through results with limit/offset.]"
     )
+
+
+def epoch_iso(value: Any) -> str:
+    """Render an epoch timestamp as ISO-8601 UTC, whatever unit the platform used.
+
+    dg-manager mixes units per field (``createdTime`` in nanoseconds,
+    ``lastUpdatedTime`` in seconds, file ``modifiedTime`` in seconds, outage
+    timestamps in nanoseconds) and sends them as ints or numeric strings; the
+    unit is inferred from the magnitude. ``0``/empty/unparseable -> ``-`` /
+    the raw text.
+    """
+    if value in (None, ""):
+        return "-"
+    try:
+        n = int(str(value).strip())
+    except ValueError:
+        return str(value)
+    if n <= 0:
+        return "-"
+    seconds: float = n
+    for threshold, divisor in ((10**17, 10**9), (10**14, 10**6), (10**11, 10**3)):
+        if n >= threshold:
+            seconds = n / divisor
+            break
+    try:
+        return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return str(value)

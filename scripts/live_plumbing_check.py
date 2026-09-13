@@ -12,7 +12,6 @@ Read-only. Connection settings come from .env like the server.
 from __future__ import annotations
 
 import asyncio
-
 import logging
 import sys
 
@@ -261,7 +260,8 @@ async def run() -> int:
             "crosswork: alarms_criteria grammar",
             f"{len(alarms.get('alarms', []))} alarm(s)",
         )
-        # raw text body + content-type override on the wire (send a harmless GET-equivalent? use a POST the platform rejects, check it was sent)
+        # raw text body + content-type override on the wire: POST a body the platform
+        # rejects and confirm the request itself went out with our headers
         r = await client.request(
             "POST",
             "/crosswork/dg-manager/v2/dg/query",

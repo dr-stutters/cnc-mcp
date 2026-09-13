@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2, a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce' and the embedded Data Gateway; the write phase only touches smoke-* objects and a remove/add mapping cycle that the embedded gateway reverts by itself.",
+  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2, a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce', the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, and NSO check-sync/sync-from/sync-to on one device.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -254,13 +254,52 @@
       }
     },
     {
+      "tool": "cnc_is_nso_configured",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_nso_policy",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_nso_devices",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_nso_device",
+      "args": {
+        "name": "P2",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_nso_device",
+      "args": {
+        "name": "does-not-exist"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_check_device_nso_state",
+      "args": {
+        "host_name": "P*"
+      }
+    },
+    {
+      "tool": "cnc_check_device_nso_state",
+      "args": {
+        "host_name": "nope"
+      },
+      "expect_error": true
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
         "profile": "smoke-cred",
-        "ssh_username": "apiuser",
+        "ssh_username": "changeme",
         "ssh_password": "changeme",
-        "http_username": "apiuser",
+        "http_username": "changeme",
         "http_password": "changeme",
         "snmpv2_read_community": "public"
       }
@@ -350,6 +389,67 @@
       "args": {
         "uuid": "$p2_uuid"
       }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_nso_device_action",
+      "args": {
+        "action": "check-sync",
+        "host_name": "P2"
+      },
+      "capture": {
+        "p2_stamp": "matched_devices.0.nso_timestamp_before"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_wait_for_device_nso_state",
+      "args": {
+        "host_name": "P2",
+        "target": "SYNCED,MATCH,NOT_SYNCED",
+        "after_timestamp": "$p2_stamp",
+        "timeout_seconds": 60,
+        "interval_seconds": 3
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_nso_device_action",
+      "args": {
+        "action": "sync-from",
+        "host_name": "P2"
+      },
+      "capture": {
+        "p2_stamp2": "matched_devices.0.nso_timestamp_before"
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_wait_for_device_nso_state",
+      "args": {
+        "host_name": "P2",
+        "target": "SYNCED",
+        "after_timestamp": "$p2_stamp2",
+        "timeout_seconds": 90,
+        "interval_seconds": 3
+      }
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_nso_device_action",
+      "args": {
+        "action": "connect",
+        "host_name": "zz-no-such-*"
+      },
+      "expect_error": true
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_nso_sync_to_device",
+      "args": {
+        "host_name": "P*"
+      },
+      "expect_error": true
     },
     {
       "phase": "write",
