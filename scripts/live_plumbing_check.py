@@ -340,6 +340,21 @@ async def run() -> int:
             "client: raw content body with caller Content-Type",
             f"{r.status_code} ct={r.request.headers.get('Content-Type')}",
         )
+        # the one real raw-text consumer: the EMS job scheduler answers a bare false
+        # (HTTP 200) to an unknown job key — verified live 2026-09-13, tools/ems_jobs.py
+        r = await client.request(
+            "POST",
+            "/crosswork/rs/json/jobSchedulerServiceInv/v1/suspendJob",
+            content="nope:Inventory",
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            retryable=False,
+            raise_on_error=False,
+        )
+        record(
+            r.status_code == 200 and r.text.strip() == "false",
+            "client: job scheduler raw key body (unknown job -> bare false)",
+            f"{r.status_code} body={r.text.strip()[:20]!r}",
+        )
     finally:
         await client.aclose()
     failures = sum(1 for s, _, _ in results if s == FAIL)
