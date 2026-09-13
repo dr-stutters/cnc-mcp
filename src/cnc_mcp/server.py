@@ -103,6 +103,12 @@ def build_instructions(settings: Settings) -> str:
         "Head-ends/end-points may be given as hostnames or TE router-ids; explicit hops as "
         "node names. Dry-run before creating; a bare 500 from the engine means an input it "
         "could not resolve.",
+        "- Platform administration (cnc_get_cluster_health, cnc_list_microservices, "
+        "cnc_list_active_sessions, ...): cluster nodes are keyed by node_id = the node's "
+        "management IP; applications by their capp-* id (capp-coe, capp-infra, ...); an "
+        "unknown user answers 500 'Invalid Username' (rendered as not found). Crosswork caps "
+        "concurrent sessions per user (cnc_get_session_config); this server logs its session "
+        "out on exit.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "
@@ -132,13 +138,20 @@ def build_instructions(settings: Settings) -> str:
     return "\n".join(lines)
 
 
-def build_server(settings: Settings | None = None) -> MCPServer:
-    """Wire settings, auth, client, and tools into an MCPServer."""
+def build_server(settings: Settings | None = None, client: ApiClient | None = None) -> MCPServer:
+    """Wire settings, auth, client, and tools into an MCPServer.
+
+    Pass ``client`` to embed the server around a client you own (the live
+    smoke runner does, so it can close it — and with it the platform SSO
+    session — without running the stdio lifespan). A client built here is
+    closed by the lifespan.
+    """
     settings = settings or Settings()  # type: ignore[call-arg]  # env supplies base_url
     # Every embedding (server, smoke runner, tests) must keep the TGT out of logs.
     quiet_http_logging()
-    auth = create_auth(settings)
-    client = ApiClient(settings, auth)
+    owns_client = client is None
+    if client is None:
+        client = ApiClient(settings, create_auth(settings))
     ctx = AppContext(settings=settings, client=client)
 
     @asynccontextmanager
@@ -146,7 +159,8 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         try:
             yield ctx
         finally:
-            await client.aclose()
+            if owns_client:
+                await client.aclose()
 
     mcp = MCPServer(SERVER_NAME, instructions=build_instructions(settings), lifespan=lifespan)
     register_all_tools(mcp, ctx)

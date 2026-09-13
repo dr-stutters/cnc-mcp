@@ -49,9 +49,20 @@ async def run() -> int:
         prefix = Settings.model_config.get("env_prefix", "")
         os.environ[f"{prefix}ENABLE_WRITES"] = "true"
 
-    from cnc_mcp.server import build_server
+    from cnc_mcp.client import ApiClient
+    from cnc_mcp.server import build_server, create_auth
 
-    mcp = build_server(Settings())
+    # The runner never enters the server lifespan, so it owns (and closes) the client:
+    # closing releases the platform SSO session, which Crosswork caps per user.
+    settings = Settings()
+    client = ApiClient(settings, create_auth(settings))
+    try:
+        return await _run_plan(build_server(settings, client=client), plan, args)
+    finally:
+        await client.aclose()
+
+
+async def _run_plan(mcp, plan: dict, args) -> int:
     tools = await mcp.list_tools()
     print(f"{len(tools)} tools registered (writes {'ON' if args.write else 'off'})")
 

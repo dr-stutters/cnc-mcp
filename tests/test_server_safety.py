@@ -28,6 +28,8 @@ WRITE_TOOLS = {
     "cnc_delete_provider",
     "cnc_create_sr_policy",
     "cnc_delete_sr_policy",
+    "cnc_set_maintenance_mode",
+    "cnc_restart_microservice",
 }
 
 
@@ -82,3 +84,27 @@ def test_http_client_loggers_never_log_request_urls():
     quiet_http_logging()
     assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
     assert not logging.getLogger("httpcore").isEnabledFor(logging.INFO)
+
+
+async def test_build_server_does_not_close_a_client_it_was_given(make_settings):
+    """An embedding that owns the client (the smoke runner) closes it itself."""
+    from cnc_mcp.auth import StaticTokenAuth
+    from cnc_mcp.client import ApiClient
+
+    settings = make_settings(enable_writes=False)
+    client = ApiClient(settings, StaticTokenAuth("t"))
+    closed = []
+
+    async def fake_aclose():
+        closed.append(True)
+
+    client.aclose = fake_aclose  # type: ignore[method-assign]
+    mcp = build_server(settings, client=client)
+    lowlevel = mcp._lowlevel_server  # noqa: SLF001 - exercising the lifespan directly
+    async with lowlevel.lifespan(lowlevel):
+        pass
+    assert closed == []
+    mcp = build_server(settings)  # a client built by the server IS closed by its lifespan
+    lowlevel = mcp._lowlevel_server  # noqa: SLF001
+    async with lowlevel.lifespan(lowlevel):
+        pass
