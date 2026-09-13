@@ -127,6 +127,18 @@ def build_instructions(settings: Settings) -> str:
         "(local congestion mitigation) and Circuit-Style SR are read through cnc_*_lcm_* / "
         "cnc_*_cs_* (the lab has LCM disabled and no CS policies). Collection-service tools "
         "default to the DLM's own CLI collector job.",
+        "- Services (Crosswork Active Topology / T-SDN function packs): cnc_list_services and "
+        "cnc_get_service_counts read the CAT service inventory (types: policy, odn-template, "
+        "cs-sr-te-policy, ietf-l3vpn, ietf-l2vpn, slice-service, tunnel); each service has a "
+        "yang-path (its NSO intent, read with cnc_get_service) and a plan (cnc_get_service_plan "
+        "/ cnc_wait_for_service_plan: init -> config-apply -> ready). Provisioning goes through "
+        "the NSO proxy: cnc_create_odn_template, cnc_create_sr_policy_service (an NSO-configured "
+        "head-end policy — distinct from the PCE-initiated cnc_create_sr_policy), "
+        "cnc_create_sid_list, cnc_create_l3vpn_service and the generic cnc_provision_service; "
+        "every write takes dry_run=true, which returns the exact device CLI NSO would push "
+        "without committing — dry-run first. A head-end NSO considers out of sync answers 502 "
+        "(run cnc_nso_device_action sync-from, then retry); delete a policy before its SID list; "
+        "L3VPN head-ends need a BGP process.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

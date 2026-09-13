@@ -1020,6 +1020,121 @@
       "expect_error": true
     },
     {
+      "tool": "cnc_list_service_types",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_service_counts",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_services",
+      "args": {
+        "limit": 10
+      }
+    },
+    {
+      "tool": "cnc_list_services",
+      "args": {
+        "service_type": "odn-template",
+        "name_prefix": "smoke",
+        "limit": 5
+      }
+    },
+    {
+      "tool": "cnc_list_services",
+      "args": {
+        "service_type": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_service_plan",
+      "args": {
+        "plan_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template-plan=nope"
+      }
+    },
+    {
+      "tool": "cnc_list_vpn_services",
+      "args": {
+        "layer": "l3"
+      }
+    },
+    {
+      "tool": "cnc_list_vpn_services",
+      "args": {
+        "layer": "l2"
+      }
+    },
+    {
+      "tool": "cnc_get_vpn_service",
+      "args": {
+        "vpn_id": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_vpn_service_health",
+      "args": {
+        "vpn_id": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_vpn_underlay_transport",
+      "args": {
+        "vpn_id": "nope"
+      }
+    },
+    {
+      "tool": "cnc_list_sub_services",
+      "args": {
+        "service_yang_path": "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=nope"
+      }
+    },
+    {
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "headend": "PE1",
+        "color": 100,
+        "endpoint": "10.0.0.3"
+      }
+    },
+    {
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "headend": "10.0.0.1",
+        "color": 100,
+        "endpoint": "10.0.0.3"
+      }
+    },
+    {
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "tunnel_id": "1",
+        "source": "10.0.0.1",
+        "destination": "10.0.0.3"
+      }
+    },
+    {
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "headend": "PE1"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_function_packs",
+      "args": {}
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
@@ -1788,6 +1903,298 @@
         "subscription_id": "$sub_id"
       },
       "expect_error": true
+    },
+    {
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "smoke-odn-90",
+        "color": 90,
+        "head_ends": "PE1",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "smoke-odn-90",
+        "color": 90,
+        "head_ends": "PE1"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=smoke-odn-90"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_service_plan",
+      "args": {
+        "plan_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template-plan=smoke-odn-90",
+        "timeout_seconds": 60
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_list_services",
+      "args": {
+        "service_type": "odn-template"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_service_counts",
+      "args": {},
+      "phase": "write"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "headend": "PE1",
+        "color": 90,
+        "endpoint": "10.0.0.3"
+      }
+    },
+    {
+      "tool": "cnc_get_service_plan",
+      "args": {
+        "plan_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=smoke-odn-90",
+        "detail": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "smoke-odn-90",
+        "color": 90,
+        "head_ends": "PE1",
+        "metric_type": "te"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "smoke-odn-91",
+        "color": 91,
+        "head_ends": "NOPE"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_odn_template",
+      "args": {
+        "name": "smoke-odn-90",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_odn_template",
+      "args": {
+        "name": "smoke-odn-90"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_odn_template",
+      "args": {
+        "name": "smoke-odn-90"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sid_list",
+      "args": {
+        "name": "smoke-sl-1",
+        "labels": "16003,16002",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sid_list",
+      "args": {
+        "name": "smoke-sl-1",
+        "labels": "16003,16002"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93",
+        "head_end": "PE1",
+        "tail_end": "10.0.0.3",
+        "color": 93,
+        "path_type": "explicit",
+        "sid_list": "smoke-sl-1",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93",
+        "head_end": "PE1",
+        "tail_end": "10.0.0.3",
+        "color": 93,
+        "path_type": "explicit"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93",
+        "head_end": "PE1",
+        "tail_end": "10.0.0.3",
+        "color": 93,
+        "path_type": "explicit",
+        "sid_list": "smoke-sl-1"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-pol-93"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_service_plan",
+      "args": {
+        "plan_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-pol-93",
+        "timeout_seconds": 60
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_update_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93",
+        "bandwidth_kbps": 1000
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_update_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sid_list",
+      "args": {
+        "name": "smoke-sl-1"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-93"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sid_list",
+      "args": {
+        "name": "smoke-sl-1"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sid_list",
+      "args": {
+        "name": "smoke-sl-1"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_provision_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/cisco-sr-te-cfp-sr-policies:policy=smoke-pol-91",
+        "body_json": "{\"cisco-sr-te-cfp-sr-policies:policy\": [{\"name\": \"smoke-pol-91\", \"head-end\": [{\"name\": \"PE1\"}], \"tail-end\": \"10.0.0.3\", \"color\": 91, \"path\": [{\"preference\": 100, \"dynamic\": {\"metric-type\": \"igp\", \"pce\": {}}}]}]}",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_provision_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy",
+        "body_json": "{}"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "smoke-pol-92",
+        "head_end": "NOPE",
+        "tail_end": "10.0.0.3",
+        "color": 92,
+        "dry_run": true
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-pol-93",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback91\", \"address\": \"10.91.2.1\", \"prefix_length\": 30, \"local_as\": 65000}]",
+        "dry_run": true
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "not json",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_vpn_service",
+      "args": {
+        "vpn_id": "smoke-l3vpn-1",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "phase": "write"
     }
   ]
 }

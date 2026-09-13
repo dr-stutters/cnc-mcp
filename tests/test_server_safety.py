@@ -17,6 +17,9 @@ READ_TOOLS = {
     "cnc_list_sr_policies",
     "cnc_get_te_summary",
     "cnc_list_alarms",
+    "cnc_list_services",
+    "cnc_get_service_plan",
+    "cnc_list_function_packs",
 }
 WRITE_TOOLS = {
     "cnc_create_device",
@@ -39,6 +42,11 @@ WRITE_TOOLS = {
     "cnc_create_webhook_subscription",
     "cnc_delete_notification_subscription",
     "cnc_pause_lcm_recommendations",
+    "cnc_create_odn_template",
+    "cnc_delete_odn_template",
+    "cnc_create_sr_policy_service",
+    "cnc_provision_service",
+    "cnc_delete_service",
 }
 
 

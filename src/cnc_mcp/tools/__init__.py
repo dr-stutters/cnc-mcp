@@ -24,6 +24,8 @@ from cnc_mcp.tools import (
     physical_inventory,
     platform,
     providers,
+    service_provisioning,
+    services,
     sr_te_operations,
     te_state,
     topology,
@@ -48,6 +50,8 @@ ALL_MODULES = [
     collection,  # collection-service job status
     grouping,  # device/port groups: rule conditions, root groups, hierarchies, members
     lcm_csm,  # LCM domains/config/recommendations, CSM bandwidth pools and CS policy paths
+    services,  # CAT service inventory reads, VPN operational data, plans, function packs
+    service_provisioning,  # T-SDN CFP writes through the NSO proxy (ODN, policies, SID lists, VPN)
 ]
 
 

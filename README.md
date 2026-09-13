@@ -13,12 +13,14 @@ policies are down and what path do they take?"*, *"is the
 Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
 enabled, onboard devices, manage credential profiles and providers, map
 devices to gateways, drive NSO sync and connect actions, provision SR-TE
-policies through the SR-PCE, subscribe webhooks to alarm/inventory events,
-inspect collection jobs, device groups and the LCM / Circuit-Style managers — all
+policies through the SR-PCE, provision ODN templates, SR-TE policies and
+L3VPNs through NSO's T-SDN function packs (dry-run first), subscribe webhooks
+to alarm/inventory events, inspect collection jobs, device groups and the
+LCM / Circuit-Style managers — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**170 tools** (128 read, 42 write) over 18 API areas. Every tool was built from
+**195 tools** (141 read, 54 write) over 20 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -91,6 +93,7 @@ Read tools — always registered:
 | **Collection service** | `cnc_get_collection_job_count` · `cnc_get_collection_job_summary` · `cnc_get_collection_job_state` · `cnc_list_export_collection_jobs` · `cnc_list_sensor_templates` · `cnc_get_collection_health` |
 | **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` |
 | **LCM & Circuit-Style** (Optimization Engine) | `cnc_list_lcm_domains` · `cnc_get_lcm_config` · `cnc_list_lcm_managed_interfaces` · `cnc_get_lcm_recommendation` · `cnc_get_lcm_recommendation_preview` · `cnc_list_csm_bandwidth_pools` · `cnc_list_cs_policy_paths` · `cnc_list_cs_policies_on_nodes` · `cnc_list_cs_policies_on_interface` |
+| **Services** (CAT inventory, T-SDN) | `cnc_list_service_types` · `cnc_get_service_counts` · `cnc_list_services` · `cnc_get_service` · `cnc_get_service_plan` · `cnc_wait_for_service_plan` · `cnc_list_vpn_services` · `cnc_get_vpn_service` · `cnc_get_vpn_service_health` · `cnc_get_vpn_underlay_transport` · `cnc_list_sub_services` · `cnc_find_services_on_transport` · `cnc_list_function_packs` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
 the MCP `destructive` annotation:
@@ -109,6 +112,7 @@ the MCP `destructive` annotation:
 | **Device configuration** | `cnc_backup_device_config` · `cnc_delete_config_backup_job` · `cnc_delete_device_backup` · `cnc_create_config_template` · `cnc_delete_config_template` · `cnc_deploy_config_template` · `cnc_delete_template_deployment` |
 | **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` |
 | **LCM** | `cnc_pause_lcm_recommendations` |
+| **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -290,6 +294,16 @@ a platform-notes file kept outside this repository.
 - **Device grouping answers an empty list for an unknown classifier** rather
   than an error, and the group-detail RPC takes the group's UUID (the root
   groups are read by classifier name, e.g. `PortType`).
+- **NSO's RESTCONF dry-run works through the proxy** (`?dry-run=native`
+  answers the exact device CLI NSO would push, and the function pack's
+  validation runs too), so every provisioning tool takes `dry_run`. The CAT
+  inventory reports the SR policy service type under its own namespace
+  (`cisco-ts-sr-policies`), not the YANG module's; a head-end NSO considers
+  out of sync answers `502 "device X: out of sync"` (sync-from first); a SID
+  list still referenced by a policy cannot be deleted; and an L3VPN without
+  `local_as` on its endpoints is rejected with `TSDN-L3VPN-415` unless the PE
+  already runs BGP — with `local_as` the function pack renders `router bgp`
+  itself.
 
 ## Roadmap
 
@@ -298,14 +312,16 @@ this server covers the inventory (incl. tags, locks, locations), the EMF
 inventory, topology, TE state, SR-TE operations, fault management, device
 configuration (backups, templates, deployments), platform administration and
 RBAC, Data Gateway, NSO, notifications (webhook / Kafka subscriptions), the
-collection service, device grouping, and the LCM / Circuit-Style managers.
+collection service, device grouping, the LCM / Circuit-Style managers, the
+CAT service inventory and T-SDN service provisioning through the NSO proxy.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
-| `services` | service inventory and VPN / SR-TE service reads (Crosswork Active Topology) |
-| `service_provisioning` | ODN templates, SR policies and VPN services through the NSO proxy (T-SDN function packs) |
-| later | change automation, health insights, performance / path analytics, SWIM, OAM (each gated on the application being present) |
+| `performance` | performance-monitoring policies and dashboards (`performance/v1`), NPM LSP / interface analytics |
+| `oam` | Optimization Engine OAM trace routes, Service Health probe status |
+| `swim_ztp` | software image and ZTP profile / device reads |
+| not on this build | change automation, health insights, path analytics (unrouted on a single-VM 7.2 deployment — a 404 from the home application) |
 
 ## Project layout
 
@@ -325,7 +341,8 @@ src/cnc_mcp/
   probe.py        routing classification and availability probing
   tools/          devices, credentials, providers, inventory_extras, physical_inventory,
                   topology, te_state, sr_te_operations, platform, fault, device_config,
-                  data_gateway, nso, admin, notifications, collection, grouping, lcm_csm
+                  data_gateway, nso, admin, notifications, collection, grouping, lcm_csm,
+                  services, service_provisioning
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers
