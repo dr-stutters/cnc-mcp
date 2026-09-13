@@ -84,9 +84,18 @@ def build_instructions(settings: Settings) -> str:
         "- Object model: a device (node) references a credential profile and is attached to "
         "a Data Gateway (dg_name) for collection; providers (e.g. an SR-PCE) also reference "
         "a credential profile. Create the credential profile first, then providers, then "
-        "devices. The L3 topology comes from an SR-PCE provider (BGP-LS); L2 links come "
-        "from device collection (LLDP). A device's te_router_id must match its router-id "
-        "in the SR-PCE topology for the two to be correlated.",
+        "devices. The L3 topology (IS-IS links, SR data, SR policies) is learned from an "
+        "SR-PCE provider over gRPC — the provider needs both an HTTP and a GRPC endpoint; "
+        "L2 links come from device collection (LLDP). A device's te_router_id must match "
+        "its router-id in the SR-PCE topology for the two to be correlated.",
+        "- Topology and TE state (cnc_*_topology_*, cnc_list_sr_policies, ...) come from the "
+        "RESTCONF topology NBI: nodes are keyed by node-id (= host_name), links by the "
+        "verbatim link-id '<src> : <srcIf> : <dst> : <dstIf> : <ISIS_IPV4_L2|ETHERNET>' "
+        "(listed once per direction), SR policies by (headend, endpoint, color) where "
+        "headend/endpoint are TE router-ids (loopbacks), not hostnames. Pass ids exactly as "
+        "the list tools print them; the tools handle URL encoding. Performance metrics "
+        "exist for IGP links and policies only (keyed reads, no listing). An all-ETHERNET "
+        "topology means the SR-PCE gRPC feed is not up.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

@@ -197,6 +197,15 @@ _RESTCONF_TAG_HINTS: dict[tuple[int, str], str] = {
         "RESTCONF path or key problem: a required key is missing — a sub-list cannot be "
         "read without its parent's key (e.g. network=<id> before node=<id>)."
     ),
+    # Verified live on the topology NBI: policy=PE1,PE2,100 (host names where
+    # inet:ip-address router-ids belong) answers 400 invalid-value "Invalid value 'PE1'
+    # for (...)headend" — a key part failed its YANG type, not a missing object.
+    (400, "invalid-value"): (
+        "RESTCONF key problem: a key part has the wrong type for the YANG model (e.g. a "
+        "host name where an IP address / TE router-id is expected, or text where an "
+        "integer such as a color or tunnel-id is expected). Fix the key; the object may "
+        "well exist."
+    ),
     (409, "data-missing"): (
         "RESTCONF: no such object — the keyed resource does not exist (a keyed GET that "
         "finds nothing answers 409 data-missing on this platform, not 404)."

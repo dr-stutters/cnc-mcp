@@ -24,6 +24,7 @@ from cnc_mcp.restconf import (
     YANG_HEADERS,
     action_path,
     check_rpc_output,
+    encode_key,
     explain_empty_500,
     is_not_found,
     page_envelope_from,
@@ -405,6 +406,22 @@ def test_action_path_builds_nso_device_action_under_data_not_operations():
 def test_action_path_percent_encodes_the_device_key():
     path = action_path(NSO_PROXY, "edge rtr/1,a", NSO_ACTION_CONNECT)
     assert path == f"{NSO_PROXY}/data/tailf-ncs:devices/device=edge%20rtr%2F1%2Ca/connect"
+
+
+def test_encode_key_encodes_slashes_spaces_and_colons_fully():
+    # verified live: an unencoded "/" in a key breaks the route (plain 404)
+    assert encode_key("GigabitEthernet0/0/0/0") == "GigabitEthernet0%2F0%2F0%2F0"
+    assert (
+        encode_key("P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2")
+        == "P2%20%3A%20GigabitEthernet0%2F0%2F0%2F0%20%3A%20PE2%20%3A%20"
+        "GigabitEthernet0%2F0%2F0%2F1%20%3A%20ISIS_IPV4_L2"
+    )
+
+
+def test_encode_key_joins_multi_part_keys_with_a_bare_comma():
+    # policy=<headend>,<endpoint>,<color>: parts encoded, separator not, ints stringified
+    assert encode_key("10.0.0.1", "10.0.0.3", 100) == "10.0.0.1,10.0.0.3,100"
+    assert encode_key("a,b", "c") == "a%2Cb,c"
 
 
 def test_rpc_body_wraps_input_and_drops_none():

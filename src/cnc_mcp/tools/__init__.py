@@ -15,6 +15,7 @@ from cnc_mcp.tools import (
     nso,
     platform,
     providers,
+    te_state,
     topology,
 )
 
@@ -22,7 +23,8 @@ ALL_MODULES = [
     devices,  # network devices (inventory nodes)
     credentials,  # credential profiles
     providers,  # SR-PCE / NSO / ... providers
-    topology,  # topology graph (LLDP + SR-PCE)
+    topology,  # topology graph on the RESTCONF NBI (SR-PCE gRPC feed + LLDP)
+    te_state,  # TE state on the NBI: SR / P2MP / RSVP-TE policies, performance metrics
     platform,  # tags, users, applications, alarms, inventory jobs
     data_gateway,  # Crosswork Data Gateway: gateways, pools, metrics, destinations, mapping
     nso,  # NSO integration: device actions, policy, NSO's own device view, sync waits

@@ -279,6 +279,22 @@ def rpc_path(base: str, module: str, rpc: str) -> str:
     return f"{base.rstrip('/')}/operations/{module}:{rpc}"
 
 
+def encode_key(*values: Any) -> str:
+    """Percent-encode one RESTCONF list key (or a multi-part key, comma-joined).
+
+    Verified live on the topology NBI: keys containing ``/``, spaces or ``:``
+    (interface names ``GigabitEthernet0/0/0/0``, link ids
+    ``"P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2"``)
+    MUST be fully percent-encoded (``quote(..., safe="")``). An unencoded ``/``
+    breaks the route and the gateway answers a plain ``404`` — "malformed URL",
+    never "no such object"; a properly encoded key that matches nothing answers
+    ``409 data-missing``. Multi-part keys (``policy=<headend>,<endpoint>,<color>``)
+    are each encoded and joined with an unencoded comma; non-string parts
+    (an int ``color``) are stringified.
+    """
+    return ",".join(quote(str(v), safe="") for v in values)
+
+
 def action_path(base: str, device_name: str, action: str) -> str:
     """``<base>/data/tailf-ncs:devices/device=<name>/<action>`` — an NSO device action URL.
 
@@ -297,7 +313,7 @@ def action_path(base: str, device_name: str, action: str) -> str:
     ``,`` included); ``action`` is used verbatim since it may contain a path
     segment (``ssh/fetch-host-keys``). A trailing slash on ``base`` is tolerated.
     """
-    key = quote(device_name, safe="")
+    key = encode_key(device_name)
     return f"{base.rstrip('/')}/data/{NSO_MODULE}:devices/device={key}/{action.strip('/')}"
 
 

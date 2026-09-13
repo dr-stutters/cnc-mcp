@@ -8,14 +8,15 @@ An [MCP](https://modelcontextprotocol.io) server that lets an AI agent operate
 service-provider networks — through its REST APIs.
 
 With this server connected, an agent can answer questions like *"which
-devices are unreachable?"*, *"what does the topology look like?"*, *"is the
+devices are unreachable?"*, *"what does the topology look like?"*, *"which SR
+policies are down and what path do they take?"*, *"is the
 Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
 enabled, onboard devices, manage credential profiles and providers, map
 devices to gateways, and drive NSO sync and connect actions — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**46 tools** (34 read, 12 write) over 7 API areas. Every tool was built from
+**59 tools** (47 read, 12 write) over 8 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -73,7 +74,8 @@ Read tools — always registered:
 | **Devices** | `cnc_list_devices` · `cnc_get_device` · `cnc_get_device_collection_summary` · `cnc_wait_for_device_reachable` |
 | **Credential profiles** | `cnc_list_credential_profiles` · `cnc_get_credential_profile` |
 | **Providers** (SR-PCE, NSO, …) | `cnc_list_providers` · `cnc_get_provider` |
-| **Topology** | `cnc_get_topology_summary` · `cnc_get_topology` · `cnc_list_topology_nodes` · `cnc_list_topology_links` |
+| **Topology** (RESTCONF NBI) | `cnc_get_topology_summary` · `cnc_list_topology_nodes` · `cnc_get_topology_node` · `cnc_list_node_interfaces` · `cnc_get_node_interface` · `cnc_list_topology_links` · `cnc_get_topology_link` |
+| **TE state** (SR-PCE feed) | `cnc_get_te_summary` · `cnc_list_sr_policies` · `cnc_get_sr_policy` · `cnc_list_p2mp_policies` · `cnc_get_p2mp_policy` · `cnc_list_rsvp_te_tunnels` · `cnc_get_rsvp_te_tunnel` · `cnc_get_link_performance_metrics` · `cnc_get_sr_policy_performance_metrics` · `cnc_get_rsvp_tunnel_performance_metrics` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
 | **Data Gateway** | `cnc_list_data_gateways` · `cnc_get_data_gateway` · `cnc_list_data_gateway_pools` · `cnc_get_data_gateway_load_metrics` · `cnc_list_data_gateway_outages` · `cnc_get_data_gateway_health` · `cnc_get_data_gateway_global_parameters` · `cnc_list_data_destinations` · `cnc_list_data_gateway_files` |
 | **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_wait_for_device_nso_state` |
@@ -188,7 +190,8 @@ layers were used:
 
 The instance was a single-VM CNC 7.2.0 deployment with embedded NSO and
 Data Gateway, fed by a Cisco Modeling Labs fabric of five IOS-XRd routers
-running IS-IS + SR-MPLS, one of them acting as SR-PCE (BGP-LS + PCEP). Each
+running IS-IS + SR-MPLS, one of them acting as SR-PCE (BGP-LS + PCEP, feeding
+CNC over gRPC) with two PCE-delegated SR policies between the PEs. Each
 module was also adversarially reviewed against the recorded facts before it
 was merged; that review caught bugs the tests had enshrined (a "not found"
 check that would have hidden an absent API, an NSO failure that would have
@@ -229,21 +232,32 @@ a platform-notes file kept outside this repository.
   application's fallback page identifies an API that is not installed on the
   deployment (Service Health, Change Automation and Health Insights are
   absent on single-VM builds).
-- **CNC authenticates to an SR-PCE's northbound API with HTTP Digest**;
-  the deprecated `authentication basic` on the router silently breaks the
-  topology feed while the provider still reports "Reachable".
+- **CNC 7.x learns the topology from an SR-PCE over gRPC**, not the HTTP
+  `/topo/subscribe/json` feed of earlier releases: the router needs
+  `lslib-server` and `grpc … service-layer`, and the provider needs **both** an
+  HTTP and a GRPC endpoint (plus a gRPC credential). With HTTP only the
+  provider reports "Reachable" forever while the topology stays L2-only —
+  the HTTP leg is just the reachability probe (and RSVP/Tree-SID/PCEP data).
+  The HTTP leg itself must use `authentication digest` on the router.
+- **Topology NBI keys must be fully percent-encoded** (interface names carry
+  `/`, link ids carry spaces and `:`); an unencoded `/` breaks the route and
+  the gateway answers a plain 404, while a properly encoded key that matches
+  nothing answers `409 data-missing`. The keyed `network=<id>` GET returns a
+  *shallow* topology (no IS-IS/SR attributes) — only the collection GET is
+  complete, so the tools fetch the collection and select the network
+  client-side. Performance-metric containers cannot be listed, only read by
+  key, and exist for IGP links and policies only.
 
 ## Roadmap
 
 The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
-this server covers the inventory, topology, platform, Data Gateway and NSO
-areas.
+this server covers the inventory, topology, TE state, platform, Data Gateway
+and NSO areas.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
 | `inventory_extras` | device counts and summaries, tags, device lock, sysoid catalogue |
-| `topology` (migrate) + `te_state` | move to the RESTCONF NBI; SR / P2MP / RSVP-TE policy state; performance metrics |
 | `services` | service inventory and VPN / SR-TE service reads (Crosswork Active Topology) |
 | `fault` | migrate alarms to the RESTCONF fault API; acknowledge / clear; suppression policies |
 | `device_config` | configuration backup / restore, templates, deployments |
@@ -265,7 +279,7 @@ src/cnc_mcp/
   restconf.py     RESTCONF NBI helpers
   emf.py          EMF RESTCONF helpers
   probe.py        routing classification and availability probing
-  tools/          devices, credentials, providers, topology, platform, data_gateway, nso
+  tools/          devices, credentials, providers, topology, te_state, platform, data_gateway, nso
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

@@ -11,7 +11,11 @@ READ_TOOLS = {
     "cnc_get_device",
     "cnc_list_credential_profiles",
     "cnc_list_providers",
-    "cnc_get_topology",
+    "cnc_get_topology_summary",
+    "cnc_list_topology_nodes",
+    "cnc_get_topology_link",
+    "cnc_list_sr_policies",
+    "cnc_get_te_summary",
     "cnc_list_alarms",
 }
 WRITE_TOOLS = {

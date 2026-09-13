@@ -36,7 +36,6 @@ from cnc_mcp.errors import PlatformError
 from cnc_mcp.formatting import pagination_envelope
 
 INVENTORY = "/crosswork/inventory/v1"
-TOPOLOGY = "/crosswork/topology/v1/topology-service/topology"
 AAA = "/crosswork/aaa/v1"
 ALARMS = "/crosswork/alarms/v1"
 # The documented alarm lifecycle API (POST .../query); distinct from the UI's ALARMS above.

@@ -533,6 +533,21 @@ _HOME_APP_YAML = (
             "RESTCONF missing-attribute: parent key required",
         ),
         (
+            400,
+            {
+                "errors": {
+                    "error": [
+                        {
+                            "error-tag": "invalid-value",
+                            "error-message": "Invalid value 'PE1' for (...)headend",
+                        }
+                    ]
+                }
+            },
+            "wrong type for the YANG model",
+            "RESTCONF invalid-value: Invalid value 'PE1' for (...)headend",
+        ),
+        (
             409,
             {"errors": {"error": [{"error-tag": "data-missing", "error-message": "no node"}]}},
             "no such object",
@@ -566,9 +581,9 @@ _HOME_APP_YAML = (
         # an unmapped tag still gets a RESTCONF hint and the platform's words
         (
             400,
-            {"errors": {"error": [{"error-tag": "invalid-value", "error-message": "nope"}]}},
+            {"errors": {"error": [{"error-tag": "bad-attribute", "error-message": "nope"}]}},
             "RESTCONF service rejected",
-            "RESTCONF invalid-value: nope",
+            "RESTCONF bad-attribute: nope",
         ),
         # (b) dg-manager rejects unknown fields
         (

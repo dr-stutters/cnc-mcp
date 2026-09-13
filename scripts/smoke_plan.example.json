@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2, a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce', the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, and NSO check-sync/sync-from/sync-to on one device.",
+  "_comment": "Copy to smoke_plan.json and adapt the names/addresses to your instance. phase: read (default) runs always; write runs only with --write and must leave the platform as found (create -> verify -> delete). Steps may capture values from JSON results and reference them as $var in later args. This example assumes devices named PE1/P1/P2/PE2 (TE router-ids 10.0.0.1/.2/.4/.3), a credential profile 'cml-xrd', an SR-PCE provider 'cml-pce' feeding CNC over gRPC with a PCE-delegated SR policy PE1->PE2 color 100, the embedded Data Gateway and the embedded NSO provider; the write phase only touches smoke-* objects, a remove/add mapping cycle that the embedded gateway reverts by itself, and NSO check-sync/sync-from/sync-to on one device.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -112,27 +112,195 @@
       "args": {}
     },
     {
-      "tool": "cnc_get_topology",
+      "tool": "cnc_list_topology_nodes",
       "args": {}
-    },
-    {
-      "tool": "cnc_get_topology",
-      "args": {
-        "response_format": "json",
-        "page_size": 1
-      }
     },
     {
       "tool": "cnc_list_topology_nodes",
       "args": {
-        "page_size": 2,
-        "page": 1,
+        "name": "PE*",
+        "sr_only": true,
+        "response_format": "json",
+        "page_size": 1,
+        "page": 1
+      }
+    },
+    {
+      "tool": "cnc_get_topology_node",
+      "args": {
+        "node_id": "PE1"
+      }
+    },
+    {
+      "tool": "cnc_get_topology_node",
+      "args": {
+        "node_id": "PE1",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_topology_node",
+      "args": {
+        "node_id": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_node_interfaces",
+      "args": {
+        "node_id": "P1"
+      }
+    },
+    {
+      "tool": "cnc_get_node_interface",
+      "args": {
+        "node_id": "PE1",
+        "tp_id": "GigabitEthernet0/0/0/0"
+      }
+    },
+    {
+      "tool": "cnc_get_node_interface",
+      "args": {
+        "node_id": "PE1",
+        "tp_id": "GigabitEthernet0/0/0/9"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_topology_links",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_topology_links",
+      "args": {
+        "link_type": "isis",
+        "node": "PE1",
         "response_format": "json"
       }
     },
     {
       "tool": "cnc_list_topology_links",
+      "args": {
+        "link_type": "ethernet",
+        "page_size": 3,
+        "page": 1
+      }
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2"
+      }
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "does : not : exist : a : b : ISIS_IPV4_L2"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_te_summary",
       "args": {}
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "headend": "10.0.0.1",
+        "oper_state": "up",
+        "pce_controlled": true,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "color": 999
+      }
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100
+      }
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 999
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_p2mp_policies",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_p2mp_policy",
+      "args": {
+        "name": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_rsvp_te_tunnels",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_rsvp_te_tunnel",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "tunnel_id": 1
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_link_performance_metrics",
+      "args": {
+        "link_id": "P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2"
+      }
+    },
+    {
+      "tool": "cnc_get_link_performance_metrics",
+      "args": {
+        "link_id": "P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ETHERNET"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_sr_policy_performance_metrics",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100
+      }
+    },
+    {
+      "tool": "cnc_get_rsvp_tunnel_performance_metrics",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "tunnel_id": 1
+      },
+      "expect_error": true
     },
     {
       "tool": "cnc_list_tags",

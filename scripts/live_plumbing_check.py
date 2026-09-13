@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 from cnc_mcp import crosswork, emf, probe, restconf
 from cnc_mcp.client import ApiClient
@@ -23,6 +24,13 @@ from cnc_mcp.server import create_auth, quiet_http_logging
 
 PASS, FAIL = "ok  ", "FAIL"
 results: list[tuple[str, str, str]] = []
+
+
+def _json_or_none(response: Any) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
 
 def record(ok: bool, name: str, detail: str = "") -> None:
@@ -76,6 +84,63 @@ async def run() -> int:
             restconf.is_not_found(r.status_code, data),
             "restconf: 409 data-missing is not-found",
             f"{r.status_code} {restconf.restconf_error_message(r.status_code, data)}",
+        )
+        # keyed reads: encode_key makes slashes/spaces/colons routable; a raw "/" is a
+        # plain 404 (malformed URL), an encoded unknown key is 409 (not-found)
+        link_id = "P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2"
+        link_url = (
+            f"{restconf.TOPOLOGY_NBI}/data/ietf-network-state:networks/network=Default-network"
+            "/ietf-network-topology-state:link="
+        )
+        r = await client.request(
+            "GET", link_url + restconf.encode_key(link_id), headers=yang, raise_on_error=False
+        )
+        links = restconf.unwrap_list(r.json(), "ietf-network-topology-state", "link")
+        record(
+            r.status_code == 200 and restconf.select_key(links, "link-id", link_id) != [],
+            "restconf: encode_key routes a link id with '/', ' ' and ':'",
+            f"{r.status_code} {len(links)} link(s)",
+        )
+        r = await client.request("GET", link_url + link_id, headers=yang, raise_on_error=False)
+        record(
+            r.status_code == 404 and not restconf.is_not_found(r.status_code, _json_or_none(r)),
+            "restconf: unencoded '/' in a key is a plain 404, not not-found",
+            f"{r.status_code}",
+        )
+        r = await client.request(
+            "GET",
+            link_url + restconf.encode_key("no : such : link : a : b : ISIS_IPV4_L2"),
+            headers=yang,
+            raise_on_error=False,
+        )
+        record(
+            restconf.is_not_found(r.status_code, r.json()),
+            "restconf: encoded unknown link key is 409 data-missing",
+            f"{r.status_code}",
+        )
+        r = await client.request(
+            "GET",
+            f"{restconf.TOPOLOGY_NBI}/data/cisco-crosswork-performance-metrics"
+            ":igp-links-performance-metrics",
+            headers=yang,
+            raise_on_error=False,
+        )
+        record(
+            restconf.is_not_found(r.status_code, r.json()),
+            "restconf: PM container cannot be listed unkeyed (409)",
+            f"{r.status_code}",
+        )
+        r = await client.request(
+            "GET",
+            f"{restconf.TOPOLOGY_NBI}/data/cisco-crosswork-segment-routing-p2mp-policy"
+            ":p2mp-policies",
+            headers=yang,
+            raise_on_error=False,
+        )
+        record(
+            r.status_code == 200 and r.json() == {},
+            "restconf: empty container answers {} (not 409)",
+            f"{r.status_code} {r.text[:40]!r}",
         )
         r = await client.request(
             "GET", f"{restconf.TOPOLOGY_NBI}/data/no-such:thing", headers=yang, raise_on_error=False
