@@ -30,6 +30,10 @@ WRITE_TOOLS = {
     "cnc_delete_sr_policy",
     "cnc_set_maintenance_mode",
     "cnc_restart_microservice",
+    "cnc_assign_tags",
+    "cnc_lock_device",
+    "cnc_acknowledge_alarm",
+    "cnc_clear_alarm",
 }
 
 

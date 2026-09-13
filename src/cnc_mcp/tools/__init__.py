@@ -13,6 +13,8 @@ from cnc_mcp.tools import (
     credentials,
     data_gateway,
     devices,
+    fault,
+    inventory_extras,
     nso,
     platform,
     providers,
@@ -32,6 +34,8 @@ ALL_MODULES = [
     data_gateway,  # Crosswork Data Gateway: gateways, pools, metrics, destinations, mapping
     nso,  # NSO integration: device actions, policy, NSO's own device view, sync waits
     admin,  # platform admin: cluster/node/microservice health, app manager, certs, RBAC
+    inventory_extras,  # device summaries, tags assign/unassign, device lock, geo-coordinates
+    fault,  # alarm lifecycle (ack/note/clear), events, settings, suppression policies
 ]
 
 

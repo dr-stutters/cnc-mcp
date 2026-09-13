@@ -109,6 +109,12 @@ def build_instructions(settings: Settings) -> str:
         "unknown user answers 500 'Invalid Username' (rendered as not found). Crosswork caps "
         "concurrent sessions per user (cnc_get_session_config); this server logs its session "
         "out on exit.",
+        "- Alarms: system alarms (Crosswork's own) come from alarms/v1 (cnc_list_alarms, "
+        "cnc_search_alarms, cnc_get_alarm, ack/note/clear); the platform ignores server-side "
+        "filters, so searches are client-side; device/network alarms from the EMF fault manager "
+        "are a separate list (cnc_list_device_alarms). Tags are assigned by PATCHing the device "
+        "(cnc_assign_tags), which briefly flips it to ROBOT_OPER_STATE_CHECKING; a device lock "
+        "(cnc_lock_device) needs the device in ROBOT_OPER_STATE_OK.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "
