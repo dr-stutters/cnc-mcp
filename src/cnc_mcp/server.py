@@ -87,6 +87,11 @@ def build_instructions(settings: Settings) -> str:
         "devices. The L3 topology comes from an SR-PCE provider (BGP-LS); L2 links come "
         "from device collection (LLDP). A device's te_router_id must match its router-id "
         "in the SR-PCE topology for the two to be correlated.",
+        "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
+        "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
+        "the pool name plus '-1'. Single-VM deployments have one embedded gateway "
+        "(EMBEDDED_DEF_CDG in pool EMBEDDED_DEF_POOL) that maps devices automatically, "
+        "reports no health vitals, and serves no OAM ping/traceroute.",
         "- Newly added devices show reachability 'CONN_STATE_UNKNOWN' / operational "
         "'ROBOT_OPER_STATE_CHECKING' for a minute or two; cnc_wait_for_device_reachable "
         "waits for the check to finish.",

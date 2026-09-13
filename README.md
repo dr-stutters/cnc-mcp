@@ -2,7 +2,8 @@
 
 MCP server for **Cisco Crosswork Network Controller (CNC)** — device inventory,
 credential profiles, providers (SR-PCE, NSO, …), the topology graph, tags,
-alarms, users, installed applications, and inventory jobs. Official MCP Python
+alarms, users, installed applications, inventory jobs, and Crosswork Data
+Gateways (gateways, pools, load metrics, destinations, device mapping). Official MCP Python
 SDK 2.x, stdio transport. Built and verified live against a CNC 7.x lab fed by
 a CML/XRd SR-MPLS fabric with an SR-PCE.
 
@@ -58,6 +59,7 @@ Read tools (always registered):
 | Providers | `cnc_list_providers`, `cnc_get_provider` |
 | Topology | `cnc_get_topology_summary`, `cnc_get_topology`, `cnc_list_topology_nodes`, `cnc_list_topology_links` |
 | Platform | `cnc_list_tags`, `cnc_list_users`, `cnc_list_applications`, `cnc_list_alarms`, `cnc_list_inventory_jobs`, `cnc_get_inventory_job`, `cnc_wait_for_inventory_job` |
+| Data Gateway | `cnc_list_data_gateways`, `cnc_get_data_gateway`, `cnc_list_data_gateway_pools`, `cnc_get_data_gateway_load_metrics`, `cnc_list_data_gateway_outages`, `cnc_get_data_gateway_health`, `cnc_get_data_gateway_global_parameters`, `cnc_list_data_destinations`, `cnc_list_data_gateway_files` |
 
 Write tools (`CNC_MCP_ENABLE_WRITES=true`):
 
@@ -66,6 +68,7 @@ Write tools (`CNC_MCP_ENABLE_WRITES=true`):
 | Devices | `cnc_create_device`, `cnc_update_device`, `cnc_delete_device` |
 | Credential profiles | `cnc_create_credential_profile`, `cnc_delete_credential_profile` |
 | Providers | `cnc_create_provider`, `cnc_update_provider`, `cnc_delete_provider` |
+| Data Gateway | `cnc_map_devices_to_data_gateway` |
 
 Conventions the tools follow (and that the server tells agents about):
 
@@ -115,6 +118,9 @@ code:
 - Update is `PATCH`, delete takes a JSON body; path-parameter forms do not
   exist. Failed writes are HTTP 200 with `state: JOB_FAILED`.
 - CNC authenticates to an SR-PCE's northbound API with HTTP **Digest**.
+- The platform speaks several API dialects behind one gateway (JSON-over-POST,
+  RESTCONF NBI, EMF RESTCONF); `restconf.py`, `emf.py` and `probe.py` encode
+  their verified quirks, and `scripts/live_plumbing_check.py` re-verifies them.
 
 ## Development
 
