@@ -1135,6 +1135,318 @@
       "args": {}
     },
     {
+      "tool": "cnc_list_performance_policies",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_performance_policy",
+      "args": {
+        "policy_id": 2
+      }
+    },
+    {
+      "tool": "cnc_get_performance_policy",
+      "args": {
+        "policy_id": 999
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_performance_policy_history",
+      "args": {
+        "policy_id": 2
+      }
+    },
+    {
+      "tool": "cnc_get_performance_policy_history",
+      "args": {
+        "policy_id": 999
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_performance_policy_devices",
+      "args": {
+        "policy_id": 2,
+        "page_size": 3
+      }
+    },
+    {
+      "tool": "cnc_list_performance_policy_devices",
+      "args": {
+        "policy_id": 2,
+        "host_name": "PE1"
+      }
+    },
+    {
+      "tool": "cnc_list_performance_policy_templates",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_performance_retention",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_performance_health_settings",
+      "args": {
+        "template": "INTERFACE"
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "hours": 24,
+        "page_size": 3
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "metrics": "ifInBitsRate,ifOutBitsRate",
+        "hours": 1,
+        "with_units": true,
+        "page_size": 2
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "SRPOLICY",
+        "device_uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "hours": 24
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z",
+        "page_size": 2
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "BOGUS",
+        "hours": 24
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "from_time": "yesterday"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_performance_top_n",
+      "args": {
+        "metric": "CEPMINTERFACE_ifInUtilization",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z",
+        "page_size": 3
+      }
+    },
+    {
+      "tool": "cnc_get_performance_top_n",
+      "args": {
+        "metric": "CPU_cpuUtilization",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z"
+      }
+    },
+    {
+      "tool": "cnc_get_performance_top_n",
+      "args": {
+        "metric": "CEPMINTERFACE_nope",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_performance_top_n",
+      "args": {
+        "metric": "SRPOLICY_outBitRate",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_performance_top_n_columns",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_performance_summary",
+      "args": {
+        "metric": "CEPMINTERFACE_ifInBitsRate",
+        "from_time": "2026-09-13T00:00:00.000Z",
+        "to_time": "2026-09-13T23:59:59.000Z"
+      }
+    },
+    {
+      "tool": "cnc_get_lsp_utilization",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "from_time": "2026-09-13T12:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      }
+    },
+    {
+      "tool": "cnc_get_lsp_utilization",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "from_time": "2026-09-13T12:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_lsp_utilization",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "from_time": "2026-09-13T12:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_lsp_delay",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "from_time": "2026-09-13T12:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      }
+    },
+    {
+      "tool": "cnc_get_interface_delay",
+      "args": {
+        "device_uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "interface": "GigabitEthernet0/0/0/0",
+        "from_time": "2026-09-13T00:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      }
+    },
+    {
+      "tool": "cnc_get_interface_delay",
+      "args": {
+        "device_uuid": "PE1",
+        "interface": "GigabitEthernet0/0/0/0",
+        "from_time": "2026-09-13T00:00:00Z",
+        "to_time": "2026-09-13T18:00:00Z"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_oam_settings",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_oam_trace_routes",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_oam_trace_route",
+      "args": {
+        "query_id": "SPQ-nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_probe_status",
+      "args": {
+        "service_id": "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=nonexistent"
+      }
+    },
+    {
+      "tool": "cnc_get_swim_preferences",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_swim_preferences",
+      "args": {
+        "key": "ContinueDistributionOnFailure"
+      }
+    },
+    {
+      "tool": "cnc_list_software_images",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_software_images",
+      "args": {
+        "image_type": "XR type"
+      }
+    },
+    {
+      "tool": "cnc_get_device_running_images",
+      "args": {
+        "device_id": "454455"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_swim_job",
+      "args": {
+        "job_id": 1
+      }
+    },
+    {
+      "tool": "cnc_list_ztp_profiles",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_ztp_profiles",
+      "args": {
+        "os_platform": "IOS XR"
+      }
+    },
+    {
+      "tool": "cnc_list_ztp_devices",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_ztp_serial_numbers",
+      "args": {
+        "in_use": "false"
+      }
+    },
+    {
+      "tool": "cnc_list_ztp_static_routes",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_ztp_device_policy",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_ztp_config_files",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_ztp_config_files",
+      "args": {
+        "platform": "IOS XR"
+      }
+    },
+    {
+      "tool": "cnc_list_ztp_images",
+      "args": {}
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
@@ -2194,6 +2506,74 @@
         "dry_run": true
       },
       "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "smoke-oam-94",
+        "head_end": "PE1",
+        "tail_end": "10.0.0.3",
+        "color": 94
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_service_plan",
+      "args": {
+        "plan_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-oam-94",
+        "timeout_seconds": 60
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_start_oam_trace_route",
+      "args": {
+        "service_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-oam-94",
+        "headend_uuid": "PE1",
+        "endpoint_uuid": "ec35be58-de93-49e5-891b-a1c4a11c72e4"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_start_oam_trace_route",
+      "args": {
+        "service_yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=smoke-oam-94",
+        "headend_uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "endpoint_uuid": "ec35be58-de93-49e5-891b-a1c4a11c72e4"
+      },
+      "capture": {
+        "oam_qid": "query_id"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_oam_trace_route",
+      "args": {
+        "query_id": "$oam_qid"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_oam_trace_route",
+      "args": {
+        "query_id": "$oam_qid",
+        "timeout_seconds": 90,
+        "interval_seconds": 10
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_list_oam_trace_routes",
+      "args": {},
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sr_policy_service",
+      "args": {
+        "name": "smoke-oam-94"
+      },
       "phase": "write"
     }
   ]

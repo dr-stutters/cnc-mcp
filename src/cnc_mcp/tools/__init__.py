@@ -21,12 +21,15 @@ from cnc_mcp.tools import (
     lcm_csm,
     notifications,
     nso,
+    oam,
+    performance,
     physical_inventory,
     platform,
     providers,
     service_provisioning,
     services,
     sr_te_operations,
+    swim_ztp,
     te_state,
     topology,
 )
@@ -52,6 +55,9 @@ ALL_MODULES = [
     lcm_csm,  # LCM domains/config/recommendations, CSM bandwidth pools and CS policy paths
     services,  # CAT service inventory reads, VPN operational data, plans, function packs
     service_provisioning,  # T-SDN CFP writes through the NSO proxy (ODN, policies, SID lists, VPN)
+    performance,  # PM policies, dashboards, retention; NPM LSP / interface analytics
+    oam,  # Optimization Engine OAM trace routes; Service Health probe status
+    swim_ztp,  # SWIM repository / preferences / jobs; ZTP profiles, devices, serials, files, images
 ]
 
 

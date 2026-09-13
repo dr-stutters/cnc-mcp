@@ -139,6 +139,23 @@ def build_instructions(settings: Settings) -> str:
         "without committing — dry-run first. A head-end NSO considers out of sync answers 502 "
         "(run cnc_nso_device_action sync-from, then retry); delete a policy before its SID list; "
         "L3VPN head-ends need a BGP process.",
+        "- Performance monitoring (cnc_list_performance_policies, cnc_get_performance_statistics, "
+        "cnc_get_performance_top_n, cnc_get_performance_summary): PM policies poll schemas "
+        "(CEPMINTERFACE, SRPOLICY, CPU, ...) whose metric names come from "
+        "cnc_list_performance_policy_templates; dashboard metrics are named "
+        "<SCHEMA>_<metric> (e.g. CEPMINTERFACE_ifInUtilization); pages are 1-based; time "
+        "windows are ISO 8601 with milliseconds. NPM analytics (cnc_get_lsp_utilization, "
+        "cnc_get_lsp_delay, cnc_get_interface_delay) key LSPs by TE router-ids + color and "
+        "interfaces by inventory uuid + name, and answer an empty list for an unknown key "
+        "as well as for no data.",
+        "- OAM trace routes (cnc_start_oam_trace_route, then cnc_wait_for_oam_trace_route) "
+        "take the service yang-path plus head-end/tail-end inventory uuids and need gNMI "
+        "connectivity to the devices (a failed trace is a verdict, not an API error). "
+        "Service Health (probes), Health Insights, Change Automation and Path Analytics "
+        "are not installed on single-VM deployments; their prefixes answer the home "
+        "application's 404 and the error text names the missing application. SWIM and "
+        "ZTP reads (cnc_list_software_images, cnc_list_ztp_*) answer empty on a fresh "
+        "deployment.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

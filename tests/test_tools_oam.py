@@ -1,0 +1,1209 @@
+"""OAM tools end-to-end through MCPServer (schema validation included).
+
+The module is registered directly (not through build_server) so the test does
+not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
+The "verified" fixtures are verbatim what Crosswork 7.2 answered live on
+2026-09-13 (platform notes, "OAM RPCs" and "Service Health probe manager"):
+the delete interval, the registered / running / failed trace-route answers
+(the gNMI text and the no-uuid 'mpls oam' text), the status-6 "Route not
+found" answer with every string empty, the list's zero counts, and the probe
+manager's 500 "no active probe session" document. The populated shapes (a
+completed trace with paths, a 200 probe report, the reactivate answer) follow
+the 7.2 documents and are marked as such; so do the extrapolations from the
+verified answers (a probe-manager 500 document carrying another ``error``,
+the set RPC answering a terminal status directly).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import httpx
+import pytest
+import respx
+from mcp.server.mcpserver import MCPServer
+
+from cnc_mcp import polling
+from cnc_mcp.auth import StaticTokenAuth
+from cnc_mcp.client import ApiClient
+from cnc_mcp.config import Settings
+from cnc_mcp.errors import PlatformError
+from cnc_mcp.restconf import EMPTY_500_EXPLANATION
+from cnc_mcp.safety import AppContext
+from cnc_mcp.tools import oam
+from cnc_mcp.tools.oam import (
+    OAM_EMPTY_500_HINT,
+    OAM_MODULE,
+    PROBE_STATUS_NAMES,
+    PROBEMGR_NOT_ROUTED_HINT,
+    REACTIVATE_STATUS_NAMES,
+    check_oam_output,
+    end_text,
+    enum_name,
+    enum_word,
+    oam_time,
+    path_line,
+    probe_reports,
+    probe_verdict_500,
+    start_summary,
+    status_word,
+    trace_status,
+    validate_device_uuid,
+)
+from tests.conftest import BASE_URL, call_tool_text
+
+YANG_JSON = "application/yang-data+json"
+OPERATIONS = f"{BASE_URL}/crosswork/nbi/optimization/v3/restconf/operations"
+PROBE_STATUS_URL = f"{BASE_URL}/crosswork/probemgr/v1/probeStatusReport"
+REACTIVATE_URL = f"{BASE_URL}/crosswork/probemgr/v1/reactivateProbe"
+
+
+def rpc(name: str) -> str:
+    return f"{OPERATIONS}/{OAM_MODULE}:{name}"
+
+
+def out(**fields: Any) -> dict:
+    return {f"{OAM_MODULE}:output": fields}
+
+
+# --- verified fixtures (verbatim from the wire, 2026-09-13) --------------------------
+
+DELETE_INTERVAL_OUT = out(**{"delete-interval": 1, "response-result": "valid"})
+# The list's answer while a query was running / had failed: zero everywhere, no rows.
+LIST_EMPTY_OUT = out(
+    **{
+        "total-count": 0,
+        "total-completed-query-count": 0,
+        "total-running-query-count": 0,
+        "total-failed-query-count": 0,
+        "response-result": "valid",
+    }
+)
+QUERY_ID = "SPQ-324616899"
+POLICY_PATH = "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=mcp-oam-91"
+PE1_UUID = "3d95eb05-1a2b-4c3d-8e4f-5a6b7c8d9e0f"
+PE2_UUID = "ce5c70f5-9f8e-4d7c-8b6a-5f4e3d2c1b0a"
+CREATE_TIME = "1789324616899.0"  # 2026-09-13T18:36:56Z
+GNMI_TEXT = (
+    "Unable to trace the path and request got timed out. Check below and try again: - Devices "
+    "are running IOS-XR 7.3.2 or later - GNMI is enabled on the devices. - GNMI port of device "
+    "in crosswork is configured as per the device. - GNMI connectivity type specified in "
+    "Crosswork for the devices"
+)
+MPLS_OAM_TEXT = (
+    "Path cannot be traced until the device configuration is completed, please check the "
+    "device for enabling 'mpls oam' configuration.(Could not register collection job. Response "
+    'result: request_result: REJECTED error { error: "empty device id item in list" })'
+)
+
+
+def service_route(status: int, message: str, **overrides: Any) -> dict:
+    """A ServiceRoute as the RPCs echo it for a uuid-keyed query (names / router-ids empty)."""
+    route = {
+        "query-id": QUERY_ID,
+        "status": status,
+        "status-message": message,
+        "create-time": CREATE_TIME,
+        "update-time": CREATE_TIME,
+        "yang-path": POLICY_PATH,
+        "service-name": "",
+        "service-type": "",
+        "head-end-node-uuid": PE1_UUID,
+        "head-end-node-name": "",
+        "head-end-te-router-id": "",
+        "tail-end-node-uuid": PE2_UUID,
+        "tail-end-node-name": "",
+        "tail-end-te-router-id": "",
+        "available-path-count": 0,
+        "transport-type": 0,
+        "response-result": "valid",
+    }
+    route.update(overrides)
+    return route
+
+
+REGISTERED = service_route(3, "Path trace registered for calculation")
+RUNNING = service_route(
+    3, "Path trace running for calculation", **{"update-time": "1789324620000.0"}
+)
+FAILED = service_route(5, GNMI_TEXT, **{"update-time": "1789324647000.0"})
+FAILED_NO_UUID = service_route(5, MPLS_OAM_TEXT)
+# get-oam-trace-route-by-query-id for an unknown id: HTTP 200, status 6, every string "".
+NOT_FOUND = {
+    "query-id": "",
+    "status": 6,
+    "status-message": "Route not found for selected ID",
+    "create-time": "",
+    "update-time": "",
+    "yang-path": "",
+    "service-name": "",
+    "service-type": "",
+    "head-end-node-uuid": "",
+    "head-end-node-name": "",
+    "head-end-te-router-id": "",
+    "tail-end-node-uuid": "",
+    "tail-end-node-name": "",
+    "tail-end-te-router-id": "",
+    "available-path-count": 0,
+    "transport-type": 0,
+    "response-result": "valid",
+}
+# The COE's empty 500 (the backend absent — or, on other COE RPCs, unresolved input).
+EMPTY_500 = httpx.Response(500)
+# The probe manager's answer for a service without probes (HTTP 500 + a JSON document).
+L3VPN_ID = "ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=mcp-l3vpn-91"
+NO_SESSION_DOC = {
+    "serviceId": L3VPN_ID,
+    "enableReactivate": False,
+    "status": "PROBE_STATUS_UNKNOWN",
+    "endpointStatus": [],
+    "sessionStatus": [],
+    "error": "service has no active probe session",
+}
+NO_SESSION_500 = httpx.Response(500, json=NO_SESSION_DOC)
+# Go's plain-text 404 (verified: probemgr's unknown paths and the absent Service Health app).
+GO_404 = httpx.Response(404, text="404 page not found\n", headers={"Content-Type": "text/plain"})
+
+# --- document-shaped fixtures (7.2 OpenAPI; unverified live) ------------------------
+
+P1_UUID = "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+COMPLETED = service_route(
+    4,
+    "Path trace completed",
+    **{
+        "head-end-node-name": "PE1",
+        "head-end-te-router-id": "10.0.0.1",
+        "tail-end-node-name": "PE2",
+        "tail-end-te-router-id": "10.0.0.3",
+        "service-name": "mcp-oam-91",
+        "service-type": "policy",
+        "available-path-count": 1,
+        "update-time": "1789324647000.0",
+        "path-info-list": [
+            {
+                "path": "1",
+                "path-info": {
+                    "source": "10.0.0.1",
+                    "destination": "10.0.0.3",
+                    "next-hop": "10.1.2.2",
+                    "out-interface": "GigabitEthernet0/0/0/0",
+                    "device-uuids": [PE1_UUID, P1_UUID, PE2_UUID],
+                    "path-details": "16002 16003",
+                    "path-status": "success",
+                },
+            }
+        ],
+    },
+)
+LIST_WITH_ROWS_OUT = out(
+    **{
+        "total-count": 2,
+        "total-completed-query-count": 1,
+        "total-running-query-count": 0,
+        "total-failed-query-count": 1,
+        "response-result": "valid",
+        "service-routes": [FAILED, {**COMPLETED, "query-id": "SPQ-324700000"}],
+    }
+)
+PROBE_REPORT = {
+    "serviceId": L3VPN_ID,
+    "enableReactivate": True,
+    "status": 3,
+    "endpointStatus": [
+        {
+            "id": "def",
+            "vpnNeId": "PE2",
+            "agentVLAN": 22,
+            "agentIPAddr": "30.1.3.252",
+            "interfaceName": "GigabitEthernet0/0/0/1",
+            "status": 2,
+        },
+        {
+            "id": "abc",
+            "vpnNeId": "PE1",
+            "interfaceName": "GigabitEthernet0/0/0/1",
+            "status": 3,
+            "error": "agent unreachable",
+        },
+    ],
+    "sessionStatus": [
+        {
+            "id": "0f701fff-91ec-557e-9cf1-737c67125d3c",
+            "sender": "def",
+            "reflector": "abc",
+            "status": 3,
+            "error": "reflector down",
+        }
+    ],
+}
+PROBE_200 = {"data": [PROBE_REPORT]}
+REACTIVATE_OK = {"data": [{"status": 1}]}
+REACTIVATE_UNKNOWN = {"data": [{"status": 0}]}
+REACTIVATE_ERROR = {"data": [{"status": "RESP_STATUS_ERROR", "error": "no probe to reactivate"}]}
+
+# Failure idiom inside HTTP 200.
+RESULT_ERROR = {"response-result": "error", "status-message": "internal OAM error"}
+RESULT_INVALID = {"response-result": "invalid"}
+
+
+# --- harness ----------------------------------------------------------------------
+
+
+def build(settings: Settings) -> MCPServer:
+    mcp = MCPServer("test")
+    ctx = AppContext(settings=settings, client=ApiClient(settings, StaticTokenAuth("t")))
+    oam.register(mcp, ctx)
+    return mcp
+
+
+@pytest.fixture
+def writes(make_settings) -> MCPServer:
+    return build(make_settings(enable_writes=True))
+
+
+@pytest.fixture
+def reads(settings) -> MCPServer:
+    return build(settings)
+
+
+class _FakeClock:
+    """Stands in for both ``time`` and ``asyncio`` inside cnc_mcp.polling."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch) -> _FakeClock:
+    clock = _FakeClock()
+    monkeypatch.setattr(polling, "time", clock)
+    monkeypatch.setattr(polling, "asyncio", clock)
+    return clock
+
+
+def ok(body: Any) -> httpx.Response:
+    return httpx.Response(200, json=body)
+
+
+NO_CONTENT = httpx.Response(204)
+
+
+def sent(route: respx.Route, index: int = 0) -> dict:
+    return json.loads(route.calls[index].request.content)
+
+
+def assert_yang_post(route: respx.Route, index: int = 0) -> None:
+    request = route.calls[index].request
+    assert request.method == "POST"
+    assert request.headers["Content-Type"] == YANG_JSON
+    assert request.headers["Accept"] == YANG_JSON
+
+
+def assert_bodiless_post(route: respx.Route, index: int = 0) -> None:
+    request = route.calls[index].request
+    assert request.method == "POST"
+    assert request.content == b""
+    assert request.headers["Accept"] == YANG_JSON
+    assert "Content-Type" not in request.headers
+
+
+def assert_json_post(route: respx.Route, body: dict, index: int = 0) -> None:
+    request = route.calls[index].request
+    assert request.method == "POST"
+    assert request.headers["Content-Type"] == "application/json"
+    assert json.loads(request.content) == body
+
+
+def mock_trace_route(*responses: httpx.Response) -> respx.Route:
+    """The by-query-id RPC answering the responses in order; the last repeats forever."""
+    replies = list(responses)
+
+    def answer(_request: httpx.Request) -> httpx.Response:
+        return replies.pop(0) if len(replies) > 1 else replies[0]
+
+    return respx.post(rpc("get-oam-trace-route-by-query-id")).mock(side_effect=answer)
+
+
+READ_TOOLS = {
+    "cnc_get_oam_settings",
+    "cnc_list_oam_trace_routes",
+    "cnc_get_oam_trace_route",
+    "cnc_wait_for_oam_trace_route",
+    "cnc_get_probe_status",
+}
+WRITE_TOOLS = {"cnc_start_oam_trace_route", "cnc_reactivate_probe"}
+START_ARGS = {
+    "service_yang_path": POLICY_PATH,
+    "headend_uuid": PE1_UUID,
+    "endpoint_uuid": PE2_UUID,
+}
+
+
+# --- registration / gating -----------------------------------------------------------
+
+
+async def test_write_tools_hidden_unless_enabled(make_settings):
+    names = {t.name for t in await build(make_settings(enable_writes=False)).list_tools()}
+    assert names == READ_TOOLS
+    names = {t.name for t in await build(make_settings(enable_writes=True)).list_tools()}
+    assert names == READ_TOOLS | WRITE_TOOLS
+
+
+async def test_annotations_and_flat_schemas(writes):
+    tools = {t.name: t for t in await writes.list_tools()}
+    for name in READ_TOOLS:
+        assert tools[name].annotations.read_only_hint is True, name
+        assert tools[name].annotations.idempotent_hint is True, name
+        assert tools[name].annotations.destructive_hint is False, name
+    for name in WRITE_TOOLS:
+        assert tools[name].annotations.read_only_hint is False, name
+        assert tools[name].annotations.idempotent_hint is False, name
+        assert tools[name].annotations.destructive_hint is False, name
+    assert set(tools["cnc_get_oam_settings"].input_schema["properties"]) == {"response_format"}
+    listing = tools["cnc_list_oam_trace_routes"].input_schema
+    assert "required" not in listing
+    assert listing["properties"]["start_row"]["default"] == 0
+    assert listing["properties"]["end_row"]["default"] == 50
+    assert set(tools["cnc_get_oam_trace_route"].input_schema["required"]) == {"query_id"}
+    wait = tools["cnc_wait_for_oam_trace_route"].input_schema
+    assert set(wait["required"]) == {"query_id"}
+    assert wait["properties"]["timeout_seconds"]["default"] == 90
+    assert wait["properties"]["interval_seconds"]["default"] == 5
+    assert set(tools["cnc_start_oam_trace_route"].input_schema["required"]) == {
+        "service_yang_path",
+        "headend_uuid",
+        "endpoint_uuid",
+    }
+    for name in ("cnc_get_probe_status", "cnc_reactivate_probe"):
+        assert "service_id" in tools[name].input_schema["required"], name
+    # Every argument is a flat scalar (the only $ref is the ResponseFormat enum).
+    for tool in tools.values():
+        for arg, prop in tool.input_schema["properties"].items():
+            ref = prop.get("$ref") or "".join(str(a.get("$ref", "")) for a in prop.get("anyOf", []))
+            assert ref in ("", "#/$defs/ResponseFormat"), f"{tool.name}.{arg}"
+
+
+# --- pure helpers -------------------------------------------------------------------
+
+
+def test_oam_time_renders_epoch_ms_strings():
+    assert oam_time(CREATE_TIME) == "2026-09-13T18:36:56Z"
+    assert oam_time(1789324616899) == "2026-09-13T18:36:56Z"
+    assert oam_time("") == "-"
+    assert oam_time(None) == "-"
+    assert oam_time("0") == "-"
+    assert oam_time("not-a-time") == "not-a-time"
+
+
+def test_trace_status_and_status_word():
+    assert trace_status(REGISTERED) == 3
+    assert trace_status({"status": "5"}) == 5
+    assert trace_status({"status": True}) is None
+    assert trace_status({}) is None
+    assert status_word(3) == "in progress (3)"
+    assert status_word(4) == "completed (4)"
+    assert status_word(5) == "failed (5)"
+    assert status_word(6) == "not found (6)"
+    assert status_word(7) == "status 7"
+    assert status_word(None) == "status unknown"
+
+
+def test_check_oam_output():
+    assert check_oam_output(REGISTERED, "x") is REGISTERED
+    assert check_oam_output({}, "x") == {}
+    with pytest.raises(PlatformError) as excinfo:
+        check_oam_output(RESULT_ERROR, "get-oam-delete-interval")
+    assert str(excinfo.value) == (
+        "get-oam-delete-interval failed: response-result error: internal OAM error"
+    )
+    with pytest.raises(PlatformError, match="response-result invalid: no message given"):
+        check_oam_output(RESULT_INVALID, "x")
+    # The trace-route's integer status is never mistaken for the status-"error" idiom.
+    assert check_oam_output({"status": 5, "response-result": "valid"}, "x")["status"] == 5
+
+
+def test_validate_device_uuid():
+    assert validate_device_uuid(f" {PE1_UUID} ", "headend_uuid") == PE1_UUID
+    with pytest.raises(PlatformError) as excinfo:
+        validate_device_uuid("PE1", "headend_uuid")
+    text = str(excinfo.value)
+    assert text.startswith("headend_uuid 'PE1' is not an inventory uuid")
+    assert "empty device id item in list" in text
+    assert "cnc_get_device(host_name='PE1')" in text
+    with pytest.raises(PlatformError, match="endpoint_uuid '10.0.0.3' is not an inventory uuid"):
+        validate_device_uuid("10.0.0.3", "endpoint_uuid")
+    # A uuid with a stray character is not "almost a uuid": refused, spelled as given.
+    with pytest.raises(PlatformError, match=f"headend_uuid '{PE1_UUID}x' is not an inventory"):
+        validate_device_uuid(f"{PE1_UUID}x", "headend_uuid")
+
+
+NON_CANONICAL_UUIDS = [
+    pytest.param(f"{{{PE1_UUID}}}", id="braces"),
+    pytest.param(f"urn:uuid:{PE1_UUID}", id="urn-lower"),
+    pytest.param(f"URN:UUID:{PE1_UUID.upper()}", id="urn-upper"),
+    pytest.param(PE1_UUID.upper(), id="upper-hex"),
+    pytest.param(PE1_UUID.replace("-", ""), id="32-hex"),
+    pytest.param(PE1_UUID.replace("-", "").upper(), id="32-hex-upper"),
+    pytest.param(f"  {{{PE1_UUID.upper()}}}  ", id="braces-upper-padded"),
+]
+
+
+@pytest.mark.parametrize("spelling", NON_CANONICAL_UUIDS)
+def test_validate_device_uuid_canonicalises_every_spelling(spelling):
+    assert validate_device_uuid(spelling, "headend_uuid") == PE1_UUID
+
+
+def test_start_summary_is_state_aware():
+    registered = start_summary(REGISTERED, QUERY_ID)
+    assert registered.startswith(
+        f"OAM trace route registered: query-id {QUERY_ID}, in progress (3): Path trace "
+        "registered for calculation."
+    )
+    assert f"Next: cnc_wait_for_oam_trace_route(query_id='{QUERY_ID}')" in registered
+    failed = start_summary(FAILED_NO_UUID, QUERY_ID)
+    assert failed.startswith(
+        f"OAM trace route {QUERY_ID} was registered but FAILED immediately: {MPLS_OAM_TEXT}."
+    )
+    assert "Nothing to wait for" in failed
+    assert "cnc_wait_for_oam_trace_route" not in failed
+    assert "registered:" not in failed
+    completed = start_summary(COMPLETED, QUERY_ID)
+    assert completed.startswith(
+        f"OAM trace route {QUERY_ID} completed immediately: completed (4): Path trace completed."
+    )
+    assert "cnc_wait_for_oam_trace_route" not in completed
+    other = start_summary({**REGISTERED, "status": 7, "status-message": "queued"}, QUERY_ID)
+    assert other.startswith(f"OAM trace route {QUERY_ID} answered status 7: queued on registration")
+    assert f"cnc_get_oam_trace_route(query_id='{QUERY_ID}')" in other
+    assert "Next:" not in other
+
+
+def test_probe_verdict_500_needs_a_document_at_500():
+    assert probe_verdict_500(NO_SESSION_500, NO_SESSION_DOC) == NO_SESSION_DOC["error"]
+    other = {**NO_SESSION_DOC, "error": "service not found"}
+    assert probe_verdict_500(httpx.Response(500, json=other), other) == "service not found"
+    # A 500 without a probe document is not a verdict (a bare error, HTML, nothing).
+    bare = {"error": "NATS request failed: timeout"}
+    assert probe_verdict_500(httpx.Response(500, json=bare), bare) == ""
+    assert probe_verdict_500(httpx.Response(500, text="<html>oops</html>"), None) == ""
+    assert probe_verdict_500(EMPTY_500, None) == ""
+    # A document without an error, or a document on a non-500, is not a verdict either.
+    silent = {**NO_SESSION_DOC, "error": ""}
+    assert probe_verdict_500(httpx.Response(500, json=silent), silent) == ""
+    assert probe_verdict_500(httpx.Response(200, json=other), other) == ""
+    assert probe_verdict_500(httpx.Response(503, json=other), other) == ""
+
+
+def test_end_text_prefers_name_then_uuid():
+    assert end_text(REGISTERED, "head-end") == PE1_UUID
+    assert end_text(COMPLETED, "head-end") == f"PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1)"
+    assert end_text(NOT_FOUND, "tail-end") == "?"
+    assert end_text({"tail-end-te-router-id": "10.0.0.3"}, "tail-end") == "10.0.0.3"
+
+
+def test_path_line_renders_the_document_shape():
+    assert path_line(COMPLETED["path-info-list"][0]) == (
+        "- path 1: 10.0.0.1 -> 10.0.0.3 via next-hop 10.1.2.2 out-interface "
+        f"GigabitEthernet0/0/0/0; path-status success; devices {PE1_UUID}, {P1_UUID}, "
+        f"{PE2_UUID}; details 16002 16003"
+    )
+    assert path_line({"path": "2"}) == "- path 2: ? -> ?"
+
+
+def test_probe_enum_helpers():
+    assert enum_word(3, PROBE_STATUS_NAMES) == "PROBE_STATUS_ERROR (3)"
+    assert enum_word("PROBE_STATUS_SUCCESS", PROBE_STATUS_NAMES) == "PROBE_STATUS_SUCCESS"
+    assert enum_word(9, PROBE_STATUS_NAMES) == "status 9"
+    assert enum_word(None, PROBE_STATUS_NAMES) == "-"
+    assert enum_word(True, PROBE_STATUS_NAMES) == "-"
+    assert enum_name(1, REACTIVATE_STATUS_NAMES) == "RESP_STATUS_SUCCESS"
+    assert enum_name("resp_status_error", REACTIVATE_STATUS_NAMES) == "RESP_STATUS_ERROR"
+    assert enum_name(7, REACTIVATE_STATUS_NAMES) == ""
+    assert enum_name(None, REACTIVATE_STATUS_NAMES) == ""
+
+
+def test_probe_reports_accepts_wrapped_and_bare_documents():
+    assert probe_reports(PROBE_200) == [PROBE_REPORT]
+    assert probe_reports(NO_SESSION_DOC) == [NO_SESSION_DOC]
+    assert probe_reports({"data": "nope"}) == []
+    assert probe_reports([]) == []
+    assert probe_reports(None) == []
+
+
+def test_oam_empty_500_hint_is_self_contained():
+    assert EMPTY_500_EXPLANATION not in OAM_EMPTY_500_HINT
+    assert "absent or down" in OAM_EMPTY_500_HINT
+    for check in ("cnc_list_providers", "cnc_list_services", "cnc_list_devices"):
+        assert check in OAM_EMPTY_500_HINT, check
+
+
+# --- cnc_get_oam_settings ------------------------------------------------------------
+
+
+@respx.mock
+async def test_get_oam_settings_sends_no_body_and_renders_the_verified_answer(reads):
+    route = respx.post(rpc("get-oam-delete-interval")).mock(return_value=ok(DELETE_INTERVAL_OUT))
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {})
+    assert route.call_count == 1
+    assert_bodiless_post(route)
+    assert text.startswith("Completed trace-route queries are deleted after 1 hour(s)")
+    assert "cnc_get_oam_trace_route" in text
+
+
+@respx.mock
+async def test_get_oam_settings_json(reads):
+    respx.post(rpc("get-oam-delete-interval")).mock(return_value=ok(DELETE_INTERVAL_OUT))
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {"response_format": "json"})
+    assert json.loads(text) == {"delete-interval": 1, "response-result": "valid"}
+
+
+@respx.mock
+async def test_get_oam_settings_without_interval_is_not_an_error(reads):
+    respx.post(rpc("get-oam-delete-interval")).mock(return_value=NO_CONTENT)
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {})
+    assert text.startswith("The Optimization Engine reported no OAM delete-interval.")
+
+
+@respx.mock
+async def test_get_oam_settings_response_result_error_inside_200(reads):
+    respx.post(rpc("get-oam-delete-interval")).mock(return_value=ok(out(**RESULT_ERROR)))
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {})
+    assert text == (
+        "Error: get-oam-delete-interval failed: response-result error: internal OAM error"
+    )
+
+
+@respx.mock
+async def test_get_oam_settings_empty_500_is_the_coe_hint(reads):
+    route = respx.post(rpc("get-oam-delete-interval")).mock(return_value=EMPTY_500)
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {})
+    assert route.call_count == 1  # a POST: never auto-retried
+    assert text == f"Error: {OAM_EMPTY_500_HINT}"
+
+
+@respx.mock
+async def test_get_oam_settings_http_error(reads):
+    respx.post(rpc("get-oam-delete-interval")).mock(
+        return_value=httpx.Response(403, json={"message": "Unauthorized request"})
+    )
+    text = await call_tool_text(reads, "cnc_get_oam_settings", {})
+    assert text.startswith("Error: API request failed with status 403.")
+    assert "Unauthorized request" in text
+
+
+# --- cnc_list_oam_trace_routes --------------------------------------------------------
+
+
+@respx.mock
+async def test_list_trace_routes_empty_states_the_verified_caveat(reads):
+    route = respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_EMPTY_OUT))
+    text = await call_tool_text(reads, "cnc_list_oam_trace_routes", {})
+    assert route.call_count == 1
+    assert_yang_post(route)
+    assert sent(route) == {"input": {"start-row": 0, "end-row": 50}}
+    assert text.startswith("# OAM trace-route queries (total 0: 0 completed, 0 running, 0 failed)")
+    assert "No trace-route queries were listed for rows 0-50." in text
+    assert "did not show queries created seconds earlier" in text
+    assert "cnc_get_oam_trace_route" in text
+    assert not text.startswith("Error:")
+
+
+@respx.mock
+async def test_list_trace_routes_sends_the_filter_and_window(reads):
+    route = respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_EMPTY_OUT))
+    text = await call_tool_text(
+        reads,
+        "cnc_list_oam_trace_routes",
+        {"start_row": 10, "end_row": 20, "filter_criteria": " SPQ-3 "},
+    )
+    assert sent(route) == {"input": {"start-row": 10, "end-row": 20, "filter-criteria": "SPQ-3"}}
+    assert "rows 10-20 with filter 'SPQ-3'" in text
+
+
+@respx.mock
+async def test_list_trace_routes_renders_rows(reads):
+    respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_WITH_ROWS_OUT))
+    text = await call_tool_text(reads, "cnc_list_oam_trace_routes", {})
+    assert text.startswith("# OAM trace-route queries (total 2: 1 completed, 0 running, 1 failed)")
+    assert (
+        f"- {QUERY_ID} — failed (5): {GNMI_TEXT}; service {POLICY_PATH}; {PE1_UUID} -> "
+        f"{PE2_UUID}; created 2026-09-13T18:36:56Z" in text
+    )
+    assert (
+        f"- SPQ-324700000 — completed (4): Path trace completed; service {POLICY_PATH}; "
+        f"PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1) -> PE2 (uuid {PE2_UUID}, te-router-id "
+        "10.0.0.3); created 2026-09-13T18:36:56Z" in text
+    )
+
+
+@respx.mock
+async def test_list_trace_routes_json_envelope(reads):
+    respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_WITH_ROWS_OUT))
+    text = await call_tool_text(
+        reads, "cnc_list_oam_trace_routes", {"end_row": 10, "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["total"] == 2 and data["count"] == 2 and data["offset"] == 0
+    assert data["has_more"] is False and data["next_offset"] is None
+    assert data["counts"] == {"completed": 1, "running": 0, "failed": 1}
+    assert data["items"][0]["query-id"] == QUERY_ID
+    assert "note" not in data
+
+
+@respx.mock
+async def test_list_trace_routes_json_empty_carries_the_note(reads):
+    respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_EMPTY_OUT))
+    text = await call_tool_text(reads, "cnc_list_oam_trace_routes", {"response_format": "json"})
+    data = json.loads(text)
+    assert data["items"] == [] and data["total"] == 0
+    assert "cnc_get_oam_trace_route" in data["note"]
+
+
+@respx.mock
+async def test_list_trace_routes_bad_window_is_error_before_any_call(reads):
+    route = respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(LIST_EMPTY_OUT))
+    text = await call_tool_text(
+        reads, "cnc_list_oam_trace_routes", {"start_row": 50, "end_row": 50}
+    )
+    assert text.startswith("Error: end_row must exceed start_row")
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_list_trace_routes_response_result_invalid_inside_200(reads):
+    respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=ok(out(**RESULT_INVALID)))
+    text = await call_tool_text(reads, "cnc_list_oam_trace_routes", {})
+    assert text == (
+        "Error: get-oam-trace-route-by-query failed: response-result invalid: no message given"
+    )
+
+
+@respx.mock
+async def test_list_trace_routes_empty_500_is_the_coe_hint(reads):
+    respx.post(rpc("get-oam-trace-route-by-query")).mock(return_value=EMPTY_500)
+    text = await call_tool_text(reads, "cnc_list_oam_trace_routes", {})
+    assert text == f"Error: {OAM_EMPTY_500_HINT}"
+
+
+# --- cnc_get_oam_trace_route ---------------------------------------------------------
+
+
+@respx.mock
+async def test_get_trace_route_registered(reads):
+    route = mock_trace_route(ok(out(**REGISTERED)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 1
+    assert_yang_post(route)
+    assert sent(route) == {"input": {"query-id": QUERY_ID}}
+    assert text.startswith(f"# OAM trace route {QUERY_ID} — in progress (3)")
+    assert "- status: in progress (3): Path trace registered for calculation" in text
+    assert f"- service: {POLICY_PATH}" in text
+    assert f"- head-end: {PE1_UUID}" in text
+    assert f"- tail-end: {PE2_UUID}" in text
+    assert "- created: 2026-09-13T18:36:56Z; updated: 2026-09-13T18:36:56Z" in text
+    assert "- available-path-count: 0" in text
+    assert "transport-type" not in text
+    assert "## Paths" not in text
+    assert f"cnc_wait_for_oam_trace_route(query_id='{QUERY_ID}')" in text
+
+
+@respx.mock
+async def test_get_trace_route_failed_is_rendered_not_an_error(reads):
+    mock_trace_route(ok(out(**FAILED)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert not text.startswith("Error:")
+    assert text.startswith(f"# OAM trace route {QUERY_ID} — failed (5)")
+    assert f"- status: failed (5): {GNMI_TEXT}" in text
+    assert "- created: 2026-09-13T18:36:56Z; updated: 2026-09-13T18:37:27Z" in text
+    assert "A failed query is not re-run" in text
+
+
+@respx.mock
+async def test_get_trace_route_completed_renders_paths(reads):
+    mock_trace_route(ok(out(**COMPLETED)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert text.startswith(f"# OAM trace route {QUERY_ID} — completed (4)")
+    assert f"- service: {POLICY_PATH} (service-name mcp-oam-91, service-type policy)" in text
+    assert f"- head-end: PE1 (uuid {PE1_UUID}, te-router-id 10.0.0.1)" in text
+    assert "- available-path-count: 1" in text
+    assert "## Paths (1)" in text
+    assert "- path 1: 10.0.0.1 -> 10.0.0.3 via next-hop 10.1.2.2 out-interface" in text
+    assert "cnc_get_device(uuid=...)" in text
+
+
+@respx.mock
+async def test_get_trace_route_json(reads):
+    mock_trace_route(ok(out(**RUNNING)))
+    text = await call_tool_text(
+        reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID, "response_format": "json"}
+    )
+    assert json.loads(text) == RUNNING
+
+
+@respx.mock
+async def test_get_trace_route_unknown_id_is_not_found(reads):
+    route = mock_trace_route(ok(out(**NOT_FOUND)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": "nope"})
+    assert sent(route) == {"input": {"query-id": "nope"}}
+    assert text.startswith("Error: no trace-route query 'nope' (Route not found for selected ID)")
+    assert "cnc_get_oam_settings" in text
+    text = await call_tool_text(
+        reads, "cnc_get_oam_trace_route", {"query_id": "nope", "response_format": "json"}
+    )
+    assert text.startswith("Error: no trace-route query 'nope'")
+
+
+@respx.mock
+async def test_get_trace_route_empty_output_is_an_error(reads):
+    mock_trace_route(NO_CONTENT)
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert text.startswith(
+        f"Error: the Optimization Engine returned no trace-route data for query '{QUERY_ID}'"
+    )
+
+
+@respx.mock
+async def test_get_trace_route_response_result_error(reads):
+    mock_trace_route(ok(out(**RESULT_ERROR)))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert text == (
+        "Error: get-oam-trace-route-by-query-id failed: response-result error: internal OAM error"
+    )
+
+
+@respx.mock
+async def test_get_trace_route_empty_500_is_the_coe_hint(reads):
+    route = mock_trace_route(EMPTY_500)
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 1
+    assert text == f"Error: {OAM_EMPTY_500_HINT}"
+
+
+@respx.mock
+async def test_get_trace_route_non_json_body(reads):
+    mock_trace_route(httpx.Response(200, text="<html>login</html>"))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert text == (
+        "Error: The Optimization Engine returned a non-JSON response where YANG JSON was expected."
+    )
+
+
+# --- cnc_wait_for_oam_trace_route ----------------------------------------------------
+
+
+@respx.mock
+async def test_wait_failed_verdict_is_not_an_error(reads, fake_clock):
+    route = mock_trace_route(ok(out(**REGISTERED)), ok(out(**RUNNING)), ok(out(**FAILED)))
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_oam_trace_route",
+        {"query_id": QUERY_ID, "timeout_seconds": 90, "interval_seconds": 5},
+    )
+    assert route.call_count == 3
+    assert sent(route, 2) == {"input": {"query-id": QUERY_ID}}
+    assert not text.startswith("Error:")
+    assert text.startswith(f"Trace route {QUERY_ID} FAILED after 10s: {GNMI_TEXT}")
+    assert f"# OAM trace route {QUERY_ID} — failed (5)" in text
+    assert "A failed query is not re-run" in text
+
+
+@respx.mock
+async def test_wait_completed_renders_the_paths(reads, fake_clock):
+    route = mock_trace_route(ok(out(**RUNNING)), ok(out(**COMPLETED)))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 2
+    assert text.startswith(
+        f"Trace route {QUERY_ID} finished after 5s: completed (4): Path trace completed"
+    )
+    assert "## Paths (1)" in text
+
+
+@respx.mock
+async def test_wait_times_out_non_error_with_the_current_state(reads, fake_clock):
+    route = mock_trace_route(ok(out(**RUNNING)))
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_oam_trace_route",
+        {"query_id": QUERY_ID, "timeout_seconds": 10, "interval_seconds": 5},
+    )
+    assert route.call_count == 3  # t=0, 5 and 10
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        f"Trace route {QUERY_ID} not finished yet after 10s; current status: in progress (3): "
+        "Path trace running for calculation."
+    )
+    assert "Call cnc_wait_for_oam_trace_route again" in text
+    assert f"# OAM trace route {QUERY_ID} — in progress (3)" in text
+
+
+@respx.mock
+async def test_wait_unknown_id_is_not_found(reads, fake_clock):
+    route = mock_trace_route(ok(out(**NOT_FOUND)))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": "nope"})
+    assert route.call_count == 1
+    assert text.startswith("Error: no trace-route query 'nope' (Route not found for selected ID)")
+
+
+@respx.mock
+async def test_wait_api_failure_during_polling_is_an_error(reads, fake_clock):
+    route = mock_trace_route(ok(out(**RUNNING)), EMPTY_500)
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 2
+    assert text == f"Error: {OAM_EMPTY_500_HINT}"
+
+
+# --- cnc_get_probe_status ------------------------------------------------------------
+
+
+@respx.mock
+async def test_get_probe_status_no_session_500_is_not_an_error(reads):
+    route = respx.post(PROBE_STATUS_URL).mock(return_value=NO_SESSION_500)
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": f" {L3VPN_ID} "})
+    assert route.call_count == 1  # a POST: never auto-retried, even as a 500
+    assert_json_post(route, {"serviceId": L3VPN_ID})
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        f"No active probe session for {L3VPN_ID} (Service Health status PROBE_STATUS_UNKNOWN)."
+    )
+    assert "capp-aa" in text
+    assert "Platform said: service has no active probe session" in text
+
+
+@respx.mock
+async def test_get_probe_status_no_session_json(reads):
+    respx.post(PROBE_STATUS_URL).mock(return_value=NO_SESSION_500)
+    text = await call_tool_text(
+        reads, "cnc_get_probe_status", {"service_id": L3VPN_ID, "response_format": "json"}
+    )
+    assert json.loads(text) == NO_SESSION_DOC
+
+
+@respx.mock
+async def test_get_probe_status_renders_the_document_shape(reads):
+    respx.post(PROBE_STATUS_URL).mock(return_value=ok(PROBE_200))
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text.startswith(f"# Service Health probe status for {L3VPN_ID}")
+    assert "- status: PROBE_STATUS_ERROR (3)" in text
+    assert "- re-activation available: true" in text
+    assert "## Endpoints (2)" in text
+    assert (
+        "- def — node PE2, interface GigabitEthernet0/0/0/1, agent 30.1.3.252 vlan 22: "
+        "PROBE_STATUS_SUCCESS (2)" in text
+    )
+    assert (
+        "- abc — node PE1, interface GigabitEthernet0/0/0/1: PROBE_STATUS_ERROR (3); error: "
+        "agent unreachable" in text
+    )
+    assert "## Sessions (1)" in text
+    assert (
+        "- 0f701fff-91ec-557e-9cf1-737c67125d3c — sender def -> reflector abc: "
+        "PROBE_STATUS_ERROR (3); error: reflector down" in text
+    )
+    assert f"cnc_reactivate_probe(service_id='{L3VPN_ID}')" in text
+
+
+@respx.mock
+async def test_get_probe_status_json_and_string_statuses(reads):
+    report = {**PROBE_REPORT, "enableReactivate": False, "status": "PROBE_STATUS_SUCCESS"}
+    respx.post(PROBE_STATUS_URL).mock(return_value=ok({"data": [report]}))
+    text = await call_tool_text(
+        reads, "cnc_get_probe_status", {"service_id": L3VPN_ID, "response_format": "json"}
+    )
+    assert json.loads(text) == {"data": [report]}
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert "- status: PROBE_STATUS_SUCCESS\n" in text
+    assert "- re-activation available: false" in text
+    assert "cnc_reactivate_probe" not in text
+
+
+@respx.mock
+async def test_get_probe_status_empty_200_is_not_an_error(reads):
+    respx.post(PROBE_STATUS_URL).mock(return_value=ok({"data": []}))
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text.startswith(f"The probe manager answered no probe report for {L3VPN_ID}.")
+
+
+@respx.mock
+async def test_get_probe_status_go_404_means_not_installed(reads):
+    respx.post(PROBE_STATUS_URL).mock(return_value=GO_404)
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text == f"Error: {PROBEMGR_NOT_ROUTED_HINT}"
+    assert "not installed" in text
+
+
+@respx.mock
+async def test_get_probe_status_verdict_500_is_refused_without_a_retry_hint(reads):
+    """A 500 carrying the probe document with another error is the probe manager's
+    verdict (the shape of the verified answer) — the same wording family as
+    cnc_reactivate_probe's refusal, never the generic "try again" server-error hint."""
+    doc = {**NO_SESSION_DOC, "error": "service not found"}
+    route = respx.post(PROBE_STATUS_URL).mock(return_value=httpx.Response(500, json=doc))
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert route.call_count == 1  # a POST: never auto-retried, even as a 500
+    assert text.startswith(
+        f"Error: the Service Health probe manager refused the probe report for '{L3VPN_ID}': "
+        "service not found."
+    )
+    assert "status PROBE_STATUS_UNKNOWN" in text
+    assert "cnc_list_services" in text
+    assert "try again" not in text
+    assert "server error" not in text
+    assert "API request failed" not in text
+    # The json form is refused the same way: there is no report to show.
+    text = await call_tool_text(
+        reads, "cnc_get_probe_status", {"service_id": L3VPN_ID, "response_format": "json"}
+    )
+    assert text.startswith("Error: the Service Health probe manager refused the probe report")
+
+
+@respx.mock
+async def test_get_probe_status_verdict_500_with_int_status(reads):
+    doc = {**NO_SESSION_DOC, "status": 3, "error": "probe agent unreachable"}
+    respx.post(PROBE_STATUS_URL).mock(return_value=httpx.Response(500, json=doc))
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text.startswith(
+        f"Error: the Service Health probe manager refused the probe report for '{L3VPN_ID}': "
+        "probe agent unreachable. The 500 carried a probe document (status "
+        "PROBE_STATUS_ERROR (3))"
+    )
+    assert "try again" not in text
+
+
+@respx.mock
+async def test_get_probe_status_other_500_is_an_error(reads):
+    """A 500 whose body is NOT a probe document stays a generic server error (retry hint)."""
+    respx.post(PROBE_STATUS_URL).mock(
+        return_value=httpx.Response(500, json={"error": "NATS request failed: timeout"})
+    )
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text.startswith("Error: API request failed with status 500.")
+    assert "NATS request failed" in text
+    assert "refused the probe report" not in text
+
+
+@respx.mock
+async def test_get_probe_status_home_app_404_is_unrouted(reads):
+    respx.post(PROBE_STATUS_URL).mock(
+        return_value=httpx.Response(
+            404, json={"path": "/crosswork/sso/login/x", "status": 404, "error": "Not Found"}
+        )
+    )
+    text = await call_tool_text(reads, "cnc_get_probe_status", {"service_id": L3VPN_ID})
+    assert text.startswith("Error: API request failed with status 404.")
+    assert "not routed" in text
+
+
+# --- cnc_start_oam_trace_route -------------------------------------------------------
+
+
+@respx.mock
+async def test_start_trace_route_sends_the_verified_body(writes):
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert route.call_count == 1
+    assert_yang_post(route)
+    assert sent(route) == {
+        "input": {
+            "yang-path": POLICY_PATH,
+            "head-end-node-uuid": PE1_UUID,
+            "tail-end-node-uuid": PE2_UUID,
+        }
+    }
+    assert text.startswith(
+        f"OAM trace route registered: query-id {QUERY_ID}, in progress (3): Path trace "
+        "registered for calculation."
+    )
+    assert f"cnc_wait_for_oam_trace_route(query_id='{QUERY_ID}')" in text
+    assert f"# OAM trace route {QUERY_ID} — in progress (3)" in text
+    handle = json.loads(text[text.rindex("{") :])
+    assert handle == {
+        "query_id": QUERY_ID,
+        "status": 3,
+        "status_word": "in progress (3)",
+        "status_message": "Path trace registered for calculation",
+    }
+
+
+@respx.mock
+async def test_start_trace_route_normalises_the_yang_path(writes):
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {**START_ARGS, "service_yang_path": f"/crosswork/proxy/nso/restconf/data/{POLICY_PATH}"},
+    )
+    assert sent(route)["input"]["yang-path"] == POLICY_PATH
+
+
+@respx.mock
+async def test_start_trace_route_refuses_non_uuid_devices_before_any_call(writes):
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    text = await call_tool_text(
+        writes, "cnc_start_oam_trace_route", {**START_ARGS, "headend_uuid": "PE1"}
+    )
+    assert text.startswith("Error: headend_uuid 'PE1' is not an inventory uuid")
+    text = await call_tool_text(
+        writes, "cnc_start_oam_trace_route", {**START_ARGS, "endpoint_uuid": "10.0.0.3"}
+    )
+    assert text.startswith("Error: endpoint_uuid '10.0.0.3' is not an inventory uuid")
+    text = await call_tool_text(
+        writes, "cnc_start_oam_trace_route", {**START_ARGS, "service_yang_path": " / "}
+    )
+    assert text.startswith("Error: yang_path is empty")
+    assert route.call_count == 0
+
+
+@respx.mock
+@pytest.mark.parametrize("spelling", NON_CANONICAL_UUIDS)
+async def test_start_trace_route_sends_every_uuid_spelling_canonical(writes, spelling):
+    """Braces, urn:uuid: (either case), upper-case and 32-hex forms are accepted and the
+    wire carries the canonical lower-case hyphenated uuid the inventory holds."""
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    text = await call_tool_text(
+        writes,
+        "cnc_start_oam_trace_route",
+        {**START_ARGS, "headend_uuid": spelling, "endpoint_uuid": spelling},
+    )
+    assert not text.startswith("Error:")
+    assert route.call_count == 1
+    body = sent(route)["input"]
+    assert body["head-end-node-uuid"] == PE1_UUID
+    assert body["tail-end-node-uuid"] == PE1_UUID
+    # The spelling as given never reaches the wire.
+    assert spelling.strip() not in route.calls[0].request.content.decode()
+
+
+@respx.mock
+async def test_start_trace_route_terminal_answer_gives_no_wait_hint(writes):
+    """The set RPC answering the verified no-uuid failure directly (status 5): the first
+    line is the verdict, not "registered ... Next: wait"; the rendering's footer follows."""
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**FAILED_NO_UUID))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert route.call_count == 1
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        f"OAM trace route {QUERY_ID} was registered but FAILED immediately: {MPLS_OAM_TEXT}. "
+        "Nothing to wait for"
+    )
+    first_line = text.split("\n", 1)[0]
+    assert "cnc_wait_for_oam_trace_route" not in first_line
+    assert "Next:" not in first_line
+    assert f"# OAM trace route {QUERY_ID} — failed (5)" in text
+    assert "A failed query is not re-run" in text
+
+
+@respx.mock
+async def test_start_trace_route_completed_answer_renders_the_paths(writes):
+    respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**COMPLETED)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith(
+        f"OAM trace route {QUERY_ID} completed immediately: completed (4): Path trace completed."
+    )
+    assert "cnc_wait_for_oam_trace_route" not in text.split("\n", 1)[0]
+    assert "## Paths (1)" in text
+
+
+@respx.mock
+async def test_start_trace_route_without_query_id_is_an_error(writes):
+    respx.post(rpc("set-oam-trace-route-by-calc")).mock(
+        return_value=ok(out(**{"response-result": "valid"}))
+    )
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith("Error: set-oam-trace-route-by-calc answered without a query-id")
+
+
+@respx.mock
+async def test_start_trace_route_response_result_error(writes):
+    respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**RESULT_ERROR)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text == (
+        "Error: set-oam-trace-route-by-calc failed: response-result error: internal OAM error"
+    )
+
+
+@respx.mock
+async def test_start_trace_route_empty_500_is_the_coe_hint_and_not_retried(writes):
+    route = respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=EMPTY_500)
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert route.call_count == 1
+    assert text == f"Error: {OAM_EMPTY_500_HINT}"
+
+
+@respx.mock
+async def test_start_then_wait_shows_the_no_uuid_failure_text(writes, fake_clock):
+    """The verified sequence for a query registered without resolvable devices."""
+    respx.post(rpc("set-oam-trace-route-by-calc")).mock(return_value=ok(out(**REGISTERED)))
+    mock_trace_route(ok(out(**FAILED_NO_UUID)))
+    text = await call_tool_text(writes, "cnc_start_oam_trace_route", START_ARGS)
+    assert text.startswith(f"OAM trace route registered: query-id {QUERY_ID}")
+    text = await call_tool_text(writes, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert text.startswith(f"Trace route {QUERY_ID} FAILED after 0s: {MPLS_OAM_TEXT}")
+
+
+# --- cnc_reactivate_probe ------------------------------------------------------------
+
+
+@respx.mock
+async def test_reactivate_probe_success(writes):
+    route = respx.post(REACTIVATE_URL).mock(return_value=ok(REACTIVATE_OK))
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert route.call_count == 1
+    assert_json_post(route, {"serviceId": L3VPN_ID})
+    assert text.startswith(
+        f"Probe re-activation requested for {L3VPN_ID}: RESP_STATUS_SUCCESS (1)."
+    )
+    assert f"cnc_get_probe_status(service_id='{L3VPN_ID}')" in text
+
+
+@respx.mock
+async def test_reactivate_probe_unknown_status_is_an_error(writes):
+    respx.post(REACTIVATE_URL).mock(return_value=ok(REACTIVATE_UNKNOWN))
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert text.startswith(
+        f"Error: probe re-activation for '{L3VPN_ID}' was not confirmed: the probe manager "
+        "answered RESP_STATUS_UNKNOWN (0) instead of RESP_STATUS_SUCCESS."
+    )
+
+
+@respx.mock
+async def test_reactivate_probe_error_status_carries_the_platform_text(writes):
+    respx.post(REACTIVATE_URL).mock(return_value=ok(REACTIVATE_ERROR))
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert text.startswith(
+        f"Error: probe re-activation for '{L3VPN_ID}' failed: no probe to reactivate."
+    )
+
+
+@respx.mock
+async def test_reactivate_probe_no_session_500_is_refused(writes):
+    respx.post(REACTIVATE_URL).mock(return_value=NO_SESSION_500)
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert text.startswith(
+        f"Error: probe re-activation for '{L3VPN_ID}' was refused by the Service Health probe "
+        "manager: service has no active probe session."
+    )
+
+
+@respx.mock
+async def test_reactivate_probe_go_404_means_not_installed(writes):
+    respx.post(REACTIVATE_URL).mock(return_value=GO_404)
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert text == f"Error: {PROBEMGR_NOT_ROUTED_HINT}"
+
+
+@respx.mock
+async def test_reactivate_probe_http_error(writes):
+    respx.post(REACTIVATE_URL).mock(
+        return_value=httpx.Response(403, json={"message": "Unauthorized request"})
+    )
+    text = await call_tool_text(writes, "cnc_reactivate_probe", {"service_id": L3VPN_ID})
+    assert text.startswith("Error: API request failed with status 403.")

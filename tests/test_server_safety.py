@@ -20,6 +20,13 @@ READ_TOOLS = {
     "cnc_list_services",
     "cnc_get_service_plan",
     "cnc_list_function_packs",
+    "cnc_list_performance_policies",
+    "cnc_get_performance_top_n",
+    "cnc_get_lsp_utilization",
+    "cnc_get_oam_trace_route",
+    "cnc_get_probe_status",
+    "cnc_list_software_images",
+    "cnc_list_ztp_profiles",
 }
 WRITE_TOOLS = {
     "cnc_create_device",
@@ -47,6 +54,8 @@ WRITE_TOOLS = {
     "cnc_create_sr_policy_service",
     "cnc_provision_service",
     "cnc_delete_service",
+    "cnc_start_oam_trace_route",
+    "cnc_reactivate_probe",
 }
 
 

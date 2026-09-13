@@ -15,12 +15,13 @@ enabled, onboard devices, manage credential profiles and providers, map
 devices to gateways, drive NSO sync and connect actions, provision SR-TE
 policies through the SR-PCE, provision ODN templates, SR-TE policies and
 L3VPNs through NSO's T-SDN function packs (dry-run first), subscribe webhooks
-to alarm/inventory events, inspect collection jobs, device groups and the
-LCM / Circuit-Style managers — all
+to alarm/inventory events, inspect collection jobs, device groups, the
+LCM / Circuit-Style managers, performance-monitoring dashboards and NPM
+analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**195 tools** (141 read, 54 write) over 20 API areas. Every tool was built from
+**227 tools** (171 read, 56 write) over 23 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -94,6 +95,9 @@ Read tools — always registered:
 | **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` |
 | **LCM & Circuit-Style** (Optimization Engine) | `cnc_list_lcm_domains` · `cnc_get_lcm_config` · `cnc_list_lcm_managed_interfaces` · `cnc_get_lcm_recommendation` · `cnc_get_lcm_recommendation_preview` · `cnc_list_csm_bandwidth_pools` · `cnc_list_cs_policy_paths` · `cnc_list_cs_policies_on_nodes` · `cnc_list_cs_policies_on_interface` |
 | **Services** (CAT inventory, T-SDN) | `cnc_list_service_types` · `cnc_get_service_counts` · `cnc_list_services` · `cnc_get_service` · `cnc_get_service_plan` · `cnc_wait_for_service_plan` · `cnc_list_vpn_services` · `cnc_get_vpn_service` · `cnc_get_vpn_service_health` · `cnc_get_vpn_underlay_transport` · `cnc_list_sub_services` · `cnc_find_services_on_transport` · `cnc_list_function_packs` |
+| **Performance monitoring** (PM policies, dashboards, NPM) | `cnc_list_performance_policies` · `cnc_get_performance_policy` · `cnc_get_performance_policy_history` · `cnc_list_performance_policy_devices` · `cnc_list_performance_policy_templates` · `cnc_get_performance_retention` · `cnc_get_performance_health_settings` · `cnc_get_performance_statistics` · `cnc_get_performance_top_n` · `cnc_list_performance_top_n_columns` · `cnc_get_performance_summary` · `cnc_get_lsp_utilization` · `cnc_get_lsp_delay` · `cnc_get_interface_delay` |
+| **OAM & probes** | `cnc_get_oam_settings` · `cnc_list_oam_trace_routes` · `cnc_get_oam_trace_route` · `cnc_wait_for_oam_trace_route` · `cnc_get_probe_status` |
+| **SWIM & ZTP** | `cnc_get_swim_preferences` · `cnc_list_software_images` · `cnc_get_device_running_images` · `cnc_get_swim_job` · `cnc_list_ztp_profiles` · `cnc_list_ztp_devices` · `cnc_list_ztp_serial_numbers` · `cnc_list_ztp_static_routes` · `cnc_get_ztp_device_policy` · `cnc_list_ztp_config_files` · `cnc_list_ztp_images` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
 the MCP `destructive` annotation:
@@ -113,6 +117,7 @@ the MCP `destructive` annotation:
 | **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` |
 | **LCM** | `cnc_pause_lcm_recommendations` |
 | **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
+| **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
 
 Every tool has flat, typed parameters with examples and constraints, a
 docstring that states when to use it, what it returns, and what each error
@@ -304,6 +309,17 @@ a platform-notes file kept outside this repository.
   `local_as` on its endpoints is rejected with `TSDN-L3VPN-415` unless the PE
   already runs BGP — with `local_as` the function pack renders `router bgp`
   itself.
+- **Performance dashboards name metrics `<SCHEMA>_<metric>`** with the exact
+  metric names of the policy templates (`CEPMINTERFACE_ifInBitsRate`, not
+  `INTERFACE_…`), page from 1, want ISO timestamps with milliseconds, and
+  answer a Spring envelope whose `message` is a code (`INVALID_SCHEMA`,
+  `MISSING_TIME_DETAILS`, …). The NPM analytics service never validates its
+  keys: an unknown LSP or interface answers the same empty list as "no data",
+  so the tools refuse host names and a zero colour before sending anything.
+- **OAM trace routes resolve devices by inventory uuid only** (names and
+  router-ids are accepted and then fail with "empty device id item in list"),
+  need gNMI connectivity to the routers, and report their verdict in a
+  status code rather than an HTTP error.
 
 ## Roadmap
 
@@ -313,15 +329,15 @@ inventory, topology, TE state, SR-TE operations, fault management, device
 configuration (backups, templates, deployments), platform administration and
 RBAC, Data Gateway, NSO, notifications (webhook / Kafka subscriptions), the
 collection service, device grouping, the LCM / Circuit-Style managers, the
-CAT service inventory and T-SDN service provisioning through the NSO proxy.
+CAT service inventory and T-SDN service provisioning through the NSO proxy,
+performance monitoring and NPM analytics, OAM trace routes and Service
+Health probes, and SWIM / ZTP reads.
 Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
-| `performance` | performance-monitoring policies and dashboards (`performance/v1`), NPM LSP / interface analytics |
-| `oam` | Optimization Engine OAM trace routes, Service Health probe status |
-| `swim_ztp` | software image and ZTP profile / device reads |
-| not on this build | change automation, health insights, path analytics (unrouted on a single-VM 7.2 deployment — a 404 from the home application) |
+| writes not yet exposed | performance policy create/activate, collection job create, SWIM collect/distribute/activate, ZTP writes, LCM/CSM configuration — unverified bodies with real network impact |
+| not on this build | change automation, health insights, path analytics, service health (unrouted on a single-VM 7.2 deployment — a 404 from the home application; the error text names the missing application) |
 
 ## Project layout
 
@@ -342,7 +358,7 @@ src/cnc_mcp/
   tools/          devices, credentials, providers, inventory_extras, physical_inventory,
                   topology, te_state, sr_te_operations, platform, fault, device_config,
                   data_gateway, nso, admin, notifications, collection, grouping, lcm_csm,
-                  services, service_provisioning
+                  services, service_provisioning, performance, oam, swim_ztp
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers

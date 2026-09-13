@@ -107,6 +107,31 @@ def _home_app_fallback_path(data: Any, text: str) -> str | None:
     return None
 
 
+# API prefixes that are unrouted on a single-VM CNC 7.2 deployment (verified
+# live 2026-09-13) and the application each belongs to — so the hint can say
+# which application is missing instead of "some prefix".
+_UNROUTED_APPLICATIONS: dict[str, str] = {
+    "/crosswork/aa/": "Service Health (Crosswork Active Assurance, capp-aa)",
+    "/crosswork/probemgr/": "Service Health (Crosswork Active Assurance, capp-aa)",
+    "/crosswork/hi/": "Health Insights",
+    "/crosswork/nca/": "Change Automation",
+    "/crosswork/path_analytics/": "Path Analytics",
+    "/crosswork/performance/restconf/": (
+        "the RESTCONF performance API (the JSON /crosswork/performance/v1 API is routed)"
+    ),
+    "/crosswork/crosscluster/": "the cross-cluster (multi-cluster) service",
+}
+
+
+def _application_for_path(fallback_path: str) -> str | None:
+    """Name the application an unrouted home-app fallback path belongs to, if known."""
+    requested = fallback_path[len(_HOME_APP_PATH_PREFIX) - 1 :]  # keep the leading "/"
+    for prefix, application in _UNROUTED_APPLICATIONS.items():
+        if requested.startswith(prefix):
+            return application
+    return None
+
+
 def _extract_detail(response: httpx.Response, max_chars: int = 300) -> str:
     """Pull a short, human-readable detail string out of an API error response.
 
@@ -245,11 +270,14 @@ def _hint_for(status: int, response: httpx.Response, data: Any) -> str:
             "The RESTCONF service rejected the request (see the error-tag). Check the data "
             "path, keys and body against the YANG model."
         )
-    if status == 404 and _home_app_fallback_path(data, text) is not None:
+    fallback_path = _home_app_fallback_path(data, text) if status == 404 else None
+    if fallback_path is not None:
+        app = _application_for_path(fallback_path)
+        named = f" On CNC 7.2 that prefix belongs to {app}." if app else ""
         return (
             "This path is not routed on this Crosswork instance (application not installed "
             "or not licensed): the request fell through to the home app's login redirect. "
-            "It is not a bad ID — the whole API prefix is absent."
+            f"It is not a bad ID — the whole API prefix is absent.{named}"
         )
     if status == 500 and not text.strip():
         return (

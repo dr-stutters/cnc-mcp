@@ -662,6 +662,46 @@ def test_dialect_error_hints_json(status, body, fragment, detail):
 
 
 @pytest.mark.parametrize(
+    ("path", "application"),
+    [
+        ("/crosswork/sso/login/crosswork/hi/v1/alerts/device/devices", "Health Insights"),
+        ("/crosswork/sso/login/crosswork/nca/v1/mops/query", "Change Automation"),
+        ("/crosswork/sso/login/crosswork/aa/aaapp/v1/services", "Service Health"),
+        ("/crosswork/sso/login/crosswork/path_analytics/v1/paths", "Path Analytics"),
+    ],
+)
+def test_unrouted_hint_names_the_missing_application(path, application):
+    """Verified live 2026-09-13: these prefixes fall through to the home app on a
+    single-VM 7.2 build; the hint names the application so the agent stops probing."""
+    from cnc_mcp.errors import http_error
+
+    msg = str(
+        http_error(httpx.Response(404, json={"status": 404, "error": "Not Found", "path": path}))
+    )
+    assert "not routed on this Crosswork instance" in msg
+    assert f"that prefix belongs to {application}" in msg
+
+
+def test_unrouted_hint_without_a_known_application():
+    from cnc_mcp.errors import http_error
+
+    msg = str(
+        http_error(
+            httpx.Response(
+                404,
+                json={
+                    "status": 404,
+                    "error": "Not Found",
+                    "path": "/crosswork/sso/login/crosswork/zzz/v1",
+                },
+            )
+        )
+    )
+    assert "not routed on this Crosswork instance" in msg
+    assert "prefix belongs to" not in msg
+
+
+@pytest.mark.parametrize(
     ("status", "text", "fragment", "detail"),
     [
         # Go-mux services (probemgr, authconfig) answer an unknown path with plain text
