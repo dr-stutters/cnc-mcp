@@ -7,7 +7,6 @@ import pytest
 from cnc_mcp.crosswork import (
     ADMIN_STATES,
     ALARMS_MAX_LIMIT,
-    DG_TABLES,
     alarms_criteria,
     check_alarm_v1,
     check_collection_result,
@@ -132,28 +131,31 @@ def test_ipaddr_write_shape():
 # --- module 0: the other JSON-over-POST dialects ---------------------------------------
 
 
-def test_dg_query_body_default_criteria_per_table():
+def test_dg_query_body_uses_the_grammar_each_endpoint_accepts():
+    """Verified live: dg/query wants filterData.Criteria; hapool/query wants criteria."""
     assert dg_query_body("gateways") == {
         "filterData": {"Criteria": "select * from RobotDataGateway"}
     }
-    assert dg_query_body("Pools") == {"filterData": {"Criteria": "select * from HAPool"}}
-    # the wire table name is accepted too
+    assert dg_query_body("Pools") == {"criteria": "select * from HAPool"}
     assert dg_query_body("HAPool") == dg_query_body("pools")
-    assert set(DG_TABLES) == {"gateways", "pools"}
+    assert dg_query_body("RobotDataGateway") == dg_query_body("gateways")
 
 
-def test_dg_query_body_carries_nothing_but_filterdata():
-    """dg-manager rejects unknown fields (400 unmarshal-to-proto), so the body is minimal."""
-    body = dg_query_body("gateways")
-    assert list(body) == ["filterData"] and list(body["filterData"]) == ["Criteria"]
+def test_dg_query_body_carries_nothing_else():
+    """dg-manager rejects unknown fields, so the body must be exactly the grammar."""
+    assert set(dg_query_body("gateways")) == {"filterData"}
+    assert set(dg_query_body("gateways")["filterData"]) == {"Criteria"}
+    assert set(dg_query_body("pools")) == {"criteria"}
 
 
 def test_dg_query_body_explicit_criteria_and_unknown_table():
-    custom = "select * from RobotDataGateway where duuid = 'x'"
+    custom = "select * from RobotDataGateway where name = 'x'"
     assert dg_query_body("gateways", custom) == {"filterData": {"Criteria": custom}}
-    assert dg_query_body("whatever", custom) == {"filterData": {"Criteria": custom}}
-    with pytest.raises(PlatformError, match="Unknown Data Gateway table 'nope'.*gateways, pools"):
-        dg_query_body("nope")
+    assert dg_query_body("pools", "select * from HAPool where name = 'p'") == {
+        "criteria": "select * from HAPool where name = 'p'"
+    }
+    with pytest.raises(PlatformError, match="Unknown Data Gateway table"):
+        dg_query_body("whatever", custom)
 
 
 def test_collection_query_body_defaults_match_the_verified_echo():

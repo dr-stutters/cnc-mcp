@@ -47,7 +47,11 @@ COLLECTION = "/crosswork/collection/v1"
 
 # dg-manager query tables (verified: ``select * from RobotDataGateway`` lists gateways;
 # ``hapool/query`` answers on v1 and v2 with different address shapes).
+# dg-manager tables and the body grammar each query endpoint accepts (verified live):
+# dg/query wants {"filterData": {"Criteria": ...}}; hapool/query rejects filterData
+# ("unknown field \"filterData\" in robotapi.HAPoolGetReq") and wants {"criteria": ...}.
 DG_TABLES = {"gateways": "RobotDataGateway", "pools": "HAPool"}
+_DG_GRAMMAR = {"RobotDataGateway": "filterData", "HAPool": "criteria"}
 
 # alarms/v1 criteria paging bound exposed by the tools (the platform's own maximum is
 # not verified; 20 was the UI's page size).
@@ -237,27 +241,32 @@ def ipaddr(address: str, prefix_length: int | None = None) -> dict[str, Any]:
 
 
 def dg_query_body(table: str, criteria: str | None = None) -> dict[str, Any]:
-    """Build a dg-manager ``*/query`` body: ``{"filterData": {"Criteria": ...}}``.
+    """Build a dg-manager ``*/query`` body in the grammar that table's endpoint accepts.
 
-    Verified live: dg-manager reads take ``{"filterData": {"Criteria":
-    "select * from RobotDataGateway"}}`` (or a bare ``{}``), NOT the inventory
-    ``filter``/``PageSize`` grammar, and unlike inventory the service rejects
-    unknown fields with ``400 unable to unmarshal payload to proto`` — so this
-    body contains nothing else. ``table`` is a :data:`DG_TABLES` key
-    (``gateways``, ``pools``) or a wire table name; ``criteria`` replaces the
-    default ``select * from <Table>`` when given.
+    Verified live — the grammars differ per endpoint inside one service:
+    ``POST /crosswork/dg-manager/v2/dg/query`` takes
+    ``{"filterData": {"Criteria": "select * from RobotDataGateway"}}`` (or a bare
+    ``{}``), while ``POST …/hapool/query`` (v1 and v2) takes
+    ``{"criteria": "select * from HAPool"}`` and answers ``400 unable to
+    unmarshal payload to proto … unknown field "filterData"`` for the other
+    form. dg-manager rejects unknown fields everywhere, so the body contains
+    nothing else. ``table`` is a :data:`DG_TABLES` key (``gateways``,
+    ``pools``) or a wire table name; ``criteria`` replaces the default
+    ``select * from <Table>`` when given.
     """
+    key = table.strip().lower()
+    if key in DG_TABLES:
+        wire = DG_TABLES[key]
+    elif table in DG_TABLES.values():
+        wire = table
+    else:
+        raise PlatformError(
+            f"Unknown Data Gateway table '{table}'. Use one of: {', '.join(sorted(DG_TABLES))}."
+        )
     if criteria is None:
-        key = table.strip().lower()
-        if key in DG_TABLES:
-            wire = DG_TABLES[key]
-        elif table in DG_TABLES.values():
-            wire = table
-        else:
-            raise PlatformError(
-                f"Unknown Data Gateway table '{table}'. Use one of: {', '.join(sorted(DG_TABLES))}."
-            )
         criteria = f"select * from {wire}"
+    if _DG_GRAMMAR[wire] == "criteria":
+        return {"criteria": criteria}
     return {"filterData": {"Criteria": criteria}}
 
 

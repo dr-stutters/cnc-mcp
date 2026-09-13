@@ -196,12 +196,17 @@ async def run() -> int:
             "/crosswork/probemgr/v1/x": probe.Routing.ROUTED_NO_PATH,
             "/crosswork/swim/v1/x": probe.Routing.ROUTED_NO_PATH,
             "/crosswork/config/v1/x": probe.Routing.ROUTED_NO_PATH,
-            "/crosswork/inventory/v1/__probe__": probe.Routing.ROUTED_NO_RBAC,
             "/crosswork/aaa/v1/user": probe.Routing.AVAILABLE,
         }
         for path, expected in cases.items():
             got = await probe.probe_path(client, path)
             record(got == expected, f"probe: {path}", f"{got} (expected {expected})")
+        got = await probe.probe_path(client, "/crosswork/inventory/v1/__probe__")
+        record(
+            got in (probe.Routing.ROUTED_NO_RBAC, probe.Routing.ROUTED_BAD_BODY),
+            "probe: inventory unknown path is routed (403 no-RBAC or 500 NATS)",
+            str(got),
+        )
         got = await probe.probe_path(
             client, "/crosswork/dg-manager/v2/dg/query", method="POST", json_body={"criteria": "x"}
         )
