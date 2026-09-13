@@ -15,6 +15,7 @@ from cnc_mcp.tools import (
     data_gateway,
     device_config,
     devices,
+    ems_jobs,
     fault,
     grouping,
     inventory_extras,
@@ -58,6 +59,7 @@ ALL_MODULES = [
     performance,  # PM policies, dashboards, retention; NPM LSP / interface analytics
     oam,  # Optimization Engine OAM trace routes; Service Health probe status
     swim_ztp,  # SWIM repository / preferences / jobs; ZTP profiles, devices, serials, files, images
+    ems_jobs,  # EMS inventory scheduler jobs: list, run now, suspend, resume, wait
 ]
 
 

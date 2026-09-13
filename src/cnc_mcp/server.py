@@ -155,7 +155,10 @@ def build_instructions(settings: Settings) -> str:
         "are not installed on single-VM deployments; their prefixes answer the home "
         "application's 404 and the error text names the missing application. SWIM and "
         "ZTP reads (cnc_list_software_images, cnc_list_ztp_*) answer empty on a fresh "
-        "deployment.",
+        "deployment. The EMS inventory scheduler jobs (cnc_list_inventory_scheduler_jobs; "
+        "run / suspend / resume by exact, case-sensitive name such as 'Failed Feature "
+        "Sync') are the platform's own periodic inventory refreshes — a suspended job "
+        "stays suspended until resumed.",
         "- Data Gateways (collection engines): a device's dg_uuid is the gateway's "
         "configData.vdgUuid (virtual DG id), not its duuid or the pool's puuid; dg_name is "
         "the pool name plus '-1'. Single-VM deployments have one embedded gateway "

@@ -21,9 +21,9 @@ Wraps httpx.AsyncClient with the behaviors every platform server needs:
   Inventory Job Scheduler (``rs`` prefix, ``POST
   /crosswork/rs/json/jobSchedulerServiceInv/v1/{runJob,suspendJob,resumeJob}``,
   documented in ``job_scheduler_ap_is_7_2_0.json`` as an unquoted string such
-  as ``Switch Inventory:Inventory`` sent as ``application/json``). The raw-body
-  path is UNVERIFIED: ``rs`` is unrouted on the lab instance, and it is the only
-  documented consumer — the EMF RESTCONF endpoints take JSON/XML, never raw text.
+  as ``Switch Inventory:Inventory`` sent as ``application/json``; verified live
+  2026-09-13 — the service answers a bare ``true``/``false``). It is the only
+  raw-text consumer — the EMF RESTCONF endpoints take JSON/XML, never raw text.
 
 Accepted statuses (``ok_statuses``) and the re-auth pass: an accepted status is
 never retried by the backoff loop, but it is still subject to the one
@@ -50,10 +50,10 @@ logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = {429, 502, 503, 504}
 IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
-# httpx sets no Content-Type for a raw ``content=`` body. The only documented raw-body
-# consumer (Inventory Job Scheduler runJob/suspendJob/resumeJob, ``rs`` prefix) declares
-# ``application/json`` for its unquoted-string body — UNVERIFIED live (``rs`` is unrouted
-# on the lab). Callers pass their own Content-Type header to override it.
+# httpx sets no Content-Type for a raw ``content=`` body. The one raw-body consumer
+# (Inventory Job Scheduler runJob/suspendJob/resumeJob, ``rs`` prefix) takes its
+# unquoted-string body under ``application/json`` (verified live 2026-09-13; text/plain
+# works too). Callers pass their own Content-Type header to override it.
 DEFAULT_RAW_CONTENT_TYPE = "application/json"
 
 
@@ -98,13 +98,12 @@ class ApiClient:
         bodies and the NSO proxy need ``application/yang-data+json``; the proxy
         answers ``application/json`` with 415) OR ``content`` (sent verbatim;
         Content-Type from ``headers`` or :data:`DEFAULT_RAW_CONTENT_TYPE` when
-        none is given). The only documented raw-body consumer is the Inventory
-        Job Scheduler (``POST /crosswork/rs/json/jobSchedulerServiceInv/v1/
+        none is given). The one raw-body consumer is the Inventory Job
+        Scheduler (``POST /crosswork/rs/json/jobSchedulerServiceInv/v1/
         {runJob,suspendJob,resumeJob}``, body an unquoted string such as
-        ``Switch Inventory:Inventory`` under ``application/json`` per
-        ``job_scheduler_ap_is_7_2_0.json``) — UNVERIFIED live, ``rs`` is
-        unrouted on the lab instance. Passing both is a programming error and
-        raises ValueError before anything is sent.
+        ``Switch Inventory:Inventory`` under ``application/json`` — verified
+        live 2026-09-13, see ``tools/ems_jobs.py``). Passing both is a
+        programming error and raises ValueError before anything is sent.
 
         retryable=None (default) auto-retries 5xx/transport errors only for
         idempotent methods; pass True when a write is known-safe to re-send on

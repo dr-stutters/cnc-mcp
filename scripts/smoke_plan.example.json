@@ -1447,6 +1447,46 @@
       "args": {}
     },
     {
+      "tool": "cnc_list_inventory_scheduler_jobs",
+      "args": {}
+    },
+    {
+      "tool": "cnc_list_inventory_scheduler_jobs",
+      "args": {
+        "response_format": "json"
+      },
+      "capture": {
+        "ffs_job_id": "items.2.lastRunJobId"
+      }
+    },
+    {
+      "tool": "cnc_get_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
+      }
+    },
+    {
+      "tool": "cnc_get_inventory_scheduler_job",
+      "args": {
+        "job_name": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_inventory_scheduler_job",
+      "args": {
+        "job_name": "a:b"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_wait_for_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync",
+        "timeout_seconds": 10
+      }
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
@@ -2573,6 +2613,62 @@
       "tool": "cnc_delete_sr_policy_service",
       "args": {
         "name": "smoke-oam-94"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_suspend_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_resume_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_suspend_inventory_scheduler_job",
+      "args": {
+        "job_name": "nope"
+      },
+      "expect_error": true,
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_run_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
+      },
+      "capture": {
+        "prev_job_id": "state.lastRunJobId"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_wait_for_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync",
+        "timeout_seconds": 90,
+        "interval_seconds": 5,
+        "previous_run_job_id": "$prev_job_id"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_get_inventory_scheduler_job",
+      "args": {
+        "job_name": "Failed Feature Sync"
       },
       "phase": "write"
     }

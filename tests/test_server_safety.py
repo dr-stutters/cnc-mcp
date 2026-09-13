@@ -27,6 +27,7 @@ READ_TOOLS = {
     "cnc_get_probe_status",
     "cnc_list_software_images",
     "cnc_list_ztp_profiles",
+    "cnc_list_inventory_scheduler_jobs",
 }
 WRITE_TOOLS = {
     "cnc_create_device",
@@ -56,6 +57,8 @@ WRITE_TOOLS = {
     "cnc_delete_service",
     "cnc_start_oam_trace_route",
     "cnc_reactivate_probe",
+    "cnc_run_inventory_scheduler_job",
+    "cnc_suspend_inventory_scheduler_job",
 }
 
 
