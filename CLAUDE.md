@@ -1,10 +1,14 @@
-# MCP Server Template — Specialization Playbook
+# cnc-mcp — Conventions and Playbook
 
-This directory is a **copy-template** for building dedicated platform MCP
-servers (official MCP Python SDK 2.x / `MCPServer`, stdio transport). If you are
-Claude and this file is in your context, your job is to turn this template into
-a **complete, tested MCP server for one platform**. Follow this playbook top to
-bottom.
+This server was specialized from a platform-agnostic MCP template (official MCP
+Python SDK 2.x / `MCPServer`, stdio transport) for Cisco Crosswork Network
+Controller; Steps 0–3 below are done. Steps 4–8 are the **conventions every new
+tool module must follow** — they are non-negotiable, and every existing module
+follows them. If you are Claude and this file is in your context, apply them to
+whatever module you are adding, and verify against a live instance before
+calling it done. Platform-specific facts (auth flow, per-endpoint envelopes,
+query grammar, verified quirks) live in the maintainer's platform-notes file
+outside this repository; the README summarises the ones that shaped the code.
 
 ## Step 0 — Inputs you need
 
