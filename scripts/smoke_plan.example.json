@@ -1487,6 +1487,99 @@
       }
     },
     {
+      "tool": "cnc_find_services_on_transport",
+      "args": {
+        "headend": "PE1",
+        "color": 100,
+        "endpoint": "PE2"
+      }
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      }
+    },
+    {
+      "tool": "cnc_list_alarms",
+      "args": {
+        "limit": 5,
+        "sort": "created_desc"
+      }
+    },
+    {
+      "tool": "cnc_list_alarms",
+      "args": {
+        "limit": 5,
+        "sort": "nope"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_list_microservices",
+      "args": {
+        "page_size": 5,
+        "page": 1,
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_check_nso_device_sync",
+      "args": {
+        "host_name": "PE1"
+      }
+    },
+    {
+      "tool": "cnc_get_lsp_utilization",
+      "args": {
+        "headend": "10.0.0.1",
+        "endpoint": "10.0.0.3",
+        "color": 100,
+        "hours": 6
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "hours": 24,
+        "metrics": "ifInErrorsRate,ifOutErrorsRate",
+        "only_nonzero": true
+      }
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "SRPOLICY",
+        "hours": 24
+      }
+    },
+    {
+      "tool": "cnc_list_root_groups",
+      "args": {}
+    },
+    {
+      "tool": "cnc_get_device",
+      "args": {
+        "host_name": "PE2"
+      }
+    },
+    {
+      "tool": "cnc_list_providers",
+      "args": {
+        "family": "sr_pce"
+      }
+    },
+    {
+      "tool": "cnc_get_device",
+      "args": {
+        "host_names": "PE2"
+      },
+      "expect_error": true
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
@@ -1524,8 +1617,7 @@
       "phase": "write",
       "tool": "cnc_get_provider",
       "args": {
-        "uuid": "$provider_uuid",
-        "response_format": "json"
+        "uuid": "$provider_uuid"
       }
     },
     {
@@ -2651,7 +2743,7 @@
         "job_name": "Failed Feature Sync"
       },
       "capture": {
-        "prev_job_id": "state.lastRunJobId"
+        "prev_job_id": "previous_run_job_id"
       },
       "phase": "write"
     },
@@ -2718,8 +2810,7 @@
     {
       "tool": "cnc_get_credential_profile",
       "args": {
-        "profile": "smoke-gnmi-creds",
-        "response_format": "json"
+        "profile": "smoke-gnmi-creds"
       },
       "phase": "write"
     },

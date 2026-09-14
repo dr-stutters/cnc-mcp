@@ -18,7 +18,7 @@ from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import providers
-from cnc_mcp.tools.providers import parse_properties
+from cnc_mcp.tools.providers import family_filter, parse_properties
 from tests.conftest import BASE_URL, call_tool_text
 
 PROVIDERS_URL = f"{BASE_URL}/crosswork/inventory/v1/providers"
@@ -27,10 +27,12 @@ QUERY_URL = f"{PROVIDERS_URL}/query"
 PCE_UUID = "4f1c2d3e-0000-4000-8000-00000000pce1"
 NSO_UUID = "4f1c2d3e-0000-4000-8000-00000000nso1"
 
+# Verified live 2026-09-14: the SR-PCE provider is created as ROBOT_PROVIDER_SR_PCE and
+# READS BACK as ROBOT_PROVIDER_XTC (XTC is Crosswork's wire name for the SR-PCE family).
 PCE = {
     "uuid": PCE_UUID,
     "name": "cml-pce",
-    "family": "ROBOT_PROVIDER_SR_PCE",
+    "family": "ROBOT_PROVIDER_XTC",
     "profile": "cml-xrd",
     "reachability_state": "CONN_STATE_REACHABLE",
     "connectivity_info": [
@@ -139,10 +141,39 @@ async def test_list_providers_markdown_and_body(settings):
     assert sent(route) == query_body({"family": "ROBOT_PROVIDER_SR_PCE"}, page_size=50, page=1)
     assert "offset" not in route.calls[0].request.content.decode()
     assert f"**cml-pce** ({PCE_UUID})" in text
+    # The record reads ROBOT_PROVIDER_XTC; markdown shows the friendly sr_pce, never XTC.
     assert "family=sr_pce" in text and "reachability=reachable" in text
+    assert "XTC" not in text
     assert "http 198.18.140.15:8080" in text and "profile=cml-xrd" in text
     assert "ssh enso.default.svc.cluster.local:2024" in text  # fqdn endpoints rendered too
     assert "More available" not in text
+
+
+@pytest.mark.parametrize("family", ["xtc", "ROBOT_PROVIDER_XTC", "sr_pce", "ROBOT_PROVIDER_SR_PCE"])
+@respx.mock
+async def test_list_providers_accepts_the_xtc_alias_and_sends_the_verified_filter(settings, family):
+    # Every spelling of the SR-PCE family is sent as ROBOT_PROVIDER_SR_PCE — the filter
+    # value verified live to match the provider whose record reads ROBOT_PROVIDER_XTC.
+    route = respx.post(QUERY_URL).mock(
+        return_value=httpx.Response(200, json={"data": [PCE], "total_count": 2, "result_count": 1})
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_list_providers", {"family": family, "response_format": "json"}
+    )
+    assert sent(route) == query_body({"family": "ROBOT_PROVIDER_SR_PCE"})
+    data = json.loads(text)
+    assert data["count"] == 1
+    assert data["items"][0]["family"] == "ROBOT_PROVIDER_XTC"  # JSON keeps the wire value
+
+
+def test_family_filter_maps_the_xtc_alias_and_keeps_the_rest():
+    assert family_filter("xtc") == "ROBOT_PROVIDER_SR_PCE"
+    assert family_filter(" ROBOT_PROVIDER_XTC ") == "ROBOT_PROVIDER_SR_PCE"
+    assert family_filter("SR_PCE") == "ROBOT_PROVIDER_SR_PCE"
+    assert family_filter("nso") == "ROBOT_PROVIDER_NSO"
+    assert family_filter(None) is None and family_filter("") is None
+    with pytest.raises(Exception, match="Unknown provider family 'pcep'"):
+        family_filter("pcep")
 
 
 @respx.mock

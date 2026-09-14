@@ -21,7 +21,7 @@ analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**235 tools** (174 read, 61 write) over 24 API areas. Every tool was built from
+**236 tools** (175 read, 61 write) over 24 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -84,7 +84,7 @@ Read tools — always registered:
 | **SR-TE operations** (Optimization Engine) | `cnc_list_sr_policies_on_nodes` · `cnc_list_sr_policies_on_interface` · `cnc_get_sr_policy_routes` · `cnc_get_sr_policy_metrics` · `cnc_preview_sr_policy_route` · `cnc_dryrun_sr_policy` · `cnc_get_sr_policy_path_notification_state` · `cnc_wait_for_sr_policy_oper_state` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
 | **Data Gateway** | `cnc_list_data_gateways` · `cnc_get_data_gateway` · `cnc_list_data_gateway_pools` · `cnc_get_data_gateway_load_metrics` · `cnc_list_data_gateway_outages` · `cnc_get_data_gateway_health` · `cnc_get_data_gateway_global_parameters` · `cnc_list_data_destinations` · `cnc_list_data_gateway_files` |
-| **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_wait_for_device_nso_state` |
+| **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_check_nso_device_sync` · `cnc_wait_for_device_nso_state` |
 | **Inventory extras** | `cnc_get_device_summary` · `cnc_get_inventory_config` · `cnc_get_collection_cadence` · `cnc_get_device_tags` |
 | **Fault** | `cnc_get_alarm` · `cnc_search_alarms` · `cnc_list_events` · `cnc_list_device_alarms` · `cnc_get_alarm_settings` · `cnc_get_alarm_manager_settings` · `cnc_list_event_types` · `cnc_get_event_type_recommendation` · `cnc_list_alarm_suppression_policies` |
 | **Device configuration** | `cnc_get_device_config_preferences` · `cnc_list_device_backups` · `cnc_get_device_backup` · `cnc_list_config_backup_jobs` · `cnc_get_config_backup_job` · `cnc_list_config_templates` · `cnc_get_config_template` · `cnc_list_template_deployments` · `cnc_get_template_deployment` · `cnc_wait_for_config_backup_job` · `cnc_wait_for_template_deployment` |
@@ -121,10 +121,11 @@ the MCP `destructive` annotation:
 | **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
 | **EMS inventory scheduler** | `cnc_run_inventory_scheduler_job` · `cnc_suspend_inventory_scheduler_job` · `cnc_resume_inventory_scheduler_job` |
 
-Every tool has flat, typed parameters with examples and constraints, a
-docstring that states when to use it, what it returns, and what each error
-means, and a `response_format` of `markdown` (curated summary, the default)
-or `json` (complete data). The `wait_for_*` tools poll server-side so an agent
+Every tool has flat, typed parameters with examples and constraints (unknown
+argument names are rejected with a "did you mean" hint), a docstring that
+states when to use it, what it returns, and what each error means, and a
+`response_format` of `markdown` (curated summary, the default) or `json`
+(complete data). The `wait_for_*` tools poll server-side so an agent
 never has to loop on a status check.
 
 Conventions the server also tells agents about at connect time:
@@ -200,7 +201,7 @@ Environment variables (or a `.env` file), prefix `CNC_MCP_`:
 
 ## How it was verified
 
-Unit tests prove the code; only a live run proves the integration. Three
+Unit tests prove the code; only a live run proves the integration. Four
 layers were used:
 
 1. **Mocked unit tests** (`make test`): every tool has a happy-path test
@@ -212,7 +213,16 @@ layers were used:
    creates `smoke-*` objects and removes them again, chaining created UUIDs
    into later steps, and must leave the platform exactly as it found it.
    `scripts/smoke_plan.example.json` is a sanitised copy of the plan used.
-3. **Live plumbing check** (`scripts/live_plumbing_check.py`): exercises every
+3. **Agent scenarios** (`scripts/mcp_cli.py`): the server driven over the real
+   MCP stdio protocol by assistants that see only the tool list, schemas and
+   instructions — ten operator tasks (health overview, traffic ranking,
+   policy explanation, service audit, a "degraded device" investigation, and
+   five provisioning/operations tasks with full cleanup) run against the
+   lab; every point of friction they reported became a fix (alarm triage
+   rendering and sorting, unknown arguments rejected by name, host names
+   accepted wherever a router-id is a key, modelled-vs-measured PM caveats,
+   parseable truncation, ...). `mcp_cli.py` doubles as a manual test client.
+4. **Live plumbing check** (`scripts/live_plumbing_check.py`): exercises every
    dialect helper against the instance — the real 409, the real
    error-inside-200, the real XML fallback, the real routing signatures — so a
    platform change that breaks a verified assumption shows up before it
@@ -381,6 +391,7 @@ src/cnc_mcp/
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers
+  mcp_cli.py                call the server over the real MCP stdio protocol (list/schema/call)
   smoke_plan.example.json   sanitised smoke plan
 tests/                      one test module per source module; respx-mocked
 ```

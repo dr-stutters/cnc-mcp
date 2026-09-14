@@ -62,17 +62,43 @@ Wire facts (verified live on Crosswork 7.2, 2026-09-13; base
   (``policy=PE1,PE2,100``) answers **400 ``invalid-value``** ("Invalid value
   'PE1' for (...)headend", verified live) — reported with the key rule, not
   as "not found".
+
+Host names (added 2026-09-14, agent scenario 10). The SR policy tools here
+(``cnc_list_sr_policies`` filters, ``cnc_get_sr_policy``,
+``cnc_get_sr_policy_performance_metrics``) accept a **host name or a TE
+router-id** for headend/endpoint, exactly as the SR-TE operations tools do,
+so an agent can carry ``PE2`` through a whole create → get → delete workflow.
+The resolver is THE one every SR-TE tool uses — :func:`find_node` /
+:func:`select_router_id` / :func:`fetch_topology_nodes` live in this module
+(the read side, which :mod:`cnc_mcp.tools.sr_te_operations` imports) so there
+is exactly one implementation and no import cycle. An IP literal goes on the
+wire as given (no topology read — the fast path every existing caller took);
+anything else is looked up in the topology's ``networks`` collection (one
+GET) and refused client-side with "no node 'X' in the topology" when unknown,
+before any NBI call. The RSVP-TE tunnel tools still take router-ids only
+(nothing was available live to verify them with).
+
+Origin vs delegation (agent scenario 3). Two independent flags describe an SR
+policy: ``policy-details.pcep-info.pcep-flag-c`` says WHO INSTANTIATED it
+(1 = PCE-initiated, e.g. by cnc_create_sr_policy; 0 = PCC-initiated, i.e.
+configured on the head-end router) and ``policy-details.pce-controlled`` says
+whether it is DELEGATED to the PCE for (re)optimisation. The lab's colour-100
+policies are ``pcep-flag-c 0`` + ``pce-controlled true``: router-configured
+policies delegated to the PCE (verified live). The renderers spell this out
+as ``origin=`` so agents do not have to infer it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from cnc_mcp.client import ApiClient
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, to_json
 from cnc_mcp.restconf import (
@@ -84,6 +110,17 @@ from cnc_mcp.restconf import (
     unwrap_list,
 )
 from cnc_mcp.safety import AppContext, register_tool
+from cnc_mcp.tools.topology import (
+    DEFAULT_NETWORK,
+    NETWORK_MODULE,
+    NETWORKS_URL,
+    network_id_of,
+    network_nodes,
+    node_id_of,
+    node_l3,
+    router_ids,
+    select_by_field,
+)
 
 TE_DATA = f"{TOPOLOGY_NBI}/data"
 
@@ -103,18 +140,40 @@ TAG_INVALID_VALUE = "invalid-value"  # 400: a key part of the wrong YANG type (v
 
 _KEY_RULE = (
     "Keys are (headend, endpoint, color) with headend/endpoint the TE router-ids (the "
-    "loopbacks, e.g. 10.0.0.1), not host names"
+    "loopbacks, e.g. 10.0.0.1) on the wire, not host names — a host name given to the tool "
+    "is resolved to its router-id through the topology first"
 )
 _FEED_RULE = (
     "a policy is visible only while the SR-PCE gRPC feed is up and the head-end PCC "
     "reports it to the PCE (IOS-XR 'segment-routing traffic-eng pcc ... report-all')"
 )
+_ORIGIN_RULE = (
+    "origin comes from pcep-info.pcep-flag-c (1 = PCE-initiated, e.g. by "
+    "cnc_create_sr_policy; 0 = PCC-initiated, configured on the head-end router) and "
+    "pce-controlled = delegated to the PCE for (re)optimisation — PCC-initiated + "
+    "pce-controlled is a router-configured policy delegated to the PCE"
+)
 _RESPONSE_FORMAT_DESC = "'markdown' for human-readable output, 'json' for the raw platform data."
+# RSVP-TE tunnel tools: router-ids only (no tunnel was available live to verify names with).
 _HEADEND_DESC = (
     "Head-end TE router-id — the loopback address the PCE knows the node by (e.g. "
     "'10.0.0.1'), NOT the host name."
 )
 _ENDPOINT_DESC = "Tail-end TE router-id, the policy's endpoint loopback (e.g. '10.0.0.3')."
+# SR policy tools: host name or router-id (resolved through the topology, as sr_te_operations).
+_NODE_HELP = (
+    "a host name (the topology node id, case-insensitive, e.g. 'PE1') or its TE router-id "
+    "(the loopback, e.g. '10.0.0.1')"
+)
+_SR_HEADEND_DESC = (
+    f"Head-end of the policy: {_NODE_HELP}. A host name is resolved through the topology; a "
+    "router-id is used as given (the key on the wire is always the router-id)."
+)
+_SR_ENDPOINT_DESC = f"Endpoint (tail-end) of the policy: {_NODE_HELP}; e.g. 'PE2' or '10.0.0.3'."
+_NETWORK_DESC = (
+    f"Topology network id host names are resolved against (e.g. '{DEFAULT_NETWORK}', the "
+    "only network on a standard deployment). Not read when every name is a router-id."
+)
 
 
 # --- URL builders (every key through encode_key) ---------------------------------
@@ -206,6 +265,171 @@ def _int_or(value: Any, default: int = -1) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+# --- name -> router-id resolution (shared with sr_te_operations) -------------------
+
+
+def is_ip_address(text: str) -> bool:
+    """True for an IPv4/IPv6 literal — a value that goes on the wire as a key without lookup."""
+    try:
+        ipaddress.ip_address(text.strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _is_ipv4(text: str) -> bool:
+    try:
+        return ipaddress.ip_address(text.strip()).version == 4
+    except ValueError:
+        return False
+
+
+def find_node(nodes: list[dict[str, Any]], name_or_ip: str) -> dict[str, Any]:
+    """The topology ``node`` entry for a node id (case-insensitive) or one of its router-ids.
+
+    An exact node id wins, then a case-insensitive one, then a router-id
+    match (``l3-node-attributes.router-id[]``). PlatformError, with the
+    naming rule and the listing tool, when nothing matches.
+    """
+    key = name_or_ip.strip()
+    if not key:
+        raise PlatformError(f"node name is empty: give {_NODE_HELP}.")
+    for node in nodes:
+        if node_id_of(node) == key:
+            return node
+    lowered = key.lower()
+    for node in nodes:
+        if node_id_of(node).lower() == lowered:
+            return node
+    for node in nodes:
+        if key in router_ids(node_l3(node)):
+            return node
+    raise PlatformError(
+        f"no node '{key}' in the topology (node ids are inventory host names; router-ids are "
+        "TE loopbacks) — list with cnc_list_topology_nodes"
+    )
+
+
+def select_router_id(ids: list[str], name_or_ip: str) -> str | None:
+    """The router-id to put on the wire for a node with ``router-id`` entries ``ids``.
+
+    ``router-id`` is a leaf-list, so a node may carry several (an IPv6 one
+    first is possible). The RPC fields are ``node-ipv4-*`` / ``head-end`` in
+    IPv4 form, so: the input itself when it is one of the node's router-ids
+    (the caller named that address explicitly), else the first IPv4 router-id,
+    else the first entry; ``None`` when the node has none.
+    """
+    key = name_or_ip.strip()
+    if key in ids:
+        return key
+    for candidate in ids:
+        if _is_ipv4(candidate):
+            return candidate
+    return ids[0] if ids else None
+
+
+def node_router_id(nodes: list[dict[str, Any]], name_or_ip: str) -> str:
+    """A host name or router-id -> the TE router-id on the wire; PlatformError when unknown.
+
+    :func:`find_node` then :func:`select_router_id`. A node the topology lists
+    without a router-id (an LLDP-only node, or the SR-PCE feed being down)
+    cannot key an SR policy and is refused with that explanation.
+    """
+    node = find_node(nodes, name_or_ip)
+    router_id = select_router_id(router_ids(node_l3(node)), name_or_ip)
+    if router_id is None:
+        raise PlatformError(
+            f"node '{node_id_of(node)}' has no TE router-id in the topology: the SR-PCE gRPC "
+            "feed may be down, or the node advertises no segment routing — check "
+            "cnc_list_providers (SR-PCE) and cnc_get_topology_node."
+        )
+    return router_id
+
+
+async def fetch_topology_nodes(client: ApiClient, network: str) -> list[dict[str, Any]]:
+    """The ``node`` entries of one network, from the ``networks`` COLLECTION GET.
+
+    The collection is fetched and the network selected client-side because
+    the keyed ``network=<id>`` GET is shallow (no SR data — verified) and an
+    unknown key answers the whole list. An empty container or a network
+    without nodes is an error here: there is nothing to resolve a name
+    against (and the Optimization Engine would answer every unresolved name
+    with its ambiguous empty 500).
+    """
+    key = network.strip() or DEFAULT_NETWORK
+    data = await client.request_json("GET", NETWORKS_URL, headers=YANG_ACCEPT)
+    networks = unwrap_list(data, NETWORK_MODULE, "network")
+    matches = select_by_field(networks, "network-id", key)
+    if matches:
+        nodes = network_nodes(matches[0])
+        if nodes:
+            return nodes
+        raise PlatformError(
+            f"the topology network '{key}' has no nodes yet, so no node name can be resolved. "
+            "Nodes appear once devices are onboarded and the SR-PCE gRPC feed is up "
+            "(cnc_get_topology_summary)."
+        )
+    present = [network_id_of(n) for n in networks if isinstance(n, dict)]
+    if present:
+        raise PlatformError(
+            f"no network '{key}' on the topology NBI. Networks present: "
+            f"{', '.join(present)}. The default is '{DEFAULT_NETWORK}'."
+        )
+    raise PlatformError(
+        "the topology NBI reports no networks yet, so no node name can be resolved. The "
+        "networks container is populated once devices are onboarded and the SR-PCE gRPC feed "
+        "is up (cnc_get_topology_summary, cnc_list_providers)."
+    )
+
+
+async def resolve_router_ids(
+    client: ApiClient, network: str, *names: str | None
+) -> list[str | None]:
+    """Each name -> its TE router-id; ``None`` and IP literals pass through untouched.
+
+    The topology is read at most once, and only when some name is not an IP
+    literal — so a caller passing router-ids (the form every key uses on the
+    wire) costs no extra request, exactly as before host names were accepted.
+    A host name that is unknown, or a node without a router-id, raises
+    PlatformError (:func:`node_router_id`) before anything else is sent.
+    """
+    cleaned = [name.strip() if isinstance(name, str) and name.strip() else None for name in names]
+    if all(value is None or is_ip_address(value) for value in cleaned):
+        return cleaned
+    nodes = await fetch_topology_nodes(client, network)
+    return [
+        value if value is None or is_ip_address(value) else node_router_id(nodes, value)
+        for value in cleaned
+    ]
+
+
+async def resolve_policy_ends(
+    client: ApiClient, network: str, headend: str, endpoint: str
+) -> tuple[str, str]:
+    """``(headend router-id, endpoint router-id)`` for a policy key; blank names are refused
+    before anything is read."""
+    if not headend.strip() or not endpoint.strip():
+        raise PlatformError(f"headend and endpoint must not be blank: give {_NODE_HELP}.")
+    head, end = await resolve_router_ids(client, network, headend, endpoint)
+    return str(head), str(end)
+
+
+def end_label(given: str, router_id: str) -> str:
+    """``PE2 (10.0.0.3)`` when a host name was resolved, else the router-id alone."""
+    if given.strip().lower() != router_id.lower():
+        return f"{given.strip()} ({router_id})"
+    return router_id
 
 
 def _scalar(value: Any) -> Any:
@@ -306,6 +530,56 @@ def active_path(paths: list[dict[str, Any]]) -> dict[str, Any] | None:
 def policy_details(policy: dict[str, Any]) -> dict[str, Any]:
     details = policy.get("policy-details")
     return details if isinstance(details, dict) else {}
+
+
+def pcep_flag_c(policy: dict[str, Any]) -> int | None:
+    """``policy-details.pcep-info.pcep-flag-c`` as an int (1 = PCE-initiated, 0 = PCC-initiated).
+
+    ``None`` when the policy carries no PCEP info at all.
+    """
+    info = policy_details(policy).get("pcep-info")
+    if not isinstance(info, dict):
+        return None
+    return _int_or_none(info.get("pcep-flag-c"))
+
+
+def policy_origin(policy: dict[str, Any]) -> str:
+    """``PCE-initiated`` / ``PCC-initiated`` / ``unknown`` from ``pcep-flag-c`` (1 / 0 / absent).
+
+    Who instantiated the policy — independent of ``pce-controlled``, which
+    says whether it is delegated to the PCE. Verified live: a policy created
+    through cnc_create_sr_policy carries ``pcep-flag-c 1``; the lab's
+    router-configured colour-100 policies carry ``0`` (and ``pce-controlled
+    true`` — delegated).
+    """
+    flag = pcep_flag_c(policy)
+    if flag == 1:
+        return "PCE-initiated"
+    if flag == 0:
+        return "PCC-initiated"
+    return "unknown"
+
+
+def policy_origin_line(policy: dict[str, Any]) -> str:
+    """The get view's ``- origin: ...`` line — origin and delegation in words."""
+    flag = pcep_flag_c(policy)
+    if flag == 1:
+        origin = "PCE-initiated (pcep-flag-c 1: instantiated by the SR-PCE over PCEP)"
+    elif flag == 0:
+        origin = "PCC-initiated (pcep-flag-c 0: configured on the head-end router)"
+    else:
+        origin = "unknown (no pcep-flag-c reported)"
+    delegated = as_bool(policy_details(policy).get("pce-controlled"))
+    if delegated is True:
+        control = "delegated to the PCE for (re)optimisation (pce-controlled true)"
+    elif delegated is False:
+        control = "not delegated to the PCE (pce-controlled false)"
+    else:
+        control = "delegation unknown (no pce-controlled reported)"
+    line = f"- origin: {origin}; {control}"
+    if flag == 0 and delegated is True:
+        line += " — a router-configured policy the PCE may re-optimise"
+    return line
 
 
 def policy_key_text(policy: dict[str, Any]) -> str:
@@ -453,7 +727,7 @@ def sr_policy_line(policy: dict[str, Any]) -> str:
     head = (
         f"- **{policy_key_text(policy)}** admin={policy.get('admin-state', '?')} "
         f"oper={policy.get('oper-state', '?')} type={policy.get('sr-policy-type', '?')} "
-        f"bsid={details.get('binding-sid', '-')} "
+        f"bsid={details.get('binding-sid', '-')} origin={policy_origin(policy)} "
         f"pce-controlled={as_bool(details.get('pce-controlled'))} "
         f"pcc={details.get('pcc-address', '-')}"
     )
@@ -510,6 +784,7 @@ def sr_policy_markdown(policy: dict[str, Any]) -> str:
         f"delegated-pce={details.get('delegated-pce', '-')} msd={details.get('msd', '-')} "
         f"updated={epoch_iso(details.get('update-time'))}",
         f"- pcep-info: {kv_text(details.get('pcep-info'))}",
+        policy_origin_line(policy),
     ]
     if policy.get("policy-protection-status"):
         lines.append(f"- protection-status: {kv_text(policy['policy-protection-status'])}")
@@ -861,14 +1136,50 @@ _POLICY_PM_KEYS = (
     "jitter-telemetry",
     "liveness-telemetry",
 )
+_TELEMETRY_KEYS = ("delay-telemetry", "jitter-telemetry", "liveness-telemetry")
+# The caveat on a PM ``delay`` that carries no ``*-telemetry`` key, per object kind. Only the
+# SR-policy one is a verified fact (2026-09-14, agent scenario 2: equal to the COE's
+# sr-policy-metrics delay); no RSVP-TE tunnel was available live, so the RSVP wording is an
+# explicit presumption and cross-references only what can answer a tunnel (cnc_get_lsp_delay
+# with tunnel_id set, which selects the RSVP LSP — cnc_get_sr_policy_metrics cannot).
+MODELLED_DELAY_NOTES = {
+    "sr": (
+        "modelled — no NAPM/SR-PM telemetry present: without SR-PM probes on the head-end this "
+        "is the sum of the modelled link delays along the route (verified live 2026-09-14: "
+        "equal to cnc_get_sr_policy_metrics' delay), not a measurement; measured delay needs "
+        "SR-PM probes and appears as delay-telemetry here and as samples in cnc_get_lsp_delay"
+    ),
+    "rsvp": (
+        "presumed modelled, as for SR policies — UNVERIFIED (no RSVP-TE tunnel was available "
+        "live): without NAPM telemetry this is most likely the modelled path delay, not a "
+        "measurement; measured tunnel delay samples are cnc_get_lsp_delay (with tunnel_id, "
+        "which selects the RSVP LSP)"
+    ),
+}
+MODELLED_DELAY_NOTE = MODELLED_DELAY_NOTES["sr"]
 
 
-def policy_pm_markdown(title: str, entry: dict[str, Any]) -> str:
+def has_pm_telemetry(entry: dict[str, Any]) -> bool:
+    """True when the PM entry carries any NAPM ``*-telemetry`` key (measured data present)."""
+    return any(entry.get(key) not in (None, "") for key in _TELEMETRY_KEYS)
+
+
+def policy_pm_markdown(title: str, entry: dict[str, Any], kind: str = "sr") -> str:
+    """Markdown for one ``sr-policy-pm`` (``kind="sr"``) or ``rsvp-policy-pm`` (``"rsvp"``) entry.
+
+    The two entries share their shape; only the caveat on a ``delay`` without
+    telemetry differs (see :data:`MODELLED_DELAY_NOTES` — verified for SR
+    policies, presumed for RSVP-TE tunnels).
+    """
+    telemetry = has_pm_telemetry(entry)
+    delay_text = f"delay-us={entry.get('delay', '-')}"
+    if not telemetry and entry.get("delay") not in (None, ""):
+        delay_text += f" ({MODELLED_DELAY_NOTES[kind]})"
     lines = [
         f"# Performance metrics for {title}",
         "",
-        f"- delay-us={entry.get('delay', '-')} "
-        f"bandwidth-utilization-kbps={entry.get('bandwidth-utilization-kbps', '-')} "
+        f"- {delay_text}",
+        f"- bandwidth-utilization-kbps={entry.get('bandwidth-utilization-kbps', '-')} "
         f"delay-telemetry-us={entry.get('delay-telemetry', '-')} "
         f"jitter-telemetry-us={entry.get('jitter-telemetry', '-')} "
         f"liveness={entry.get('liveness-telemetry', '-')}",
@@ -876,11 +1187,13 @@ def policy_pm_markdown(title: str, entry: dict[str, Any]) -> str:
     other = _leftover(entry, _POLICY_PM_KEYS)
     if other:
         lines.append(f"- other: {kv_text(other)}")
+    verdict = "is modelled" if kind == "sr" else "is presumed modelled"
     lines.extend(
         [
             "",
             "Units: delay/jitter in microseconds, bandwidth in kbps; the *-telemetry fields "
-            "come from NAPM telemetry and are absent when none is configured.",
+            "come from NAPM telemetry and are absent when none is configured — while they are "
+            f"absent, delay-us {verdict} (see above), not measured.",
         ]
     )
     return "\n".join(lines)
@@ -964,17 +1277,18 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str | None,
             Field(
                 description=(
-                    "Only policies with this head-end TE router-id (the loopback the PCE knows "
-                    "the node by, e.g. '10.0.0.1' — NOT the host name)."
+                    f"Only policies with this head-end: {_NODE_HELP}; e.g. 'PE1' or '10.0.0.1'."
                 ),
-                max_length=64,
+                max_length=253,
             ),
         ] = None,
         endpoint: Annotated[
             str | None,
             Field(
-                description="Only policies to this endpoint TE router-id (e.g. '10.0.0.3').",
-                max_length=64,
+                description=(
+                    f"Only policies to this endpoint: {_NODE_HELP}; e.g. 'PE2' or '10.0.0.3'."
+                ),
+                max_length=253,
             ),
         ] = None,
         color: Annotated[
@@ -992,11 +1306,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             bool | None,
             Field(
                 description=(
-                    "true = only PCE-delegated policies (the PCE may re-optimise them), "
-                    "false = only non-delegated ones."
+                    "true = only policies delegated to the PCE (it may re-optimise them; "
+                    "independent of who created them — see the docstring), false = only "
+                    "non-delegated ones."
                 ),
             ),
         ] = None,
+        network: Annotated[str, Field(description=_NETWORK_DESC, max_length=200)] = (
+            DEFAULT_NETWORK
+        ),
         response_format: Annotated[
             ResponseFormat, Field(description=_RESPONSE_FORMAT_DESC)
         ] = ResponseFormat.MARKDOWN,
@@ -1011,42 +1329,59 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         up and the head-end PCC reports it (PCEP ``report-all``): PCC-
         initiated and PCE-initiated policies alike, each keyed by
         ``(headend, endpoint, color)`` where headend/endpoint are the TE
-        router-ids (loopbacks such as ``10.0.0.1``), not host names. An empty
-        answer (``{}``) is a normal result ("No SR policies are reported"),
-        not an error — check the SR-PCE provider (cnc_list_providers) and
-        the PCC's PCEP session (``node-pcep-sessions`` in the topology) when
-        policies are expected.
+        router-ids (loopbacks such as ``10.0.0.1``). The headend/endpoint
+        filters accept a host name too (resolved through the topology, one
+        extra GET; a router-id costs nothing extra). An empty answer (``{}``)
+        is a normal result ("No SR policies are reported"), not an error —
+        check the SR-PCE provider (cnc_list_providers) and the PCC's PCEP
+        session (``node-pcep-sessions`` in the topology) when policies are
+        expected.
+
+        Origin vs delegation (two independent flags, verified live):
+        ``policy-details.pcep-info.pcep-flag-c`` says who instantiated the
+        policy — 1 = PCE-initiated (cnc_create_sr_policy; only these can be
+        modified/deleted through the PCE), 0 = PCC-initiated (configured on
+        the head-end router) — rendered as ``origin=``;
+        ``policy-details.pce-controlled`` says whether it is delegated to the
+        PCE for (re)optimisation. PCC-initiated + pce-controlled true = a
+        router-configured policy delegated to the PCE (the lab's colour-100
+        policies).
 
         Args:
-            headend, endpoint: exact router-id match (case-insensitive).
+            headend, endpoint: host name or TE router-id (exact router-id
+                match after resolution, case-insensitive).
             color: numeric color.
             oper_state: 'UP' | 'DOWN' (case-insensitive).
             pce_controlled: delegated-to-PCE filter.
+            network: topology network id host names are resolved in.
             response_format: markdown (one line per policy: key, admin/oper
-                state, type, binding SID, pce-controlled, PCC address, then
-                the active path — the operationally-UP path of highest
-                preference, else the first — with its name, preference,
-                type, metric, hops as ``<label>(<sid-type>/<address>)`` and
-                the last update time) or json (the raw ``policy`` entries).
+                state, type, binding SID, origin, pce-controlled, PCC
+                address, then the active path — the operationally-UP path of
+                highest preference, else the first — with its name,
+                preference, type, metric, hops as
+                ``<label>(<sid-type>/<address>)`` and the last update time)
+                or json (the raw ``policy`` entries).
 
         Returns:
             str: Markdown, or JSON {"count": int, "total": int (before the
-            filter), "filter": {...}, "items": [{"headend", "endpoint",
+            filter), "filter": {...} (headend/endpoint as the resolved
+            router-ids), "items": [{"headend", "endpoint",
             "color", "admin-state", "oper-state", "sr-policy-type",
             "policy-details": {"binding-sid", "pce-controlled", "pcc-address",
-            "update-time" (epoch ms string), "pcep-info", "path": [{"path-name",
-            "path-type", "preference", "oper-state", "optimization-metric",
-            "constraints", "segment-list": [{"weight", "hop": [{"type",
-            "local-ip-addr", "label"}]}], "hop": [...]}]}}]}. "No SR policies
-            are reported by the SR-PCE feed." when the container is empty; "No
-            SR policies match ..." when the filter excludes everything.
-            "Error: ..." when oper_state is not UP/DOWN or on an API failure
-            (400 unknown-element -> the module is not served on this build).
+            "update-time" (epoch ms string), "pcep-info": {"pcep-flag-c"},
+            "path": [{"path-name", "path-type", "preference", "oper-state",
+            "optimization-metric", "constraints", "segment-list": [{"weight",
+            "hop": [{"type", "local-ip-addr", "label"}]}], "hop": [...]}]}}]}.
+            "No SR policies are reported by the SR-PCE feed." when the
+            container is empty; "No SR policies match ..." when the filter
+            excludes everything. "Error: ..." when oper_state is not UP/DOWN,
+            a host name is not in the topology ("no node 'X' in the
+            topology"), or on an API failure (400 unknown-element -> the
+            module is not served on this build).
         """
         try:
             state = normalize_oper_state(oper_state)
-            head_key = headend.strip() if headend and headend.strip() else None
-            end_key = endpoint.strip() if endpoint and endpoint.strip() else None
+            head_key, end_key = await resolve_router_ids(client, network, headend, endpoint)
             policies = await get_container(SR_POLICIES_URL, SR_POLICY_MODULE, "policy")
             filters = {
                 "headend": head_key,
@@ -1093,9 +1428,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             lines.extend(
                 [
                     "",
-                    "Keys are (headend, endpoint, color) with headend/endpoint the TE router-ids; "
-                    "cnc_get_sr_policy shows every candidate path, "
-                    "cnc_get_sr_policy_performance_metrics the delay/utilisation.",
+                    "Keys are (headend, endpoint, color) with headend/endpoint the TE router-ids "
+                    "(the get tools accept host names too); cnc_get_sr_policy shows every "
+                    "candidate path, cnc_get_sr_policy_performance_metrics the PM entry. "
+                    f"{_ORIGIN_RULE[0].upper()}{_ORIGIN_RULE[1:]}.",
                 ]
             )
             return finalize("\n".join(lines), settings)
@@ -1111,11 +1447,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         idempotent=True,
     )
     async def cnc_get_sr_policy(
-        headend: Annotated[str, Field(description=_HEADEND_DESC, min_length=1, max_length=64)],
-        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, min_length=1, max_length=64)],
+        headend: Annotated[str, Field(description=_SR_HEADEND_DESC, min_length=1, max_length=253)],
+        endpoint: Annotated[
+            str, Field(description=_SR_ENDPOINT_DESC, min_length=1, max_length=253)
+        ],
         color: Annotated[
             int, Field(description="The policy color (e.g. 100).", ge=0, le=4294967295)
         ],
+        network: Annotated[str, Field(description=_NETWORK_DESC, max_length=200)] = (
+            DEFAULT_NETWORK
+        ),
         response_format: Annotated[
             ResponseFormat, Field(description=_RESPONSE_FORMAT_DESC)
         ] = ResponseFormat.MARKDOWN,
@@ -1125,39 +1466,57 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Read-only. ``GET .../cisco-crosswork-segment-routing-policy:sr-policies/
         policy=<headend>,<endpoint>,<color>`` (each key part percent-encoded).
         Keys are ``(headend, endpoint, color)`` with headend/endpoint the TE
-        router-ids (loopbacks, e.g. ``10.0.0.1``), never host names — find
-        them with cnc_list_sr_policies (or the node's ``router-id`` in the
-        topology). A policy exists here only while the SR-PCE gRPC feed is up
-        and the head-end PCC reports it (PCEP ``report-all``). The answer is
-        re-checked on its key fields client-side. A missing policy answers
-        409 ``data-missing`` and is reported as "Error: no SR policy ..."; a
-        host name in place of a router-id answers 400 ``invalid-value``
-        (verified live) and is reported with the key rule.
+        router-ids (loopbacks, e.g. ``10.0.0.1``) on the wire; the tool
+        accepts a **host name or a router-id** for either (the same resolver
+        as cnc_create_sr_policy / cnc_delete_sr_policy: a host name is looked
+        up in the topology's ``networks`` collection, one extra GET, and an
+        unknown one is refused client-side as "no node 'X' in the topology";
+        a router-id goes on the wire as given, no lookup). A policy exists
+        here only while the SR-PCE gRPC feed is up and the head-end PCC
+        reports it (PCEP ``report-all``). The answer is re-checked on its key
+        fields client-side. A missing policy answers 409 ``data-missing`` and
+        is reported as "Error: no SR policy ..."; should a non-IP key still
+        reach the NBI it answers 400 ``invalid-value`` (verified live) and is
+        reported with the key rule.
+
+        Origin vs delegation (two independent flags, verified live, rendered
+        as the ``origin:`` line): ``pcep-info.pcep-flag-c`` = who
+        instantiated the policy — 1 PCE-initiated (cnc_create_sr_policy; the
+        only kind cnc_update_sr_policy / cnc_delete_sr_policy can act on),
+        0 PCC-initiated (configured on the head-end router);
+        ``pce-controlled`` = delegated to the PCE for (re)optimisation.
+        ``pcep-flag-c 0`` + ``pce-controlled true`` is a router-configured
+        policy delegated to the PCE (the lab's CNC-DYN-100 policies).
 
         Args:
-            headend, endpoint: TE router-ids.
+            headend, endpoint: host name or TE router-id.
             color: policy color.
+            network: topology network id host names are resolved in.
             response_format: markdown (state, type, binding SID, delegation,
-                PCEP flags, then each path with preference, type, oper-state,
-                metric, constraints and its segment-lists' hops as
-                ``<label>(<sid-type>/<address>)``; keys the renderer does not
-                know are appended as ``other:``) or json (the raw entry).
+                PCEP flags, the origin line, then each path with preference,
+                type, oper-state, metric, constraints and its segment-lists'
+                hops as ``<label>(<sid-type>/<address>)``; keys the renderer
+                does not know are appended as ``other:``) or json (the raw
+                entry).
 
         Returns:
             str: Markdown, or the JSON ``policy`` entry ({"headend",
             "endpoint", "color", "admin-state", "oper-state", "sr-policy-type",
             "policy-details": {"binding-sid", "pce-controlled", "pcc-address",
-            "update-time", "pcep-info", "path": [...]}}). "Error: no SR policy
-            <headend> -> <endpoint> color <color> ..." when it does not exist
-            (hint: cnc_list_sr_policies); "Error: ... 400 ... wrong type"
-            when headend/endpoint is not an IP address; "Error: ..." on any
-            other API failure (a plain 404 = unrouted/malformed URL, not a
-            missing policy).
+            "update-time", "pcep-info": {"pcep-flag-c"}, "path": [...]}}).
+            "Error: no SR policy <headend> -> <endpoint> color <color> ..."
+            when it does not exist (hint: cnc_list_sr_policies); "Error: no
+            node '<name>' in the topology ..." for an unknown host name
+            (nothing else is read); "Error: ... 400 ... wrong type" when a
+            key part is rejected by the NBI; "Error: ..." on any other API
+            failure (a plain 404 = unrouted/malformed URL, not a missing
+            policy).
         """
         try:
-            head_key, end_key = headend.strip(), endpoint.strip()
+            head_key, end_key = await resolve_policy_ends(client, network, headend, endpoint)
+            label = f"{end_label(headend, head_key)} -> {end_label(endpoint, end_key)}"
             missing = PlatformError(
-                f"no SR policy {head_key} -> {end_key} color {color} is reported by the "
+                f"no SR policy {label} color {color} is reported by the "
                 f"SR-PCE feed. {_KEY_RULE}, and {_FEED_RULE}; list the known policies with "
                 "cnc_list_sr_policies."
             )
@@ -1513,46 +1872,74 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         idempotent=True,
     )
     async def cnc_get_sr_policy_performance_metrics(
-        headend: Annotated[str, Field(description=_HEADEND_DESC, min_length=1, max_length=64)],
-        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, min_length=1, max_length=64)],
+        headend: Annotated[str, Field(description=_SR_HEADEND_DESC, min_length=1, max_length=253)],
+        endpoint: Annotated[
+            str, Field(description=_SR_ENDPOINT_DESC, min_length=1, max_length=253)
+        ],
         color: Annotated[
             int, Field(description="The policy color (e.g. 100).", ge=0, le=4294967295)
         ],
+        network: Annotated[str, Field(description=_NETWORK_DESC, max_length=200)] = (
+            DEFAULT_NETWORK
+        ),
         response_format: Annotated[
             ResponseFormat, Field(description=_RESPONSE_FORMAT_DESC)
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
-        """Get the performance metrics (delay, bandwidth utilisation) of one SR-TE policy.
+        """Get the PM entry (delay, bandwidth utilisation) of one SR-TE policy.
 
         Read-only. ``GET .../cisco-crosswork-performance-metrics:
         sr-policies-performance-metrics/sr-policy-pm=<headend>,<endpoint>,
         <color>`` (key parts percent-encoded). **The PM container cannot be
         listed** — only keyed reads exist (verified live); the key is the
         policy's ``(headend, endpoint, color)`` with headend/endpoint the TE
-        router-ids (loopbacks such as ``10.0.0.1``), not host names, as
-        cnc_list_sr_policies shows them. A policy without a PM entry (unknown
-        key, or the policy is newer than the last collection) answers 409
-        ``data-missing`` and is reported as "Error: no performance metrics
-        ...". Verified shape: ``delay`` (microseconds, int) and
-        ``bandwidth-utilization-kbps`` (string); ``delay-telemetry`` /
-        ``jitter-telemetry`` / ``liveness-telemetry`` (NAPM) only when
+        router-ids on the wire — the tool accepts a host name or a router-id
+        for either (resolved as cnc_get_sr_policy does). A policy without a
+        PM entry (unknown key, or the policy is newer than the last
+        collection) answers 409 ``data-missing`` and is reported as "Error:
+        no performance metrics ...". Verified shape: ``delay`` (microseconds,
+        int) and ``bandwidth-utilization-kbps`` (string); ``delay-telemetry``
+        / ``jitter-telemetry`` / ``liveness-telemetry`` (NAPM) only when
         configured.
 
+        **``delay`` is MODELLED unless NAPM/SR-PM telemetry is present**
+        (verified live 2026-09-14, agent scenario 2): on a lab without SR-PM
+        probes the entry carried no ``*-telemetry`` key and its ``delay``
+        (20) was exactly the sum of the two link delays on the route (10 each,
+        cnc_get_link_performance_metrics) and the COE's modelled path delay
+        (cnc_get_sr_policy_metrics: igp-metric 20, te-metric 20, delay 20),
+        while cnc_get_lsp_delay had no samples ("Maximum Average Delay for
+        given LSP not present..returning default delay!"). So do not report
+        it as a measurement: the markdown marks it ``(modelled — ...)`` while
+        the telemetry keys are absent; measured delay needs SR-PM probes on
+        the head-end and then appears as ``delay-telemetry`` here and as
+        samples in cnc_get_lsp_delay. ``bandwidth-utilization-kbps`` is the
+        collected policy throughput (0 on an idle policy).
+
         Args:
-            headend, endpoint: TE router-ids.
+            headend, endpoint: host name or TE router-id.
             color: policy color.
-            response_format: markdown or json (the raw ``sr-policy-pm`` entry).
+            network: topology network id host names are resolved in.
+            response_format: markdown (delay-us with the modelled caveat when
+                no telemetry key is present, then utilisation and the
+                telemetry fields) or json (the raw ``sr-policy-pm`` entry —
+                no caveat is added; apply the same rule).
 
         Returns:
             str: Markdown, or the JSON entry {"headend", "endpoint", "color",
-            "delay", "bandwidth-utilization-kbps", "delay-telemetry"?,
+            "delay" (modelled unless a *-telemetry key is present),
+            "bandwidth-utilization-kbps", "delay-telemetry"?,
             "jitter-telemetry"?, "liveness-telemetry"?}. "Error: no
-            performance metrics for SR policy ..." when absent; "Error: ..."
-            on any other API failure.
+            performance metrics for SR policy ..." when absent; "Error: no
+            node '<name>' in the topology ..." for an unknown host name;
+            "Error: ..." on any other API failure.
         """
         try:
-            head_key, end_key = headend.strip(), endpoint.strip()
-            title = f"SR policy {head_key} -> {end_key} color {color}"
+            head_key, end_key = await resolve_policy_ends(client, network, headend, endpoint)
+            title = (
+                f"SR policy {end_label(headend, head_key)} -> {end_label(endpoint, end_key)} "
+                f"color {color}"
+            )
             missing = PlatformError(
                 f"no performance metrics for {title} — the policy must exist under that exact "
                 f"key in cnc_list_sr_policies ({_KEY_RULE}), and a PM entry follows a new "
@@ -1609,12 +1996,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         answers 409 and is reported as "Error: no performance metrics ...".
         Shape per the 7.2 document (no RSVP-TE tunnel was available live):
         ``delay`` (microseconds), ``bandwidth-utilization-kbps``, optional
-        ``delay-telemetry`` / ``jitter-telemetry``.
+        ``delay-telemetry`` / ``jitter-telemetry``. A ``delay`` without the
+        ``*-telemetry`` keys is PRESUMED to be the modelled path delay, as
+        verified for SR policies (cnc_get_sr_policy_performance_metrics) —
+        UNVERIFIED for tunnels, since none was available live; the markdown
+        marks it "presumed modelled ... UNVERIFIED" rather than as a fact.
+        Measured tunnel delay samples are cnc_get_lsp_delay (with tunnel_id
+        set, which selects the RSVP LSP); cnc_get_sr_policy_metrics cannot
+        answer a tunnel.
 
         Args:
             headend, endpoint: TE router-ids.
             tunnel_id: the head-end's tunnel id.
-            response_format: markdown or json (the raw ``rsvp-policy-pm`` entry).
+            response_format: markdown (delay-us with the presumed-modelled
+                caveat when no telemetry key is present) or json (the raw
+                ``rsvp-policy-pm`` entry — no caveat is added).
 
         Returns:
             str: Markdown, or the JSON entry {"headend", "endpoint",
@@ -1640,7 +2036,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             )
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json(entry), settings)
-            return finalize(policy_pm_markdown(title, entry), settings)
+            return finalize(policy_pm_markdown(title, entry, kind="rsvp"), settings)
         except Exception as e:
             return format_error(e)
 

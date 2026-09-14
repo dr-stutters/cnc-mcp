@@ -46,9 +46,14 @@ leaf-list (:func:`select_router_id`); ``prefix-sid`` = the ``sid`` of that
 ``<router-id>/32`` prefix's ``algorithm-value`` 0 entry and nothing else — a
 Flex-Algo SID or another prefix's SID would not belong with the address, so a
 node without that entry is refused as an explicit hop rather than guessed
-(:func:`node_prefix_sid`). The RPC keys are hyphenated (``head-end``,
-``end-point``, ``color``) where the topology NBI spells them ``headend`` /
-``endpoint``.
+(:func:`node_prefix_sid`). The name -> node -> router-id part of the resolver
+(:func:`find_node`, :func:`select_router_id`, :func:`fetch_topology_nodes`)
+is shared with the read-side tools and lives in :mod:`cnc_mcp.tools.te_state`
+(imported here — one implementation, and the read side accepts host names
+too since 2026-09-14); the SID part (:class:`ResolvedNode`,
+:func:`resolve_node`, :func:`require_sr`) is this module's. The RPC keys are
+hyphenated (``head-end``, ``end-point``, ``color``) where the topology NBI
+spells them ``headend`` / ``endpoint``.
 
 The explicit-hop rule (verified live). An explicit hop on the wire is
 ``{"step": i, "hop": {"node-ipv4-address": <router-id>, "node-ipv4-sid":
@@ -99,7 +104,6 @@ empty 500. Nor are P2MP / RSVP-TE operations (separate documents, unverified).
 
 from __future__ import annotations
 
-import ipaddress
 from typing import Annotated, Any, NamedTuple
 
 from mcp.server.mcpserver import MCPServer
@@ -125,18 +129,18 @@ from cnc_mcp.tools.te_state import (
     SR_POLICY_MODULE,
     as_bool,
     entries_matching,
-    normalize_oper_state,
+    fetch_topology_nodes,
+    find_node,
+    pcep_flag_c,
     policy_details,
+    policy_origin,
     policy_paths,
+    select_router_id,
     sr_policy_url,
 )
 from cnc_mcp.tools.topology import (
     DEFAULT_NETWORK,
-    NETWORK_MODULE,
-    NETWORKS_URL,
     field,
-    network_id_of,
-    network_nodes,
     node_id_of,
     node_l3,
     node_termination_points,
@@ -144,7 +148,6 @@ from cnc_mcp.tools.topology import (
     prefix_sids_of,
     prefixes_of,
     router_ids,
-    select_by_field,
     srgb_lower_bound,
     tp_id_of,
 )
@@ -180,6 +183,10 @@ RELATIONS: dict[str, str] = {
 }
 DEFAULT_RELATION = "source-or-destination"
 DEFAULT_WAIT_TARGET = "UP"
+# cnc_wait_for_sr_policy_oper_state targets: the two oper-states, plus ABSENT = no longer
+# reported by the topology NBI (409 data-missing) — the convergence signal after a delete.
+WAIT_TARGETS = ("UP", "DOWN", "ABSENT")
+_WAIT_TARGET_CHOICES = ", ".join(WAIT_TARGETS)
 
 # The whole explanation of a bare 500 from the COE (see the module docstring). It is
 # deliberately self-contained and NOT restconf.EMPTY_500_EXPLANATION, whose "the
@@ -333,30 +340,24 @@ def _choice(value: str, choices: tuple[str, ...], what: str) -> str:
     return key
 
 
-def find_node(nodes: list[dict[str, Any]], name_or_ip: str) -> dict[str, Any]:
-    """The topology ``node`` entry for a node id (case-insensitive) or one of its router-ids.
+def normalize_wait_target(target: str) -> str:
+    """``'up'`` / ``' Absent '`` -> ``'UP'`` / ``'ABSENT'``; PlatformError for anything else.
 
-    An exact node id wins, then a case-insensitive one, then a router-id
-    match (``l3-node-attributes.router-id[]``). PlatformError, with the
-    naming rule and the listing tool, when nothing matches.
+    Distinct from :func:`cnc_mcp.tools.te_state.normalize_oper_state`
+    because ``ABSENT`` is not an oper-state: it is the wait tool's own
+    "no longer reported" target (added 2026-09-14, agent scenario 10 — after
+    a delete the only convergence signal is the 409 ``data-missing``).
     """
-    key = name_or_ip.strip()
+    key = target.strip().upper()
     if not key:
-        raise PlatformError(f"node name is empty: give {_NODE_HELP}.")
-    for node in nodes:
-        if node_id_of(node) == key:
-            return node
-    lowered = key.lower()
-    for node in nodes:
-        if node_id_of(node).lower() == lowered:
-            return node
-    for node in nodes:
-        if key in router_ids(node_l3(node)):
-            return node
-    raise PlatformError(
-        f"no node '{key}' in the topology (node ids are inventory host names; router-ids are "
-        "TE loopbacks) — list with cnc_list_topology_nodes"
-    )
+        raise PlatformError(f"target is empty: pass one of {_WAIT_TARGET_CHOICES}.")
+    if key not in WAIT_TARGETS:
+        raise PlatformError(
+            f"target must be one of {_WAIT_TARGET_CHOICES} (case-insensitive), got '{target}'. "
+            "UP/DOWN are the policy's oper-state; ABSENT means the topology NBI no longer "
+            "reports the policy (the signal that a delete has converged)."
+        )
+    return key
 
 
 def node_prefix_sid(l3: dict[str, Any], router_id: str | None) -> int | None:
@@ -387,31 +388,6 @@ def node_prefix_sid(l3: dict[str, Any], router_id: str | None) -> int | None:
             if sid is not None:
                 return sid
     return None
-
-
-def _is_ipv4(text: str) -> bool:
-    try:
-        return ipaddress.ip_address(text.strip()).version == 4
-    except ValueError:
-        return False
-
-
-def select_router_id(ids: list[str], name_or_ip: str) -> str | None:
-    """The router-id to put on the wire for a node with ``router-id`` entries ``ids``.
-
-    ``router-id`` is a leaf-list, so a node may carry several (an IPv6 one
-    first is possible). The RPC fields are ``node-ipv4-*`` / ``head-end`` in
-    IPv4 form, so: the input itself when it is one of the node's router-ids
-    (the caller named that address explicitly), else the first IPv4 router-id,
-    else the first entry; ``None`` when the node has none.
-    """
-    key = name_or_ip.strip()
-    if key in ids:
-        return key
-    for candidate in ids:
-        if _is_ipv4(candidate):
-            return candidate
-    return ids[0] if ids else None
 
 
 def resolve_node(nodes: list[dict[str, Any]], name_or_ip: str) -> ResolvedNode:
@@ -620,17 +596,6 @@ def policy_label(head: ResolvedNode, end: ResolvedNode, color: int) -> str:
     return f"{node_label(head)} -> {node_label(end)} color {color}"
 
 
-def pcep_flag_c(policy: dict[str, Any]) -> int | None:
-    """``policy-details.pcep-info.pcep-flag-c`` as an int (1 = PCE-initiated, 0 = PCC-initiated).
-
-    ``None`` when the policy carries no PCEP info at all.
-    """
-    info = policy_details(policy).get("pcep-info")
-    if not isinstance(info, dict):
-        return None
-    return _int_or_none(info.get("pcep-flag-c"))
-
-
 # --- pure helpers: RPC outcomes ----------------------------------------------------
 
 
@@ -728,6 +693,42 @@ def route_lines(route: Any) -> list[str]:
     return [route_line(h) for h in hops] or ["- (no interfaces reported)"]
 
 
+def group_route_by_node(route: Any, first_node: str | None = None) -> list[tuple[str, list[str]]]:
+    """``[(node, [interface, ...]), ...]`` for an ``igp-route`` list, ``first_node`` leading.
+
+    The dry run's ``igp-route`` is UNORDERED and carries no ``interface-use``
+    (verified live 2026-09-14: ``P2:Gi0/0/0/1, PE2:Gi0/0/0/1, P1:Gi0/0/0/0,
+    PE2:Gi0/0/0/0`` for a PE2 -> PE1 dynamic path), so a flat list reads like
+    a four-hop serial path when it is a two-way ECMP split. Grouping by node
+    makes the structure visible: several interfaces on one node are ECMP
+    alternatives, not consecutive hops. Nodes keep their first-appearance
+    order except ``first_node`` (the head-end), which leads when present.
+    """
+    grouped: dict[str, list[str]] = {}
+    for hop in dict_list(route):
+        node = str(hop.get("node") or "?")
+        interface = str(hop.get("interface") or "?")
+        grouped.setdefault(node, []).append(interface)
+    ordered = list(grouped.items())
+    if first_node in grouped:
+        ordered.sort(key=lambda item: item[0] != first_node)
+    return ordered
+
+
+def grouped_route_lines(route: Any, first_node: str | None = None) -> list[str]:
+    """``- PE2: GigabitEthernet0/0/0/0, GigabitEthernet0/0/0/1 (2 ECMP alternatives)`` per node."""
+    groups = group_route_by_node(route, first_node)
+    if not groups:
+        return ["- (no interfaces reported)"]
+    lines = []
+    for node, interfaces in groups:
+        text = f"- {node}: {', '.join(interfaces)}"
+        if len(interfaces) > 1:
+            text += f" ({len(interfaces)} ECMP alternatives)"
+        lines.append(text)
+    return lines
+
+
 def segment_line(hop: dict[str, Any]) -> str:
     """``- step 0: node-ipv4 10.0.0.4 sid 16004`` for one dry-run ``segment-list-hops`` entry."""
     return (
@@ -782,6 +783,7 @@ def policy_summary(policy: dict[str, Any] | None) -> dict[str, Any]:
         "sr_policy_type": policy.get("sr-policy-type"),
         "pce_controlled": as_bool(details.get("pce-controlled")),
         "pcep_flag_c": pcep_flag_c(policy),
+        "origin": policy_origin(policy),
         "binding_sid": details.get("binding-sid"),
         "paths": [
             {
@@ -795,47 +797,64 @@ def policy_summary(policy: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def timeout_hint(target: str, policy: dict[str, Any] | None, seen: bool) -> str:
+    """The wait tool's timeout advice, specific to the target, to the LAST poll's answer and
+    to whether ANY poll reported the policy.
+
+    ``policy`` is only the last poll's state; ``seen`` is true when at least
+    one poll reported the policy. Both matter: a generic "the head-end did
+    not accept the PCEP initiate" after a delete (agent scenario 10, target
+    DOWN) sent the agent the wrong way TWICE — first because the hint ignored
+    the target, then because it ignored that the policy had been reported on
+    the first poll and was gone afterwards, which is the converged state after
+    cnc_delete_sr_policy (a withdrawn policy is never reported as DOWN — the
+    topology NBI answers 409 ``data-missing``). For ``ABSENT`` the policy is
+    never ``None`` on a timeout: a poll that does not report it ends the wait.
+    """
+    if target == "ABSENT":
+        if policy is not None and pcep_flag_c(policy) == 0:
+            return (
+                "The head-end still reports it and it is PCC-initiated (pcep-flag-c 0): the PCE "
+                "cannot remove router configuration, so it will not disappear through "
+                "cnc_delete_sr_policy — remove it from the router (or NSO) instead."
+            )
+        return (
+            "The head-end still reports it: a PCE-initiated policy is withdrawn within seconds "
+            "of cnc_delete_sr_policy, so either the delete did not go through (check its result "
+            "and cnc_list_sr_policies_on_nodes, the COE's own view) or the SR-PCE feed lags — "
+            "call again to keep waiting."
+        )
+    if policy is None:
+        if seen:
+            return (
+                "It was reported, then disappeared — after cnc_delete_sr_policy that IS the "
+                "converged state (a withdrawn policy does not show up as DOWN, the topology NBI "
+                "answers 409 data-missing): wait with target='ABSENT' instead, or confirm with "
+                "cnc_list_sr_policies. If nothing deleted it, the head-end withdrew it — check "
+                "its PCEP session (cnc_get_topology_node)."
+            )
+        return (
+            "Call again to keep waiting. A policy that is never reported: the head-end did not "
+            "accept the PCEP initiate, or does not report it (PCEP report-all) — check its "
+            "PCEP session (cnc_get_topology_node) and the SR-PCE provider (cnc_list_providers)."
+        )
+    return (
+        "Call again to keep waiting, or read cnc_get_sr_policy for the candidate paths and "
+        "their oper-state."
+    )
+
+
 # --- registration ------------------------------------------------------------------
 
 
 def register(mcp: MCPServer, ctx: AppContext) -> None:
     settings, client = ctx.settings, ctx.client
 
-    async def fetch_topology_nodes(network: str) -> list[dict[str, Any]]:
-        """The ``node`` entries of one network, from the ``networks`` COLLECTION GET.
-
-        The collection is fetched and the network selected client-side because
-        the keyed ``network=<id>`` GET is shallow (no SR data — verified) and
-        an unknown key answers the whole list. An empty container or a network
-        without nodes is an error here: there is nothing to validate the RPC
-        inputs against, and the COE would answer every unresolved name with
-        the ambiguous empty 500.
-        """
-        key = network.strip() or DEFAULT_NETWORK
-        data = await client.request_json("GET", NETWORKS_URL, headers=YANG_ACCEPT)
-        networks = unwrap_list(data, NETWORK_MODULE, "network")
-        matches = select_by_field(networks, "network-id", key)
-        if matches:
-            nodes = network_nodes(matches[0])
-            if nodes:
-                return nodes
-            raise PlatformError(
-                f"the topology network '{key}' has no nodes yet, so no node name can be "
-                "resolved for the Optimization Engine. Nodes appear once devices are onboarded "
-                "and the SR-PCE gRPC feed is up (cnc_get_topology_summary)."
-            )
-        present = [network_id_of(n) for n in networks if isinstance(n, dict)]
-        if present:
-            raise PlatformError(
-                f"no network '{key}' on the topology NBI. Networks present: "
-                f"{', '.join(present)}. The default is '{DEFAULT_NETWORK}'."
-            )
-        raise PlatformError(
-            "the topology NBI reports no networks yet, so no node name can be resolved for the "
-            "Optimization Engine. The networks container is populated once devices are "
-            "onboarded and the SR-PCE gRPC feed is up (cnc_get_topology_summary, "
-            "cnc_list_providers)."
-        )
+    async def topology_nodes(network: str) -> list[dict[str, Any]]:
+        """The network's ``node`` entries — the shared resolver's fetch (te_state), bound to
+        this client. Every RPC input is validated against it first, because the COE answers
+        an unresolved name with the ambiguous empty 500."""
+        return await fetch_topology_nodes(client, network)
 
     async def call_rpc(module: str, rpc: str, body: dict[str, Any] | None) -> dict[str, Any]:
         """POST one RPC and return its ``output`` container.
@@ -898,7 +917,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         network: str, headend: str, endpoint: str
     ) -> tuple[list[dict[str, Any]], ResolvedNode, ResolvedNode]:
         """Nodes of the network plus the resolved head-end / endpoint (router-ids required)."""
-        nodes = await fetch_topology_nodes(network)
+        nodes = await topology_nodes(network)
         head = require_sr(resolve_node(nodes, headend))
         end = require_sr(resolve_node(nodes, endpoint))
         return nodes, head, end
@@ -1060,7 +1079,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         try:
             wire_filter = normalize_relation(relation)
             names = parse_names(nodes, "nodes", "PE1,P1")
-            topology = await fetch_topology_nodes(network)
+            topology = await topology_nodes(network)
             resolved = [resolve_node(topology, name) for name in names]
             body = rpc_body(nodes=[{"node": node.node_id} for node in resolved], filter=wire_filter)
             output = check_coe_status(
@@ -1155,7 +1174,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             COE hint).
         """
         try:
-            topology = await fetch_topology_nodes(network)
+            topology = await topology_nodes(network)
             node_entry = find_node(topology, node)
             node_id = node_id_of(node_entry)
             tp_id = resolve_interface(node_entry, interface)
@@ -1287,16 +1306,23 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ResponseFormat, Field(description=_RESPONSE_FORMAT_DESC)
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
-        """Get the cumulative IGP metric, TE metric and simulated delay of an SR policy's path.
+        """Get the cumulative IGP metric, TE metric and modelled delay of an SR policy's path.
 
         Read-only. ``POST .../cisco-crosswork-optimization-engine-operations:
         sr-policy-metrics`` with the policy key — the COE sums the metrics of
         the links its computed route uses (``igp-metric``, ``te-metric``,
         ``delay`` in microseconds as the topology models them). This is the
-        COE's simulation, not measured performance: measured delay and
-        utilisation are cnc_get_sr_policy_performance_metrics. headend /
-        endpoint accept host names or router-ids. An unknown policy answers
-        ``path-computation-status: failure`` and is reported as an error.
+        COE's simulation, not measured performance. The PM entry
+        (cnc_get_sr_policy_performance_metrics) is **also modelled unless
+        NAPM/SR-PM telemetry is configured** — verified live 2026-09-14: its
+        ``delay`` (20) equalled this RPC's ``delay`` (20) with no
+        ``*-telemetry`` key present — so neither answers "what is the
+        measured delay?" on a network without SR-PM probes; measured LSP
+        delay samples come from cnc_get_lsp_delay (empty until probes run),
+        and the PM entry's ``bandwidth-utilization-kbps`` is the collected
+        throughput. headend / endpoint accept host names or router-ids. An
+        unknown policy answers ``path-computation-status: failure`` and is
+        reported as an error.
 
         Args:
             headend, endpoint: node ids or router-ids.
@@ -1334,7 +1360,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 f"te-metric={result.get('te-metric', '-')} delay={result.get('delay', '-')}",
                 "",
                 "Cumulative metrics of the COE's computed route (delay in microseconds as "
-                "modelled, not measured — see cnc_get_sr_policy_performance_metrics).",
+                "modelled, not measured). The PM entry (cnc_get_sr_policy_performance_metrics) "
+                "is modelled too unless NAPM/SR-PM telemetry is configured; measured LSP delay "
+                "samples are cnc_get_lsp_delay.",
             ]
             return finalize("\n".join(lines), settings)
         except Exception as e:
@@ -1502,6 +1530,18 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         success carrying the platform's message. Names are resolved from the
         topology first — nothing is sent when a name or hop is unknown.
 
+        Reading the IGP route (verified live 2026-09-14, agent scenario 10):
+        the dry run's ``igp-route`` is **unordered and carries no
+        ``interface-use``** (``P2:Gi0/0/0/1, PE2:Gi0/0/0/1, P1:Gi0/0/0/0,
+        PE2:Gi0/0/0/0`` for a PE2 -> PE1 dynamic path that is really a
+        two-way ECMP split via P1 and P2). It is the set of interfaces the
+        path would be forwarded over, not a hop sequence: several interfaces
+        on the same node are ECMP alternatives. The markdown therefore groups
+        the interfaces by node (head-end first) and says so; the per-interface
+        shares (``interface-use`` 0.5/0.5) are available from
+        cnc_get_sr_policy_routes once the policy exists. The ordered path is
+        the segment list.
+
         Args:
             headend, endpoint: node ids or router-ids.
             path_type: dynamic | explicit | bandwidth.
@@ -1513,17 +1553,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             bandwidth_mbps: the bandwidth path's reservation.
             network: topology network id.
             response_format: markdown (the path sent, the segment list as
-                "step, type, ip-address, sid" lines and the IGP route) or json
-                (the raw RPC output).
+                "step, type, ip-address, sid" lines and the IGP route grouped
+                by node) or json (the raw RPC output, ``igp-route`` as the
+                platform lists it — unordered).
 
         Returns:
             str: Markdown, or the JSON ``output`` {"state": "success" |
             "degraded", "message"?, "segment-list-hops": [{"step", "sid",
             "ip-address", "type": "node-ipv4" | "adjacency-ipv4"}], "igp-route":
-            [{"node", "interface"}]}. "Error: dry run failed for <h> -> <e>:
-            <message>" on ``state: failure``; "Error: ..." for an unknown
-            name/hop, an invalid argument combination (e.g. hops with a dynamic
-            path) or an API failure (empty 500 -> the COE hint).
+            [{"node", "interface"}] (unordered, no interface-use)}. "Error:
+            dry run failed for <h> -> <e>: <message>" on ``state: failure``;
+            "Error: ..." for an unknown name/hop, an invalid argument
+            combination (e.g. hops with a dynamic path) or an API failure
+            (empty 500 -> the COE hint).
         """
         try:
             nodes, head, end = await resolve_ends(network, headend, endpoint)
@@ -1556,15 +1598,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ]
             if message:
                 lines.append(f"- message: {message}")
-            lines.extend(["", f"Segment list ({len(segments)} hops):"])
+            lines.extend(["", f"Segment list ({len(segments)} hops, in path order):"])
             lines.extend([segment_line(s) for s in segments] or ["- (none reported)"])
-            lines.extend(["", f"IGP route ({len(route)} interfaces):"])
-            lines.extend(route_lines(route))
+            groups = group_route_by_node(route, head.node_id)
             lines.extend(
                 [
                     "",
-                    "Nothing was created: this is what the PCE would program. cnc_create_sr_policy "
-                    "with the same arguments (plus color and path_name) provisions it.",
+                    f"IGP route ({len(route)} interfaces on {len(groups)} nodes, grouped by "
+                    "node — unordered; interfaces on one node are ECMP alternatives):",
+                ]
+            )
+            lines.extend(grouped_route_lines(route, head.node_id))
+            lines.extend(
+                [
+                    "",
+                    "The route is the set of interfaces the path would be forwarded over, not a "
+                    "hop sequence (the segment list is the ordered path); the platform lists it "
+                    "unordered and without shares — per-interface ECMP shares come from "
+                    "cnc_get_sr_policy_routes once the policy exists. Nothing was created: this "
+                    "is what the PCE would program. cnc_create_sr_policy with the same arguments "
+                    "(plus color and path_name) provisions it.",
                 ]
             )
             return finalize("\n".join(lines), settings)
@@ -1942,8 +1995,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Names are resolved from the topology (host names or router-ids); the
         POST is not auto-retried but re-running it is safe (a policy already
-        gone answers the "not reported" error without force). Verify with
-        cnc_get_sr_policy — the head-end withdraws the policy within seconds.
+        gone answers the "not reported" error without force). The head-end
+        withdraws the policy within seconds; the convergence signal is the
+        policy becoming ABSENT from the topology NBI (409 ``data-missing``
+        — the only signal there is, no "withdrawn" state exists): verify with
+        cnc_wait_for_sr_policy_oper_state(..., target="ABSENT") or
+        cnc_get_sr_policy (expect "Error: no SR policy ... is reported").
+        Do NOT wait for target="DOWN" after a delete — a removed policy is
+        never reported as DOWN, so that wait only times out.
 
         Args:
             headend, endpoint, color: the policy key.
@@ -2026,9 +2085,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "state": state,
                 "message": message,
                 "next": (
-                    "The head-end withdraws the policy within seconds; confirm it is gone with "
-                    "cnc_get_sr_policy (expect 'no SR policy ... is reported') or "
-                    "cnc_list_sr_policies."
+                    "The head-end withdraws the policy within seconds; verify removal with "
+                    f"cnc_wait_for_sr_policy_oper_state(headend='{head.node_id}', "
+                    f"endpoint='{end.node_id}', color={color}, target='ABSENT') (succeeds once "
+                    "the topology NBI no longer reports it) or cnc_get_sr_policy (expect "
+                    "'Error: no SR policy ... is reported'). Not target='DOWN' — a removed "
+                    "policy is never reported as DOWN."
                 ),
             }
             if note:
@@ -2122,7 +2184,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         target: Annotated[
             str,
             Field(
-                description="The oper-state that ends the wait: 'UP' (default) or 'DOWN'.",
+                description=(
+                    "What ends the wait: 'UP' (default) or 'DOWN' — the policy's oper-state — "
+                    "or 'ABSENT' — the topology NBI no longer reports the policy, the "
+                    "convergence signal after cnc_delete_sr_policy."
+                ),
                 max_length=8,
             ),
         ] = DEFAULT_WAIT_TARGET,
@@ -2132,59 +2198,119 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             DEFAULT_NETWORK
         ),
     ) -> str:
-        """Poll the topology NBI until an SR policy reports the target oper-state.
+        """Poll the topology NBI until an SR policy reports the target oper-state — or is gone.
 
         Read-only convergence wait. Call it right after cnc_create_sr_policy /
-        cnc_update_sr_policy instead of polling cnc_get_sr_policy in a loop.
-        It resolves the names once (host names or router-ids), then polls
-        ``GET .../cisco-crosswork-segment-routing-policy:sr-policies/policy=
-        <headend>,<endpoint>,<color>`` every ``interval_seconds``:
+        cnc_update_sr_policy (target UP) or cnc_delete_sr_policy (target
+        ABSENT) instead of polling cnc_get_sr_policy in a loop. It resolves
+        the names once (host names or router-ids), then polls ``GET .../
+        cisco-crosswork-segment-routing-policy:sr-policies/policy=<headend>,
+        <endpoint>,<color>`` every ``interval_seconds``:
 
-        - 409 ``data-missing`` (the PCC has not reported the new policy yet,
-          or the SR-PCE gRPC feed lags) keeps polling — "not reported yet";
-        - ``oper-state`` equal to ``target`` ends the wait successfully;
-        - any other state (DOWN while waiting for UP, ...) keeps polling until
-          ``timeout_seconds``.
+        - target ``UP`` / ``DOWN``: 409 ``data-missing`` (the PCC has not
+          reported the new policy yet, or the SR-PCE gRPC feed lags) keeps
+          polling — "not reported yet"; ``oper-state`` equal to the target
+          ends the wait; any other state keeps polling until
+          ``timeout_seconds``;
+        - target ``ABSENT``: the wait ends as soon as the NBI answers 409
+          ``data-missing`` (the policy is no longer reported); a policy still
+          reported, in any state, keeps polling. This is the only convergence
+          signal after a delete (verified live, agent scenario 10): a removed
+          policy is never reported as DOWN, so ``target="DOWN"`` after a
+          delete only times out — and the timeout hint then says so.
 
-        A timeout is NOT an error: the tool reports the last observed state so
-        the agent can decide (call again, read cnc_get_sr_policy for the paths,
-        or check the head-end's PCEP session). A policy that stays absent
-        after a create usually means the head-end did not accept the PCEP
-        initiate (check the PCEP session in cnc_get_topology_node and the
-        SR-PCE provider) or does not report it (PCEP ``report-all``).
+        The tool remembers whether ANY poll reported the policy
+        (``seen_during_wait`` in the summary), because the last poll alone
+        is ambiguous: an ABSENT wait that ends on the very first poll either
+        confirmed a delete or is waiting on a key that never existed (a
+        typo'd color, swapped ends — the NBI answers the same 409 for both,
+        verified live on a color that never existed), so the two are worded
+        apart ("was reported, then withdrawn" vs "was not reported at any
+        poll ... check the key with cnc_list_sr_policies").
+
+        A timeout is NOT an error: the tool reports the last observed state
+        and a hint that depends on the target, on the last state and on
+        whether the policy was seen at all, so the agent can decide (call
+        again, read cnc_get_sr_policy for the paths, switch to
+        target='ABSENT', or check the head-end's PCEP session). A policy
+        that is never reported after a create usually means the head-end did
+        not accept the PCEP initiate (check the PCEP session in
+        cnc_get_topology_node and the SR-PCE provider) or does not report it
+        (PCEP ``report-all``). A policy that was reported and then vanished
+        during a UP/DOWN wait has been withdrawn — after a delete that is the
+        converged state (wait with target='ABSENT'). A policy still reported
+        after a delete is usually PCC-initiated (``pcep-flag-c 0``, router
+        configuration the PCE cannot remove) or the SR-PCE feed lagging.
 
         Args:
             headend, endpoint, color: the policy key (names or router-ids).
-            target: 'UP' or 'DOWN' (case-insensitive).
+            target: 'UP', 'DOWN' or 'ABSENT' (case-insensitive).
             timeout_seconds, interval_seconds: the polling budget.
+            network: topology network id the names are resolved in.
 
         Returns:
-            str: On success: "SR policy <key> is UP after Ns." plus a JSON
-            summary ({"reported": true, "headend", "endpoint", "color",
-            "admin_state", "oper_state", "sr_policy_type", "pce_controlled",
-            "pcep_flag_c", "binding_sid", "paths": [{"path_name", "path_type",
-            "preference", "oper_state"}]}). On timeout (not an error): "SR
-            policy <key> not <target> after Ns; current: <oper-state or 'not
-            reported'>." plus the summary ({"reported": false} when never
-            seen). "Error: ..." when target is not UP/DOWN, a name does not
+            str: On success: "SR policy <key> is UP after Ns." — or, for
+            ABSENT, "SR policy <key> was reported, then withdrawn (ABSENT)
+            after Ns." when a poll had reported it, else "SR policy <key> was
+            not reported at any poll (ABSENT) — if you expected it to exist,
+            check the key with cnc_list_sr_policies." — plus a JSON summary
+            ({"reported": true, "seen_during_wait": true, "headend",
+            "endpoint", "color", "admin_state", "oper_state",
+            "sr_policy_type", "pce_controlled", "pcep_flag_c",
+            "origin": "PCE-initiated" | "PCC-initiated" | "unknown",
+            "binding_sid", "paths": [{"path_name", "path_type", "preference",
+            "oper_state"}]}, or {"reported": false, "seen_during_wait": bool}
+            for ABSENT). On timeout (not an error): "SR policy <key> not
+            <target> after Ns; current: <oper-state or 'not reported'>.
+            <target-specific hint>" plus the summary ("reported" is the LAST
+            poll's answer, "seen_during_wait" whether any poll reported it).
+            "Error: ..." when target is not UP/DOWN/ABSENT, a name does not
             resolve, or a poll fails with anything but 409 (a 400
             invalid-value cannot happen: router-ids are always sent).
         """
         try:
-            wanted = normalize_oper_state(target)
-            if wanted is None:
-                raise PlatformError("target is empty: pass 'UP' or 'DOWN'.")
+            wanted = normalize_wait_target(target)
             _nodes, head, end = await resolve_ends(network, headend, endpoint)
             label = policy_label(head, end, color)
+            seen = False  # did ANY poll report the policy? (the last poll alone is ambiguous)
+
+            async def fetch() -> dict[str, Any] | None:
+                nonlocal seen
+                policy = await read_policy(head, end, color)
+                if policy is not None:
+                    seen = True
+                return policy
+
+            def reached(policy: dict[str, Any] | None) -> bool:
+                if wanted == "ABSENT":
+                    return policy is None
+                return policy is not None and str(policy.get("oper-state") or "").upper() == wanted
+
             finished, policy, elapsed = await wait_until(
-                lambda: read_policy(head, end, color),
-                lambda p: p is not None and str(p.get("oper-state") or "").upper() == wanted,
+                fetch,
+                reached,
                 timeout_seconds=timeout_seconds,
                 interval_seconds=interval_seconds,
             )
             summary = policy_summary(policy)
+            summary = {
+                "reported": summary.pop("reported"),
+                "seen_during_wait": seen,
+                **summary,
+            }
             if finished:
-                head_line = f"SR policy {label} is {wanted} after {elapsed:.0f}s."
+                if wanted != "ABSENT":
+                    head_line = f"SR policy {label} is {wanted} after {elapsed:.0f}s."
+                elif seen:
+                    head_line = (
+                        f"SR policy {label} was reported, then withdrawn (ABSENT) after "
+                        f"{elapsed:.0f}s."
+                    )
+                else:
+                    head_line = (
+                        f"SR policy {label} was not reported at any poll (ABSENT) — if you "
+                        "expected it to exist, check the key with cnc_list_sr_policies."
+                    )
             else:
                 current = (
                     str(policy.get("oper-state") or "unknown")
@@ -2193,14 +2319,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 )
                 head_line = (
                     f"SR policy {label} not {wanted} after {elapsed:.0f}s; current: {current}. "
-                    "Call again to keep waiting, or read cnc_get_sr_policy for the candidate "
-                    "paths"
-                    + (
-                        " (a policy that is never reported: the head-end did not accept the "
-                        "PCEP initiate, or does not report it — check its PCEP session)."
-                        if policy is None
-                        else "."
-                    )
+                    f"{timeout_hint(wanted, policy, seen)}"
                 )
             return finalize(f"{head_line}\n{to_json(summary)}", settings)
         except Exception as e:

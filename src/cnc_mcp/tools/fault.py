@@ -5,7 +5,48 @@ alarm suppression policies.
 Crosswork's fault surface is spread over THREE API bases (all verified live
 2026-09-13 on the 7.2 lab; ack/unack/note/clear were exercised on a real
 alarm). ``cnc_list_alarms`` (in :mod:`cnc_mcp.tools.platform`) stays the paged
-alarm listing; this module adds everything else.
+alarm listing; this module adds everything else. :func:`alarm_line` and
+:func:`stale_alarm_footer` are the shared alarm renderers — every alarm tool
+should print the same ``[State] object — Description (id, ack=, events=,
+created=, updated=, age=)`` line so a listing is triage-able on its own.
+
+Facts added from the 2026-09-14 agent round (read live, read-only):
+
+- **Alarm order is NOT newest-first.** ``alarms/v1/query`` with ``limit N page
+  M`` returned a page of 5 open alarms with Created 1789213359508,
+  1789212185976, 1789212400578, 1789244942444, 1789212255608 — so "the most
+  recent alarm" must be sorted client-side (``cnc_search_alarms`` ``sort=``).
+- **Events ARE newest-first.** ``event/query`` pages 0-3 (limit 30, 120 rows)
+  came back with Timestamp strictly descending within each page and across the
+  page boundaries (2026-09-13T23:46:54Z ... 12:12:55Z) — page 0 holds the
+  newest events. This is an observation, not an API contract.
+- **AckHist timestamps are date-only strings** (``"2026-09-14 00:00:00.0"``,
+  not epoch ms); the list came back newest DAY first with same-day entries in
+  chronological order (Ack, UnAck, Ack, UnAck for two days of ack/un-ack), so
+  the exact sequence within a day cannot be recovered from the timestamps.
+  ``Notes`` carry epoch-ms timestamps and are newest-first — they are the
+  reliable timeline. An ack WITHOUT a note makes the platform append the note
+  ``"Alarm acknowledged"`` and a note-less un-ack the note ``"Alarm
+  unacknowledged"`` (``CreatedBy`` = the acting user); an ack WITH a note
+  stores only that note. Observed on the 2026-09-13 scout alarm (read back
+  2026-09-14): Notes 'cnc-mcp scout ack' -> 'Alarm unacknowledged' -> 'Alarm
+  acknowledged' -> 'Alarm unacknowledged' -> 'cnc-mcp scout clear' against
+  AckHist Ack/UnAck/Ack/UnAck, and no script or test ever sent the text
+  'Alarm acknowledged'. Whether an un-ack WITH a note also stores the
+  platform note is unverified (every live un-ack was note-less). Neither
+  AckHist entries nor notes can be deleted (no API).
+- **Stale alarms.** Pod-health alarms ("<pod> is down.", Created/Updated
+  2026-08-07, ``events_count`` 0, no ``Events`` key at all) stay open long
+  after the pods recovered — Crosswork does not auto-clear them. The renderers
+  flag "0 events and no update for >= 7 days" as a stale-alarm check.
+- **The no-limit criteria caps at 100 rows.** ``select * from alarm`` (no
+  ``limit``) looked like "the whole collection" on 2026-09-13 only because the
+  lab had 99 alarms; with 104 alarms it returned exactly 100 and three OPEN
+  Major alarms were missing, so ``cnc_get_alarm`` answered "no alarm" for a
+  real id. An explicit limit is honoured above 100 (``limit 200 page 0`` ->
+  all 104, ``page 1`` -> 0; ``limit 100`` pages 0/1 -> 100 + 4 unique rows,
+  page 2 empty), so :func:`fetch_alarms` pages with ``limit 200`` until a short
+  page and de-duplicates by ``AlarmId``.
 
 1. **``/crosswork/alarms/v1`` (plural)** — alarm and event queries plus the
    lifecycle writes. The official guides spell the fault context ``alarm/v1``,
@@ -18,9 +59,9 @@ alarm listing; this module adds everything else.
    ``{"state": "Success", "events": [...]}``. **Criteria-grammar limits**: a
    ``where`` clause never matches (0 rows for any field, ``{}`` for events) and
    ``order by`` is ignored, so every filter and sort in this module is applied
-   client-side. ``select * from alarm`` with NO ``limit`` returns the whole
-   collection (open and cleared — 99 rows on the lab), which is what the
-   get-by-id and search tools use; events without a limit answer 100 rows.
+   client-side. ``select * from alarm`` with NO ``limit`` answers at most 100
+   rows (see above), so the get-by-id, search and lifecycle tools page the
+   collection with an explicit limit; events without a limit answer 100 rows.
    Lifecycle writes are ``PUT ack {"alarmId", "ack": bool, "note"?}``,
    ``PUT note {"alarmId", "note"}`` and ``PUT clear {"alarmId", "note"?}``; all
    answer HTTP 200 with ``{"state": "Success"|"Fail", "Message": ...}``, so the
@@ -70,6 +111,8 @@ destinations (``trap-dest`` / ``syslog-dest`` / ``rest-dest``).
 from __future__ import annotations
 
 import logging
+import re
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -109,14 +152,43 @@ SUPPRESSION_POLICY_PATH = f"{ALARM_V1}/suppressionpolicy"
 # EMF RESTCONF fault manager.
 RTM_ALARM_PATH = f"{EMF_ALARM}/rtm:alarm"
 
-# The no-limit form: returns EVERY alarm (verified live). ``where`` never matches,
-# so get-by-id and search must fetch everything and filter client-side.
-ALL_ALARMS_CRITERIA = "select * from alarm"
+# ``where`` never matches, so get-by-id and search must fetch everything and filter
+# client-side — by PAGING: the no-limit form ``select * from alarm`` silently caps
+# at 100 rows (verified live 2026-09-14: 104 alarms, 100 returned, 3 open Major
+# alarms missing). An explicit limit above 100 is honoured (``limit 200 page 0``
+# returned all 104, ``page 1`` none), so fetch_alarms pages with this size until a
+# page comes back short. The page ceiling is a runaway guard, not a platform limit.
+ALARM_FETCH_PAGE = 200
+ALARM_FETCH_MAX_PAGES = 50
 # Per the notes, the endpoint returns 100 rows without a limit; keep the tool's
 # ceiling at that so a page never silently truncates.
 EVENTS_MAX_LIMIT = 100
 
+
+def alarm_criteria(limit: int, page: int) -> str:
+    """The alarms/v1 SQL-like paging criteria (the only working clause)."""
+    return f"select * from alarm limit {limit} page {page}"
+
+
 ALARM_STATES = ("Critical", "Major", "Minor", "Warning", "Info", "Clear")
+# Client-side sort orders for the alarm search (the platform's ``order by`` is
+# ignored and its natural order is not newest-first — verified live 2026-09-14).
+ALARM_SORTS = ("updated_desc", "created_desc", "platform")
+DEFAULT_ALARM_SORT = "updated_desc"
+# Stale-alarm heuristic (a rendering aid, not a platform fact): an open alarm with
+# no events that has not changed for this many days is flagged for a live check.
+STALE_ALARM_DAYS = 7
+# The hint is deliberately generic: is_stale() fires on ANY open alarm with 0 events
+# unchanged for STALE_ALARM_DAYS (a one-off migration warning qualifies too), so the
+# pod-health check is offered only for the "<pod> is down." family.
+STALE_ALARM_HINT = (
+    "Possibly stale — Crosswork does not auto-clear such alarms (verified live 2026-09-14 on "
+    'pod-health alarms). For "<pod> is down." alarms confirm with cnc_get_cluster_health / '
+    "cnc_list_microservices(app_id=...); for any other alarm verify the underlying condition "
+    "before reporting it as current."
+)
+# AckHist ``Timestamp`` as the platform sends it: a date-only string (verified live).
+_DATE_ONLY_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T]00:00:00(\.0+)?$")
 # rtm:alarm ``perceived-severity`` values (restconf_fault_ap_is_7_2_0.json).
 RTM_SEVERITIES = ("critical", "major", "minor", "warning", "cleared", "indeterminate")
 # rtm:alarm ``alarmtype`` values (same document). The platform defaults to
@@ -196,6 +268,61 @@ def _epoch_int(value: Any) -> int:
         return 0
 
 
+def _epoch_seconds(value: Any) -> float | None:
+    """An epoch value (ms on the alarm API; s/us/ns tolerated by magnitude, like
+    :func:`cnc_mcp.formatting.epoch_iso`) as seconds, or None when unusable."""
+    n = _epoch_int(value)
+    if n <= 0:
+        return None
+    for threshold, divisor in ((10**17, 10**9), (10**14, 10**6), (10**11, 10**3)):
+        if n >= threshold:
+            return n / divisor
+    return float(n)
+
+
+def age_text(value: Any, now: datetime) -> str:
+    """Elapsed time since an epoch value: ``38d`` / ``5h`` / ``12m`` / ``<1m``; ``-`` if unknown."""
+    seconds = _epoch_seconds(value)
+    if seconds is None:
+        return "-"
+    delta = max(0, int(now.timestamp() - seconds))
+    if delta >= 86400:
+        return f"{delta // 86400}d"
+    if delta >= 3600:
+        return f"{delta // 3600}h"
+    if delta >= 60:
+        return f"{delta // 60}m"
+    return "<1m"
+
+
+def event_count(a: dict[str, Any]) -> int:
+    """``events_count`` (the platform omits ``Events`` entirely when there are none)."""
+    count = a.get("events_count")
+    if count is None:
+        events = a.get("Events")
+        return len(events) if isinstance(events, list) else 0
+    return _epoch_int(count)
+
+
+def is_stale(a: dict[str, Any], now: datetime) -> bool:
+    """Open, no events, and unchanged for >= STALE_ALARM_DAYS — worth a live check."""
+    if str(a.get("State", "")).lower() == "clear" or event_count(a) != 0:
+        return False
+    seconds = _epoch_seconds(a.get("Updated") or a.get("Created"))
+    return seconds is not None and now.timestamp() - seconds >= STALE_ALARM_DAYS * 86400
+
+
+def sort_alarms(
+    alarms: list[dict[str, Any]], sort: str = DEFAULT_ALARM_SORT
+) -> list[dict[str, Any]]:
+    """Order alarms client-side: ``updated_desc`` (default), ``created_desc`` or
+    ``platform`` (as returned — NOT newest-first, verified live 2026-09-14)."""
+    if sort == "platform":
+        return list(alarms)
+    field = "Created" if sort == "created_desc" else "Updated"
+    return sorted(alarms, key=lambda a: _epoch_int(a.get(field)), reverse=True)
+
+
 def _contains(needle: str, *haystacks: Any) -> bool:
     return any(needle in str(h).lower() for h in haystacks if h is not None)
 
@@ -207,8 +334,10 @@ def filter_alarms(
     state: str | None = None,
     category: str | None = None,
     acknowledged: bool | None = None,
+    sort: str = DEFAULT_ALARM_SORT,
 ) -> list[dict[str, Any]]:
-    """Client-side alarm filters (the platform's ``where`` never matches); newest first."""
+    """Client-side alarm filters (the platform's ``where`` never matches), then
+    :func:`sort_alarms` (newest Updated first by default)."""
     out = [a for a in alarms if isinstance(a, dict)]
     if text and text.strip():
         needle = text.strip().lower()
@@ -222,8 +351,7 @@ def filter_alarms(
         out = [a for a in out if str(a.get("AlarmCategory", "")).lower() == wanted]
     if acknowledged is not None:
         out = [a for a in out if bool(a.get("Acknowledge")) is acknowledged]
-    out.sort(key=lambda a: _epoch_int(a.get("Updated")), reverse=True)
-    return out
+    return sort_alarms(out, sort)
 
 
 def filter_events(
@@ -270,13 +398,35 @@ def filter_event_types(
     return out
 
 
-def alarm_line(a: dict[str, Any]) -> str:
-    """One search-result line: ``[State] object — Description (id, ack=…, updated=…)``."""
+def alarm_line(a: dict[str, Any], now: datetime | None = None) -> str:
+    """The shared one-line alarm rendering (use it in EVERY alarm listing):
+    ``[State] object — Description (id, ack=…, events=N, created=<ISO>,
+    updated=<ISO>, age=<since Created>)``.
+
+    ``now`` fixes the reference time for ``age`` (tests); default: current UTC.
+    """
+    now = now or datetime.now(UTC)
     return (
         f"- [{a.get('State', '?')}] {a.get('object_description') or a.get('object_id') or '?'} "
         f"— {a.get('Description', '?')} ({a.get('AlarmId', '?')}, "
-        f"ack={a.get('Acknowledge', '?')}, updated={epoch_iso(a.get('Updated'))})"
+        f"ack={a.get('Acknowledge', '?')}, events={event_count(a)}, "
+        f"created={epoch_iso(a.get('Created'))}, updated={epoch_iso(a.get('Updated'))}, "
+        f"age={age_text(a.get('Created'), now)})"
     )
+
+
+def stale_alarm_footer(alarms: list[dict[str, Any]], now: datetime | None = None) -> list[str]:
+    """Markdown lines flagging alarms that :func:`is_stale` — empty when none are."""
+    now = now or datetime.now(UTC)
+    stale = [a for a in alarms if is_stale(a, now)]
+    if not stale:
+        return []
+    verb = "has" if len(stale) == 1 else "have"
+    return [
+        "",
+        f"Stale-alarm check: {len(stale)} of the alarms shown {verb} 0 events and no update "
+        f"for {STALE_ALARM_DAYS}+ days. {STALE_ALARM_HINT}",
+    ]
 
 
 def event_line(e: dict[str, Any]) -> str:
@@ -288,16 +438,28 @@ def event_line(e: dict[str, Any]) -> str:
     )
 
 
+def history_stamp(value: Any) -> str:
+    """An AckHist / Notes ``Timestamp``: epoch -> ISO; the platform's date-only
+    AckHist form ``"2026-09-14 00:00:00.0"`` -> ``"2026-09-14 (date only)"``;
+    anything else verbatim."""
+    text = "" if value is None else str(value).strip()
+    match = _DATE_ONLY_STAMP.match(text)
+    if match:
+        return f"{match.group(1)} (date only)"
+    return epoch_iso(value)
+
+
 def _history_line(entry: dict[str, Any]) -> str:
-    """An AckHist / Notes entry: ``- <Timestamp iso> <CreatedBy>: <Description>``."""
+    """An AckHist / Notes entry: ``- <stamp> <CreatedBy>: <Description>``."""
     return (
-        f"- {epoch_iso(entry.get('Timestamp'))} {entry.get('CreatedBy', '?')}: "
+        f"- {history_stamp(entry.get('Timestamp'))} {entry.get('CreatedBy', '?')}: "
         f"{entry.get('Description', '?')}"
     )
 
 
-def alarm_markdown(a: dict[str, Any]) -> str:
+def alarm_markdown(a: dict[str, Any], now: datetime | None = None) -> str:
     """Full detail of one alarm including its ack history and notes."""
+    now = now or datetime.now(UTC)
     lines = [
         f"# Alarm {a.get('AlarmId', '?')}",
         "",
@@ -308,11 +470,11 @@ def alarm_markdown(a: dict[str, Any]) -> str:
         f"- Origin: {a.get('origin_app_id') or '?'}"
         + (f" / {a['origin_service_id']}" if a.get("origin_service_id") else ""),
         f"- Event type: {a.get('event_type', '?')}",
-        f"- Created: {epoch_iso(a.get('Created'))} — Updated: {epoch_iso(a.get('Updated'))}",
+        f"- Created: {epoch_iso(a.get('Created'))} (age {age_text(a.get('Created'), now)}) "
+        f"— Updated: {epoch_iso(a.get('Updated'))} ({age_text(a.get('Updated'), now)} ago)",
     ]
     events = [e for e in (a.get("Events") or []) if isinstance(e, dict)]
-    count = a.get("events_count", len(events))
-    lines.append(f"- Events: {count}")
+    lines.append(f"- Events: {event_count(a)}")
     for e in events[:_EVENTS_SHOWN]:
         lines.append(
             f"  - [{e.get('EventSeverity', '?')}] {e.get('Description', '?')} "
@@ -320,13 +482,26 @@ def alarm_markdown(a: dict[str, Any]) -> str:
         )
     if len(events) > _EVENTS_SHOWN:
         lines.append(f"  - ... {len(events) - _EVENTS_SHOWN} more (response_format='json')")
+    if is_stale(a, now):
+        lines.append(
+            f"- Stale-alarm check: 0 events and no update for "
+            f"{age_text(a.get('Updated') or a.get('Created'), now)}. {STALE_ALARM_HINT}"
+        )
     hist = [h for h in (a.get("AckHist") or []) if isinstance(h, dict)]
     lines.extend(["", f"## Acknowledgement history ({len(hist)})"])
     if not hist:
         lines.append("- none")
+    else:
+        lines.append(
+            "(AckHist timestamps are date-only on this platform; the exact ack/un-ack times "
+            "are in the Notes below — a note-less ack/un-ack writes the platform note "
+            "'Alarm acknowledged' / 'Alarm unacknowledged', an ack with a note stores that "
+            "note instead.)"
+        )
     lines.extend(_history_line(h) for h in hist)
     notes = [n for n in (a.get("Notes") or []) if isinstance(n, dict)]
-    lines.extend(["", f"## Notes ({len(notes)})"])
+    notes.sort(key=lambda n: _epoch_int(n.get("Timestamp")), reverse=True)
+    lines.extend(["", f"## Notes ({len(notes)}, newest first, permanent)"])
     if not notes:
         lines.append("- none")
     lines.extend(_history_line(n) for n in notes)
@@ -506,17 +681,45 @@ def _parse_json(response: Any) -> Any:
 def register(mcp: MCPServer, ctx: AppContext) -> None:
     settings, client = ctx.settings, ctx.client
 
-    async def fetch_all_alarms() -> list[dict[str, Any]]:
-        """Every alarm, open and cleared, via the no-limit criteria (verified live)."""
-        body = {"openAlarmsOnly": False, "criteria": ALL_ALARMS_CRITERIA}
-        data = await client.request_json("POST", ALARMS_QUERY, json_body=body)
-        check_query(data, "Alarm query")
-        alarms, _, _ = unwrap(data, "alarms")
-        return [a for a in alarms if isinstance(a, dict)]
+    async def fetch_alarms(open_only: bool) -> list[dict[str, Any]]:
+        """Every alarm in scope (open, or open+cleared), paged with an explicit
+        limit and de-duplicated by AlarmId — the no-limit criteria caps at 100
+        rows (verified live 2026-09-14), so it is never used."""
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for page in range(ALARM_FETCH_MAX_PAGES):
+            body = {
+                "openAlarmsOnly": open_only,
+                "criteria": alarm_criteria(ALARM_FETCH_PAGE, page),
+            }
+            data = await client.request_json("POST", ALARMS_QUERY, json_body=body)
+            check_query(data, "Alarm query")
+            rows, _, _ = unwrap(data, "alarms")
+            rows = [a for a in rows if isinstance(a, dict)]
+            for a in rows:
+                key = str(a.get("AlarmId", "")).strip().lower()
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                out.append(a)
+            if len(rows) < ALARM_FETCH_PAGE:
+                return out
+        logger.warning(
+            "alarm fetch stopped after %d pages of %d (%d alarms) — raise ALARM_FETCH_MAX_PAGES",
+            ALARM_FETCH_MAX_PAGES,
+            ALARM_FETCH_PAGE,
+            len(out),
+        )
+        return out
 
     async def resolve_alarm(alarm_id: str) -> dict[str, Any]:
-        """The alarm for ``alarm_id`` or a PlatformError — nothing is written for an unknown id."""
-        alarm = find_alarm(await fetch_all_alarms(), alarm_id)
+        """The alarm for ``alarm_id`` or a PlatformError — nothing is written for an
+        unknown id. Open alarms are searched first (the common case, one small
+        scope), then open+cleared so cleared alarms are found too."""
+        alarm = find_alarm(await fetch_alarms(open_only=True), alarm_id)
+        if alarm is None:
+            alarm = find_alarm(await fetch_alarms(open_only=False), alarm_id)
         if alarm is None:
             raise PlatformError(f"no alarm '{alarm_id}' (list with cnc_list_alarms)")
         return alarm
@@ -569,11 +772,31 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Read-only. Use it to inspect an alarm before acknowledging, annotating or
         clearing it, or to confirm the acknowledge flag settled after a write.
         COST: the alarms API has no working per-id lookup ('where' clauses never
-        match, verified live), so this tool sends the no-limit criteria
-        'select * from alarm' with openAlarmsOnly=false — one call that returns
-        EVERY alarm, open and cleared (99 rows on the lab; can be large and slow on
-        a busy instance) — and finds the id client-side. Cleared alarms are found
-        too. For device/network (RTM) alarms use cnc_list_device_alarms instead.
+        match, verified live), so this tool pages the collection ('select * from
+        alarm limit 200 page N', open alarms first, then open+cleared when the id
+        is not open) and finds the id client-side — a few calls, slower on an
+        instance with thousands of alarms. Cleared alarms are found too. It does
+        NOT use the no-limit criteria: that form silently caps at 100 rows
+        (verified live 2026-09-14 — it hid three open Major alarms). For
+        device/network (RTM) alarms use cnc_list_device_alarms instead.
+
+        READING THE HISTORY (verified live 2026-09-14): AckHist timestamps are
+        DATE-ONLY strings ("2026-09-14 00:00:00.0", rendered "2026-09-14 (date
+        only)") and the list comes back newest day first with same-day entries
+        in chronological order — the exact ack/un-ack times are NOT recoverable
+        from AckHist. Use the Notes instead: they carry full epoch-ms timestamps
+        (rendered ISO, newest first); an ack's note is stored there at the ack
+        time, and a note-less ack / un-ack makes the platform append its own
+        note "Alarm acknowledged" / "Alarm unacknowledged" (observed on the
+        2026-09-13 scout alarm). Both lists are permanent (no delete API).
+        STALE ALARMS: when an open alarm shows 0 events and no update for 7+
+        days the markdown adds a "Stale-alarm check" line — Crosswork does not
+        auto-clear such alarms (verified live 2026-09-14 on pod-health alarms
+        "<pod> is down.", which stayed open with events_count 0 for weeks after
+        the pods recovered). For "<pod> is down." alarms confirm the current
+        state with cnc_get_cluster_health / cnc_list_microservices(app_id=...);
+        for any other alarm verify the underlying condition before reporting
+        it as current.
 
         Args:
             alarm_id: the AlarmId (exact, case-insensitive).
@@ -581,13 +804,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: Markdown with state, category, acknowledged flag, description,
             object, origin, created/updated (ISO-8601 from the platform's epoch
-            ms), the events (first 10), the AckHist entries and the Notes; or the
-            raw alarm JSON:
+            ms, with the age), the event count and events (first 10), a
+            stale-alarm check line when applicable, the AckHist entries and the
+            Notes (newest first); or the raw alarm JSON:
             {"AlarmId", "AlarmCategory", "State", "Acknowledge", "Description",
              "object_id", "object_description", "origin_app_id", "origin_service_id",
-             "event_type", "events_count", "Created", "Updated", "Events": [...],
-             "AckHist": [{"CreatedBy", "Description": "Ack"|"UnAck", "Timestamp"}],
-             "Notes": [{"CreatedBy", "Description", "Timestamp"}]}
+             "event_type", "events_count", "Created", "Updated" (epoch ms strings),
+             "Events": [...] (absent when there are none),
+             "AckHist": [{"CreatedBy", "Description": "Ack"|"UnAck",
+                          "Timestamp": "<YYYY-MM-DD 00:00:00.0>"}],
+             "Notes": [{"CreatedBy", "Description", "Timestamp": "<epoch ms>"}]}
             "Error: no alarm '<id>' (list with cnc_list_alarms)" when nothing
             matches; other failures: "Error: <actionable message>".
         """
@@ -639,6 +865,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             bool,
             Field(description="True (default) for open alarms only; False to include cleared."),
         ] = True,
+        sort: Annotated[
+            str,
+            Field(
+                description="Client-side order: 'updated_desc' (default, most recently changed "
+                "first), 'created_desc' (most recently raised first — use this for 'the newest "
+                "alarm') or 'platform' (as the API returned them, NOT newest-first).",
+                max_length=20,
+            ),
+        ] = DEFAULT_ALARM_SORT,
         limit: Annotated[
             int, Field(description="Maximum alarms to return (e.g. 50).", ge=1, le=500)
         ] = 50,
@@ -648,18 +883,37 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
         """Search Crosswork platform alarms by text, state, category and
-        acknowledged flag; newest Updated first.
+        acknowledged flag, sorted client-side (newest Updated first by default,
+        or newest Created first with sort='created_desc').
 
         Read-only. Use it for "which alarms mention P2", "all unacknowledged
-        Critical alarms", "cleared alarms about collection" — questions
-        cnc_list_alarms (plain paging) cannot answer. WHY CLIENT-SIDE: the alarms
+        Critical alarms", "cleared alarms about collection", "the most recent
+        alarm" — questions cnc_list_alarms (plain paging) cannot answer.
+        ORDERING: the platform's own order is NOT newest-first (verified live
+        2026-09-14: a paged listing of 5 open alarms came back with Created
+        1789213359508, 1789212185976, 1789212400578, 1789244942444,
+        1789212255608), so never take the first row of cnc_list_alarms as the
+        newest alarm — use this tool with sort='created_desc' (raised most
+        recently) or the default 'updated_desc' (changed most recently: a new
+        event, ack, note or clear bumps Updated). WHY CLIENT-SIDE: the alarms
         API's SQL-like criteria accepts 'where' and 'order by' clauses but a
         'where' never matches (0 rows for any field) and 'order by' is ignored
-        (verified live), so the tool sends the no-limit criteria
-        'select * from alarm' — one call returning every alarm in scope (open, or
-        open+cleared) — and filters, sorts and caps the result itself. Expect that
-        call to be slower on an instance with thousands of alarms. For
-        device/network (RTM) alarms use cnc_list_device_alarms.
+        (verified live), so the tool pages every alarm in scope (open, or
+        open+cleared; 'select * from alarm limit 200 page N' until a short page)
+        and filters, sorts and caps the result itself — 'fetched' is the number
+        of alarms read. Expect more calls on an instance with thousands of
+        alarms. The no-limit criteria is NOT used: it silently caps at 100 rows
+        (verified live 2026-09-14). For device/network (RTM) alarms use
+        cnc_list_device_alarms.
+        STALE ALARMS: every line shows events= and age=; when a shown alarm has
+        0 events and no update for 7+ days the output ends with a "Stale-alarm
+        check" line — Crosswork does not auto-clear such alarms (verified live
+        2026-09-14 on pod-health alarms "<pod> is down.", which stayed open
+        with 0 events for weeks after the pods recovered). For "<pod> is down."
+        alarms confirm the current state with cnc_get_cluster_health /
+        cnc_list_microservices(app_id=...); for any other alarm (a one-off
+        migration warning also matches the heuristic) verify the underlying
+        condition before reporting it as current.
 
         Args:
             text: substring over Description / object_description.
@@ -667,28 +921,33 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             category: exact AlarmCategory (e.g. 'System').
             acknowledged: True / False to keep only that flag; None for both.
             open_only: False to include cleared alarms.
+            sort: updated_desc (default) | created_desc | platform.
             limit: cap on the returned rows (the count of all matches is reported).
 
         Returns:
             str: Markdown, one line per alarm
-            "[State] object_description — Description (AlarmId, ack=…, updated=…)",
-            or JSON: {"total": <matches>, "count": int, "items": [<alarm>, ...],
-            "truncated": bool, "fetched": <alarms fetched before filtering>}.
-            No match is not an error ("No alarms matched ..."). On failure:
-            "Error: <actionable message>".
+            "[State] object_description — Description (AlarmId, ack=…, events=N,
+            created=<ISO>, updated=<ISO>, age=<since Created, e.g. 38d>)", plus
+            the stale-alarm check line when applicable; or JSON:
+            {"total": <matches>, "count": int, "sort": str, "items": [<alarm>, ...],
+             "truncated": bool, "fetched": <alarms fetched before filtering>}
+            (Created/Updated are epoch-ms strings; "Events" is absent when
+            events_count is 0). No match is not an error ("No alarms matched
+            ..."). "Error: Unknown sort order '<x>'. Use one of: updated_desc,
+            created_desc, platform." for a bad sort (nothing sent); on other
+            failures: "Error: <actionable message>".
         """
         try:
             wanted_state = canonical(state, ALARM_STATES, "alarm state")
-            body = {"openAlarmsOnly": open_only, "criteria": ALL_ALARMS_CRITERIA}
-            data = await client.request_json("POST", ALARMS_QUERY, json_body=body)
-            check_query(data, "Alarm query")
-            alarms, _, _ = unwrap(data, "alarms")
+            wanted_sort = canonical(sort, ALARM_SORTS, "sort order") or DEFAULT_ALARM_SORT
+            alarms = await fetch_alarms(open_only)
             matches = filter_alarms(
                 alarms,
                 text=text,
                 state=wanted_state,
                 category=category,
                 acknowledged=acknowledged,
+                sort=wanted_sort,
             )
             items = matches[:limit]
             if response_format is ResponseFormat.JSON:
@@ -697,6 +956,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                         {
                             "total": len(matches),
                             "count": len(items),
+                            "sort": wanted_sort,
                             "items": items,
                             "truncated": len(matches) > limit,
                             "fetched": len(alarms),
@@ -704,17 +964,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     ),
                     settings,
                 )
+            now = datetime.now(UTC)
             scope = "open only" if open_only else "open and cleared"
             lines = [
                 f"# Alarms matching ({len(items)} shown of {len(matches)} matches, "
-                f"{len(alarms)} fetched, {scope})",
+                f"{len(alarms)} fetched, {scope}, sort {wanted_sort})",
                 "",
             ]
             if not items:
                 lines.append("No alarms matched the filters.")
-            lines.extend(alarm_line(a) for a in items)
+            lines.extend(alarm_line(a, now) for a in items)
             if len(matches) > limit:
                 lines.extend(["", f"{len(matches) - limit} more matched; raise limit or narrow."])
+            lines.extend(stale_alarm_footer(items, now))
             return finalize("\n".join(lines), settings)
         except Exception as e:
             return format_error(e)
@@ -762,15 +1024,27 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
         """List Crosswork platform events (the raw occurrences that alarms are
-        built from, including 'Clear' events), paged as the platform orders them.
+        built from, including 'Clear' events), newest first: page 0 holds the
+        most recent events.
 
         Read-only. Use it to see what happened around an alarm, or to trace the
-        events of an alarm by its alarm_id. Paging is the platform's
-        ('select * from event limit N page M'); the severity/category/text filters
-        are applied CLIENT-SIDE WITHIN THE FETCHED PAGE (the criteria grammar's
-        'where' answers an empty document, verified live), so a filtered page can
-        come back short or empty while later pages still hold matches — 'has_more'
-        refers to the unfiltered page, keep paging.
+        events of an alarm by its alarm_id. ORDER (verified live 2026-09-14):
+        the platform returns events with Timestamp descending — strictly
+        newest-first within each page AND across pages 0-3 (limit 30, 120 rows,
+        2026-09-13T23:46:54Z down to 12:12:55Z), unlike cnc_list_alarms whose
+        order is not newest-first. This is an observation, not a documented
+        contract, so the tool does not re-sort; if a page ever looks unordered,
+        sort the JSON items by Timestamp yourself. Note that acknowledging,
+        un-acknowledging or annotating an alarm does NOT create an event (verified
+        live: those actions appear only in the alarm's AckHist/Notes and bump
+        its Updated; whether a manual clear adds a 'Clear' event is unverified —
+        the platform's own auto-clears do). Paging is
+        the platform's ('select * from event limit N page M'); the
+        severity/category/text filters are applied CLIENT-SIDE WITHIN THE
+        FETCHED PAGE (the criteria grammar's 'where' answers an empty document,
+        verified live), so a filtered page can come back short or empty while
+        later pages still hold matches — 'has_more' refers to the unfiltered
+        page, keep paging.
 
         Args:
             limit / page: platform page size (max 100) and 0-based page.
@@ -778,11 +1052,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Returns:
             str: Markdown "[EventSeverity] object_description — Description
-            (EventId, alarm <alarm_id>, <Timestamp ISO>)" lines, or JSON:
+            (EventId, alarm <alarm_id>, <Timestamp ISO>)" lines, newest first,
+            or JSON:
             {"total": null, "count": <after filtering>, "page": int, "page_size": int,
              "fetched": <rows in the page>, "items": [{"EventId", "alarm_id",
-             "EventSeverity", "EventCategory", "Description", "Timestamp",
-             "object_description", "origin_app_id", "event_type"}, ...],
+             "EventSeverity", "EventCategory", "Description", "Timestamp" (epoch ms),
+             "object_id", "object_description", "origin_app_id", "origin_service_id",
+             "event_type", "event_case", "Flagging"}, ...],
              "has_more": bool, "next_page": int|null}
             On failure: "Error: <actionable message>".
         """
@@ -1282,14 +1558,17 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str | None,
             Field(
                 description="Optional note recorded with the acknowledgement "
-                "(e.g. 'Ticket INC-1234 opened').",
+                "(e.g. 'Ticket INC-1234 opened'). PERMANENT: it becomes a Notes entry "
+                "that no API can edit or delete. Omitting it does NOT avoid a note: the "
+                "platform then stores its own 'Alarm acknowledged' / 'Alarm unacknowledged' "
+                "note instead.",
                 max_length=1000,
             ),
         ] = None,
     ) -> str:
         """Acknowledge (or un-acknowledge) a Crosswork platform alarm.
 
-        Write. The alarm is resolved first (the same whole-collection read as
+        Write. The alarm is resolved first (the same paged collection read as
         cnc_get_alarm), so an unknown id fails WITHOUT sending the write, and the
         PUT carries the platform's own spelling of the AlarmId (the match is
         case-insensitive). Then PUT /crosswork/alarms/v1/ack {"alarmId", "ack",
@@ -1302,23 +1581,44 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         found". The flag is ASYNCHRONOUS: it settles 1-3 s after the Success
         answer, so an immediate cnc_get_alarm may still show the old value —
         re-read after a moment (and if an un-ack right after an ack is refused
-        for that reason, wait a few seconds and retry). NOT VERIFIED LIVE:
-        whether acknowledging an already-acknowledged alarm succeeds, fails, or
-        adds a second AckHist entry — check "before.acknowledged" in the result
-        (or cnc_get_alarm first) instead of re-sending blindly; the tool is
-        therefore not marked idempotent. A lost answer (transport error, 5xx) is
-        NOT auto-retried because each accepted call is recorded in the alarm's
-        AckHist: on "may already have been applied", re-read with cnc_get_alarm
-        before repeating.
+        for that reason, wait a few seconds and retry).
+
+        PERMANENT RESIDUE (verified live 2026-09-14) — an ack/un-ack is NOT fully
+        reversible, so do not promise "full cleanup" when a task asks for it:
+        - every accepted call appends an AckHist entry ("Ack" / "UnAck"); there
+          is no API to remove one. AckHist timestamps are DATE-ONLY
+          ("2026-09-14 00:00:00.0"), newest day first with same-day entries in
+          chronological order — the exact times live in the Notes;
+        - the optional `note` becomes a permanent Notes entry (no edit/delete
+          API, exactly like cnc_annotate_alarm);
+        - an ack WITHOUT a note makes the platform append the permanent note
+          "Alarm acknowledged" (observed on the 2026-09-13 scout alarm, read
+          back 2026-09-14); with a note only that note is stored;
+        - un-acknowledging WITHOUT a note makes the platform append the
+          permanent note "Alarm unacknowledged" (CreatedBy = the un-acking
+          user). Whether an un-ack WITH a note also stores the platform note is
+          UNVERIFIED (every live un-ack was note-less; by the ack pattern the
+          user's note probably replaces it).
+        So there is no note-free ack: with or without a `note`, every accepted
+        call leaves a Notes entry. NOT VERIFIED LIVE: whether acknowledging an
+        already-acknowledged alarm succeeds, fails, or adds a second AckHist
+        entry — check "before.acknowledged" in the result (or cnc_get_alarm
+        first) instead of re-sending blindly; the tool is therefore not marked
+        idempotent. A lost answer (transport error, 5xx) is NOT auto-retried
+        because each accepted call is recorded in the alarm's AckHist: on "may
+        already have been applied", re-read with cnc_get_alarm before repeating.
 
         Args:
             alarm_id: the AlarmId (exact, case-insensitive).
             acknowledge: True to ack, False to un-ack.
-            note: optional note.
+            note: optional note (permanent).
 
         Returns:
             str: "Alarm <id> acknowledged|un-acknowledged. The flag settles within
-            a few seconds; re-read with cnc_get_alarm." followed by JSON
+            a few seconds; re-read with cnc_get_alarm. Residue: <what was
+            permanently recorded — the AckHist entry plus either the note sent
+            or, without one, the platform's own 'Alarm acknowledged' / 'Alarm
+            unacknowledged' note>." followed by JSON
             {"alarm_id" (the platform's spelling), "acknowledge", "note",
              "before": {"state", "acknowledged", "description", "object_description"},
              "response": {"state": "Success", "Message": "<user>"}}.
@@ -1357,9 +1657,25 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "before": alarm_before(alarm),
                 "response": data,
             }
+            residue = [f"an AckHist '{'Ack' if acknowledge else 'UnAck'}' entry"]
+            if body.get("note"):
+                # With a note the platform stores only that note (observed live for an
+                # ack; for an un-ack it is unverified — every live un-ack was note-less).
+                residue.append(f"the note '{body['note']}' as a Notes entry")
+                if not acknowledge:
+                    residue[-1] += (
+                        " (whether the platform also adds 'Alarm unacknowledged' next to a "
+                        "user note is unverified)"
+                    )
+            else:
+                # A note-less ack / un-ack makes the platform append its own note
+                # (observed live on the 2026-09-13 scout alarm).
+                platform_note = "Alarm acknowledged" if acknowledge else "Alarm unacknowledged"
+                residue.append(f"the platform note '{platform_note}'")
             return finalize(
                 f"Alarm {alarm_id} {verb}. The flag settles within a few seconds; re-read with "
-                f"cnc_get_alarm.\n\n{to_json(result)}",
+                f"cnc_get_alarm. Residue: {', '.join(residue)} — permanent, no delete API."
+                f"\n\n{to_json(result)}",
                 settings,
             )
         except Exception as e:
@@ -1393,20 +1709,27 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     ) -> str:
         """Add a note to a Crosswork platform alarm.
 
-        Write. The alarm is resolved first (whole-collection read), so an unknown
-        id fails WITHOUT sending the write, and the PUT carries the platform's own
+        Write. The alarm is resolved first (paged collection read, as in
+        cnc_get_alarm), so an unknown id fails WITHOUT sending the write, and
+        the PUT carries the platform's own
         spelling of the AlarmId (the match is case-insensitive); then
         PUT /crosswork/alarms/v1/note {"alarmId", "note"} is sent. NOTES ARE
         PERMANENT: there is no API to edit or delete one (verified live), and
-        every call appends a new entry, so this tool is not idempotent. For that
-        reason the PUT is NOT auto-retried by the client: a transport error or
-        5xx after the platform may have stored the note is reported as
-        "Could not reach the platform ... may already have been applied" — check
-        cnc_get_alarm's Notes before re-running rather than re-sending blindly.
+        every call appends a new entry, so this tool is not idempotent — do not
+        promise "full cleanup" after annotating. For that reason the PUT is NOT
+        auto-retried by the client: a transport error or 5xx after the platform
+        may have stored the note is reported as "Could not reach the platform
+        ... may already have been applied" — check cnc_get_alarm's Notes before
+        re-running rather than re-sending blindly. The Notes list (cnc_get_alarm)
+        carries full epoch-ms timestamps and is shown newest first; it also
+        holds the notes written by cnc_acknowledge_alarm and the platform's own
+        "Alarm acknowledged" / "Alarm unacknowledged" entries from note-less
+        acks and un-acks (verified live 2026-09-14). Annotating
+        does not create an event and does not touch the acknowledge flag.
 
         Args:
             alarm_id: the AlarmId (exact, case-insensitive).
-            note: the text (1..1000 characters).
+            note: the text (1..1000 characters), permanent.
 
         Returns:
             str: "Note added to alarm <id> (notes are permanent)." followed by JSON
@@ -1473,7 +1796,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Write, destructive: clearing hides a condition the platform may still be
         observing — prefer acknowledging unless the cause is fixed. The alarm is
-        resolved first (whole-collection read), so an unknown id fails WITHOUT
+        resolved first (paged collection read, as in cnc_get_alarm), so an
+        unknown id fails WITHOUT
         sending the write, and the PUT carries the platform's own spelling of the
         AlarmId (the match is case-insensitive); then
         PUT /crosswork/alarms/v1/clear {"alarmId", "note"?} is sent. Clearing an

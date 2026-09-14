@@ -63,6 +63,17 @@ the device and step that broke. A missing plan (204 / 404) right after the
 commit is reported, not treated as an error — the CFP may still be creating
 it; after a delete the plan may linger briefly with ``init not-reached``.
 
+**Two plan vocabularies.** The "Plan:" line above speaks NSO's **nano-plan**
+language (``ready`` / ``in-progress`` / ``failed`` summarising the component
+states ``init`` / ``config-apply`` / ``ready``). The services tools —
+``cnc_get_service_plan`` and the ``cnc_wait_for_service_plan`` targets —
+speak the **CAT plan status**: ``completed`` / ``in-progress`` /
+``delete-in-progress`` / ``failed`` / ``unknown``. They describe the same
+service one layer apart (verified live 2026-09-14: the service the create
+tool printed as "Plan: ready" is "status completed" in CAT), so every "Plan:"
+line names its CAT equivalent; wait with ``target='completed'`` (``'ready'``
+is accepted as an alias), never with a component state.
+
 Preconditions that only bite at runtime (all verified live, all explained in
 the error texts):
 
@@ -88,6 +99,10 @@ the error texts):
   REASON: BGP routing process is not configured on the device``. The rendered
   VRF also carries an auto-allocated route-target (``1:1`` on the lab, from the
   CFP's ``ietf-l3vpn-ntw-rt-pool``) beside the ones given — read the dry run.
+  **Deleting the service takes back the VRF, the interface's VRF membership
+  and the BGP VRF stanza (``router bgp <as> / no vrf <vpn-id>``) but NOT the
+  ``router bgp <as>`` process** (verified live 2026-09-14 in a delete dry run
+  on PEs whose process pre-existed; see cnc_delete_vpn_service).
 - ``400 unknown-element`` means the body carries a node the (Cisco-deviated)
   model does not know — e.g. the L3NM ``ip-connection/ipv4`` holds ONLY
   ``local-address`` + ``prefix-length`` (``static-addresses`` and
@@ -955,7 +970,29 @@ def plan_line(summary: dict[str, Any] | None, note: str | None = None) -> str:
         text += f" ({summary['error']})"
     if parts:
         text += " — " + "; ".join(parts)
-    return text + "."
+    return f"{text}. {plan_layer_note(summary['status'])}"
+
+
+# NSO nano-plan summary word -> the CAT plan status the services tools report for it.
+_CAT_STATUS_OF_NANO = {"ready": "completed", "in-progress": "in-progress", "failed": "failed"}
+
+
+def plan_layer_note(status: str) -> str:
+    """The sentence that keeps the two plan vocabularies apart on the "Plan:" line.
+
+    The line summarises NSO's **nano plan** (component states init /
+    config-apply / ready, read through the proxy right after the commit);
+    the services tools speak the **CAT plan status** (completed /
+    in-progress / delete-in-progress / failed / unknown). Verified live: the
+    service the create tool calls "ready" is "completed" in CAT, so the note
+    names the CAT equivalent and the target to wait for.
+    """
+    cat_status = _CAT_STATUS_OF_NANO.get(status, status)
+    return (
+        f"(NSO nano-plan states; CAT plan status: '{cat_status}' — the vocabulary of "
+        "cnc_get_service_plan / cnc_wait_for_service_plan, whose target for a deployed "
+        "service is 'completed', with 'ready' accepted as its alias.)"
+    )
 
 
 def outcome_of(method: str, status: int) -> str:
@@ -1201,8 +1238,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: the dry-run CLI per device, or "Created|Replaced ODN template
             '<name>' ..." plus a "Plan: ready|in-progress|failed — self: ...;
-            head-end PE1: init=reached, config-apply=reached, ready=reached"
-            line and a "Next:" hint. "Error: head-end 'X' is not an NSO
+            head-end PE1: init=reached, config-apply=reached, ready=reached.
+            (NSO nano-plan states; CAT plan status: 'completed' ...)" line
+            (the nano-plan summary with its CAT-status equivalent — the
+            vocabulary cnc_wait_for_service_plan takes) and a "Next:" hint.
+            "Error: head-end 'X' is not an NSO
             device", "Error: NSO considers PE1 out of sync — run
             cnc_nso_device_action(...)", "Error: the body has a node the
             model does not know: ...", "Error: the function pack rejected the
@@ -1797,7 +1837,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         has no BGP routing process: give local_as ..."). Always give local_as
         unless the PEs already run BGP. The rendered VRF carries an extra
         auto-allocated route-target (``1:1`` on the lab) from the CFP's RT pool
-        beside the ones given — check the dry run. The PEs must also be NSO
+        beside the ones given — check the dry run. Cleanup: cnc_delete_vpn_service
+        removes the VRF, the interface's VRF membership and the BGP VRF
+        stanza, but leaves the ``router bgp <as>`` process on the PE
+        (verified in dry run on PEs whose process pre-existed; unverified
+        for a process the CFP created itself). The PEs must also be NSO
         devices in sync with NSO: the
         deviated L3NM makes ``vpn-node-id`` a leafref into NSO's device
         dispatch-map, so an unknown ``endpoints[].node`` is ``400 invalid-value
@@ -1884,7 +1928,30 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``DELETE .../data/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/vpn-service=
         <vpn_id>`` (or ``ietf-l2vpn-ntw:l2vpn-ntw/...`` for layer l2). ``204``
         = deleted; ``404`` = no such service. ``dry_run=true`` renders the
-        ``no vrf ...`` lines instead. The plan may linger for a moment.
+        ``no ...`` lines instead. The plan may linger for a moment.
+
+        What an L3VPN delete removes — and what it leaves (verified live
+        2026-09-14, dry-run delete of an L3VPN created by
+        cnc_create_l3vpn_service with ``local_as`` between PE1 and PE2): on
+        each PE NSO renders the reverse of what the service rendered — the
+        VRF (``no vrf <vpn_id>``), the attachment interface's VRF membership
+        (the loopback's ``vrf <vpn_id>`` line) and the BGP VRF stanza
+        (``router bgp <as> / no vrf <vpn_id>``). **The ``router bgp <as>``
+        process itself is NOT removed**: the dry run enters ``router bgp
+        65000`` only to remove ``vrf <vpn_id>``, and the process, its
+        address-families and neighbors stay on the PE. That was verified on
+        PEs whose ``router bgp 65000`` pre-existed the service (the lab's
+        state since 2026-09-14); whether a process the CFP rendered itself
+        for a PE that had none (the ``local_as`` case of
+        cnc_create_l3vpn_service) is taken back with the service has NOT been
+        verified — run ``dry_run=true`` first and read the CLI: everything
+        the delete will push is in it, and anything it does not list stays.
+        To prove the residue on the PE, take a backup
+        (cnc_backup_device_config, then cnc_wait_for_config_backup_job) and
+        read it with cnc_get_device_backup — the stored running configuration
+        (secrets masked); NSO's copy is reachable through the proxy (``GET
+        data/tailf-ncs:devices/device=<name>/config/...``) but is not exposed
+        as a tool.
 
         Args:
             vpn_id: the service's vpn-id (exact).

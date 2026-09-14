@@ -14,13 +14,15 @@ import itertools
 import json
 
 import httpx
+import pytest
 import respx
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from cnc_mcp.auth import StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
-from cnc_mcp.formatting import epoch_iso
+from cnc_mcp.formatting import TRUNCATION_HINT, epoch_iso
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import ALL_MODULES, admin
 from tests.conftest import BASE_URL, call_tool_text
@@ -60,7 +62,7 @@ USER_PERMISSION_URL = f"{AAA}/userpermission"
 PASSWORD_POLICY_URL = f"{AAA}/passwordPolicyConfig"
 SECURED_APIS_URL = f"{AAA_V2}/api"
 
-NODE_ID = "198.18.134.221"
+NODE_ID = "192.0.2.21"
 
 # --- fixtures (verified envelopes) -------------------------------------------
 
@@ -150,7 +152,7 @@ RESOURCE = {
     "last_updated_time": "Sat Sep 13 12:00:00 UTC 2026",
 }
 NODE = {
-    "node_name": "198-18-134-221-hybrid.cw.cisco",
+    "node_name": "192-0-2-21-hybrid.cw.cisco",
     "node_id": NODE_ID,
     "node_health": "Healthy",
     "node_type": "HYBRID",
@@ -207,7 +209,7 @@ NODE_DETAILS = {
         "size_profile": {"cpu": "Large", "memory": "Large", "disk": "Large"},
         "host": "esx-1",
         "data_store": "datastore1",
-        "management_ip": "198.18.134.221/18",
+        "management_ip": f"{NODE_ID}/18",
         "data_ip": "198.18.1.221",
         "management_ip_v4": NODE_ID,
         "data_ip_v4": "198.18.1.221",
@@ -754,7 +756,7 @@ async def test_list_cluster_nodes_markdown(settings):
     text = await call_tool_text(build(settings), "cnc_list_cluster_nodes", {})
     assert no_body(route)
     assert "# Cluster nodes (1)" in text
-    assert f"**198-18-134-221-hybrid.cw.cisco** (node_id {NODE_ID})" in text
+    assert f"**192-0-2-21-hybrid.cw.cisco** (node_id {NODE_ID})" in text
     assert "health=Healthy type=HYBRID vm=Running" in text
     assert "cpu=30 % (2.40 cores of 8.00 cores)" in text
     assert "memory=45 % (42.13 GB of 94.29 GB) disk=12 % (110.20 GB of 900.00 GB)" in text
@@ -788,8 +790,8 @@ async def test_get_cluster_node_markdown_and_body(settings):
     route = respx.post(NODE_DETAILS_URL).mock(return_value=httpx.Response(200, json=NODE_DETAILS))
     text = await call_tool_text(build(settings), "cnc_get_cluster_node", {"node_id": NODE_ID})
     assert sent(route) == {"node_id": NODE_ID}
-    assert f"# Node 198-18-134-221-hybrid.cw.cisco ({NODE_ID})" in text
-    assert "management_ip 198.18.134.221/18, data_ip 198.18.1.221" in text
+    assert f"# Node 192-0-2-21-hybrid.cw.cisco ({NODE_ID})" in text
+    assert f"management_ip {NODE_ID}/18, data_ip 198.18.1.221" in text
     assert (
         "size profile cpu=Large memory=Large disk=Large; host esx-1, datastore datastore1" in text
     )
@@ -912,6 +914,102 @@ async def test_list_microservices_all_apps_fans_out(settings):
         ("capp-infra", "robot-topo-svc"),
         ("capp-coe", "cw-data-retention-service"),
     }
+
+
+def _pods(n: int) -> list[dict]:
+    return [{**MS_HEALTHY, "Name": f"pod-{i:03d}"} for i in range(n)]
+
+
+@respx.mock
+async def test_list_microservices_pages_client_side(settings):
+    """page_size/page cut a window out of the fetched list; the envelope and the
+    markdown hint say how to continue, and a page past the end is not an error."""
+    respx.post(MICROSERVICES_URL).mock(
+        return_value=httpx.Response(200, json={"micro_service": _pods(5)})
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_list_microservices",
+        {"app_id": "capp-coe", "page_size": 2, "page": 1, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["total"] == 5 and data["count"] == 2 and data["collection_total"] == 5
+    assert data["page"] == 1 and data["page_size"] == 2
+    assert data["has_more"] is True and data["next_page"] == 2
+    assert [r["Name"] for r in data["items"]] == ["pod-002", "pod-003"]
+
+    text = await call_tool_text(
+        build(settings), "cnc_list_microservices", {"app_id": "capp-coe", "page_size": 2}
+    )
+    assert "# Microservices (2 shown of 5, page 0; application capp-coe)" in text
+    assert "pod-000" in text and "pod-001" in text and "pod-002" not in text
+    assert text.rstrip().endswith("More available: repeat with page=1.")
+
+    text = await call_tool_text(
+        build(settings),
+        "cnc_list_microservices",
+        {"app_id": "capp-coe", "page_size": 2, "page": 2},
+    )
+    assert "# Microservices (1 shown of 5, page 2; application capp-coe)" in text
+    assert "pod-004" in text and "More available" not in text
+
+    text = await call_tool_text(
+        build(settings),
+        "cnc_list_microservices",
+        {"app_id": "capp-coe", "page_size": 2, "page": 7},
+    )
+    assert not text.startswith("Error:")
+    assert "Page 7 is past the end: 5 microservices for application capp-coe fill pages 0-2" in text
+
+
+@respx.mock
+async def test_list_microservices_health_filter_precedes_paging(settings):
+    """total counts the filtered rows, collection_total what was fetched."""
+    pods = _pods(3) + [{**MS_DEGRADED, "Name": f"bad-{i}"} for i in range(3)]
+    respx.post(MICROSERVICES_URL).mock(
+        return_value=httpx.Response(200, json={"micro_service": pods})
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_list_microservices",
+        {"app_id": "capp-coe", "health": "degraded", "page_size": 2, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["total"] == 3 and data["collection_total"] == 6 and data["count"] == 2
+    assert [r["Name"] for r in data["items"]] == ["bad-0", "bad-1"]
+
+
+@respx.mock
+async def test_list_microservices_oversized_json_stays_parseable(make_settings):
+    """A JSON page over the cap is cut to whole items with the tool's own hint —
+    never the unparseable character cut, never a promise of limit/offset."""
+    settings = make_settings(max_response_chars=4_000)
+    respx.post(MICROSERVICES_URL).mock(
+        return_value=httpx.Response(200, json={"micro_service": _pods(40)})
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_list_microservices", {"app_id": "capp-coe", "response_format": "json"}
+    )
+    assert len(text) <= 4_000
+    data = json.loads(text)
+    assert data["truncated"] is True and 1 <= data["shown"] < 40
+    assert len(data["items"]) == data["shown"] and data["total"] == 40
+    assert "Lower page_size" in data["truncation_note"] and "app_id" in data["truncation_note"]
+    assert "limit/offset" not in text
+
+
+@respx.mock
+async def test_list_microservices_page_size_bounds(settings):
+    """Schema-level: page_size 0 / 501 and a negative page are rejected before any request."""
+    route = respx.post(MICROSERVICES_URL).mock(return_value=httpx.Response(200, json={}))
+    for args, match in (
+        ({"app_id": "capp-coe", "page_size": 0}, "page_size"),
+        ({"app_id": "capp-coe", "page_size": 501}, "page_size"),
+        ({"app_id": "capp-coe", "page": -1}, "page"),
+    ):
+        with pytest.raises(ToolError, match=match):
+            await call_tool_text(build(settings), "cnc_list_microservices", args)
+    assert route.call_count == 0
 
 
 @respx.mock
@@ -1091,6 +1189,30 @@ async def test_list_app_manager_jobs_empty_and_error(make_settings):
     assert text.startswith("Error:") and "500" in text
 
 
+@respx.mock
+async def test_list_app_manager_jobs_oversized_hint_says_lower_limit(make_settings):
+    """Over the cap, both formats carry the tool's own advice ("Lower limit.")
+    — never the generic hint, never a promise of limit/offset. JSON stays
+    parseable (whole trailing items dropped); markdown gets the bracketed note."""
+    settings = make_settings(max_response_chars=2_000)
+    jobs = [app_job(f"AJ{i}", str(1757000000000 + i * 1000), "JOB_COMPLETED") for i in range(30)]
+    respx.post(APP_JOBS_URL).mock(
+        return_value=httpx.Response(200, json={"jobs": jobs, **CAPP_RESULT})
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_list_app_manager_jobs", {"response_format": "json"}
+    )
+    assert len(text) <= 2_000
+    data = json.loads(text)
+    assert data["truncated"] is True and 1 <= data["shown"] < 20
+    assert len(data["items"]) == data["shown"] and data["total"] == 30 and data["count"] == 20
+    assert data["truncation_note"].endswith("'items' entries were dropped. Lower limit.")
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+    text = await call_tool_text(build(settings), "cnc_list_app_manager_jobs", {})
+    assert text.endswith("[Truncated: response exceeded 2000 characters. Lower limit.]")
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+
+
 # --- cnc_list_app_manager_events --------------------------------------------
 
 
@@ -1154,6 +1276,36 @@ async def test_list_app_manager_events_follows_page_token_and_caps(settings):
     assert route.call_count == 2 + admin.CAPP_MAX_PAGES
     assert f"# Application manager events (1 of {admin.CAPP_MAX_PAGES}, newest first)" in text
     assert f"Warning: the platform still had more events after {admin.CAPP_MAX_PAGES} pages" in text
+
+
+@respx.mock
+async def test_list_app_manager_events_oversized_hint_says_lower_limit(make_settings):
+    """Same contract as the jobs tool: the tool's own "Lower limit." advice in
+    the JSON truncation_note and in the markdown bracketed note."""
+    settings = make_settings(max_response_chars=2_000)
+    events = [
+        {
+            "event_tags": [{"tag_type": "JOB_ID_EVENT", "tag_value": f"AJ{i}"}],
+            "message": f"Step {i} done.",
+            "event_time": str(1757000000000 + i * 1000),
+        }
+        for i in range(60)
+    ]
+    respx.post(APP_EVENTS_URL).mock(
+        return_value=httpx.Response(200, json={"events": events, **CAPP_RESULT})
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_list_app_manager_events", {"response_format": "json"}
+    )
+    assert len(text) <= 2_000
+    data = json.loads(text)
+    assert data["truncated"] is True and 1 <= data["shown"] < 50
+    assert len(data["items"]) == data["shown"] and data["total"] == 60 and data["count"] == 50
+    assert data["truncation_note"].endswith("'items' entries were dropped. Lower limit.")
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+    text = await call_tool_text(build(settings), "cnc_list_app_manager_events", {})
+    assert text.endswith("[Truncated: response exceeded 2000 characters. Lower limit.]")
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
 
 
 # --- cnc_get_maintenance_status ---------------------------------------------
@@ -1455,6 +1607,36 @@ async def test_list_roles_json_is_raw_and_error(make_settings):
     assert text.startswith("Error:") and "403" in text
 
 
+@respx.mock
+async def test_list_roles_oversized_json_hint_points_to_markdown_and_per_role_tools(
+    make_settings,
+):
+    """aaa/v1/role is a dict keyed by role name with no top-level list, so an
+    oversized JSON answer takes the character cut — the bracketed note must
+    carry the tool's own advice (markdown summary / per-role tools), not the
+    generic hint and not a limit/offset promise."""
+    settings = make_settings(max_response_chars=2_000)
+    roles = {
+        f"role-{i}": {
+            **ROLES["admin"],
+            "name": f"role-{i}",
+            "access_rights": {f"api-{j}": grant(f"api-{j}", f"API {j}") for j in range(6)},
+        }
+        for i in range(4)
+    }
+    respx.get(ROLES_URL).mock(return_value=httpx.Response(200, json=roles))
+    text = await call_tool_text(build(settings), "cnc_list_roles", {"response_format": "json"})
+    assert text.endswith(
+        "[Truncated: response exceeded 2000 characters. Use markdown for the per-role "
+        "summary, or cnc_get_role_permissions / cnc_get_role_tasks for one role.]"
+    )
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+    # the markdown summary of the same answer fits, as the hint promises
+    text = await call_tool_text(build(settings), "cnc_list_roles", {})
+    assert "# Roles (4)" in text and "[Truncated" not in text
+    assert "- **role-3** — 6 API grants, rate 1000/1s" in text
+
+
 # --- cnc_get_role_tasks ------------------------------------------------------
 
 
@@ -1588,6 +1770,43 @@ async def test_list_secured_apis_grouped_and_filtered(make_settings):
     respx.get(SECURED_APIS_URL).mock(return_value=FORBIDDEN_403)
     text = await call_tool_text(build(settings), "cnc_list_secured_apis", {})
     assert text.startswith("Error:") and "403" in text
+
+
+@respx.mock
+async def test_list_secured_apis_oversized_hint_says_narrow_with_feature(make_settings):
+    """Over the cap, both formats carry the tool's own advice ("Narrow with
+    feature, or use markdown."). The JSON is {"<feature>": [...]}, so the
+    JSON-aware cut drops trailing entries of the largest feature list and
+    stays parseable; markdown gets the bracketed note."""
+    settings = make_settings(max_response_chars=2_000)
+    apis = {
+        "Topology": [{"api_id": f"api-{i}", "name": f"Topology API {i}"} for i in range(100)],
+        "Device Management": SECURED_APIS["Device Management"],
+    }
+    respx.get(SECURED_APIS_URL).mock(return_value=httpx.Response(200, json=apis))
+    text = await call_tool_text(
+        build(settings), "cnc_list_secured_apis", {"response_format": "json"}
+    )
+    assert len(text) <= 2_000
+    data = json.loads(text)
+    assert data["truncated"] is True and 1 <= data["shown"] < 100
+    assert data["Topology"] == apis["Topology"][: data["shown"]]
+    assert data["Device Management"] == SECURED_APIS["Device Management"]  # untouched
+    assert data["truncation_note"].endswith(
+        "'Topology' entries were dropped. Narrow with feature, or use markdown."
+    )
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+    text = await call_tool_text(build(settings), "cnc_list_secured_apis", {})
+    assert text.startswith("# Secured APIs (102 in 2 feature(s))")
+    assert text.endswith(
+        "[Truncated: response exceeded 2000 characters. Narrow with feature, or use markdown.]"
+    )
+    assert TRUNCATION_HINT not in text and "limit/offset" not in text
+    # the feature filter narrows the same answer under the cap, as the hint promises
+    text = await call_tool_text(
+        build(settings), "cnc_list_secured_apis", {"feature": "device", "response_format": "json"}
+    )
+    assert json.loads(text) == {"Device Management": SECURED_APIS["Device Management"]}
 
 
 # --- cnc_set_login_banner ----------------------------------------------------

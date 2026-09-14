@@ -50,12 +50,17 @@ from cnc_mcp.tools.oam import (
     canonical_service_type,
     check_oam_output,
     completed_without_paths,
+    destination_text,
+    device_name_map,
+    device_text,
     end_text,
     enum_name,
     enum_word,
     hop_lines,
+    is_mpls_oam_target,
     oam_epoch_ms,
     oam_time,
+    path_device_uuids,
     path_line,
     probe_reports,
     probe_verdict_500,
@@ -443,6 +448,26 @@ def mock_trace_route(*responses: httpx.Response) -> respx.Route:
     return respx.post(rpc("get-oam-trace-route-by-query-id")).mock(side_effect=answer)
 
 
+P1_NODE = inventory_node(P1_UUID, "P1", "10.0.0.2")
+# The unfiltered inventory list the path rendering reads once (5 lab devices).
+INVENTORY_LIST = {"data": [PE1_NODE, P1_NODE, PE2_NODE], "result_count": 3, "total_count": 3}
+UNFILTERED_LIST_BODY = {
+    "filter": {},
+    "filterData": {"PageSize": 200, "PageNum": 0, "Criteria": ""},
+}
+
+
+def mock_inventory(*responses: httpx.Response) -> respx.Route:
+    """nodes/query answering the responses in order (the last repeats) — the unfiltered
+    device list behind the per-path host names."""
+    replies = list(responses) or [httpx.Response(200, json=INVENTORY_LIST)]
+
+    def answer(_request: httpx.Request) -> httpx.Response:
+        return replies.pop(0) if len(replies) > 1 else replies[0]
+
+    return respx.post(NODES_QUERY_URL).mock(side_effect=answer)
+
+
 READ_TOOLS = {
     "cnc_get_oam_settings",
     "cnc_list_oam_trace_routes",
@@ -808,13 +833,36 @@ def test_hop_lines_parse_the_verified_markup():
 
 
 def test_path_line_renders_the_verified_success_shape():
+    """Without a name map the uuids are shown as sent; the 127/8 destination is annotated
+    as the LSP-ping target it is (verified: 'destination 127.0.0.0' on both ECMP paths)."""
     text = path_line(VERIFIED_PATH)
     assert text.startswith(
-        "- path Path 1: 10.0.0.1 -> 127.0.0.0 via next-hop 10.1.4.1 out-interface "
-        f"GigabitEthernet0/0/0/1; path-status found; devices {P1_UUID}, {PE2_UUID}\n"
+        "- path Path 1: 10.0.0.1 -> 127.0.0.0 (MPLS-OAM LSP-ping target, expected — not a "
+        "router address) via next-hop 10.1.4.1 out-interface GigabitEthernet0/0/0/1; "
+        f"path-status found; devices {P1_UUID}, {PE2_UUID}\n"
     )
     assert "#BOLD_WORD#" not in text
     assert text.count("\n    - hop ") == 3
+
+
+def test_path_line_resolves_device_uuids_to_host_names():
+    """With the inventory map (one list call per rendering) each uuid reads as
+    '<host_name> (<uuid>)'; an unknown uuid stays a uuid; the map is case-insensitive."""
+    names = {P1_UUID: "P1", PE2_UUID.upper(): "PE2"}
+    text = path_line(VERIFIED_PATH, device_name_map([P1_NODE, PE2_NODE]))
+    assert f"devices P1 ({P1_UUID}), PE2 ({PE2_UUID})\n" in text
+    assert device_text(PE2_UUID.upper(), device_name_map([PE2_NODE])) == f"PE2 ({PE2_UUID.upper()})"
+    assert device_text(P1_UUID, {}) == P1_UUID and device_text(P1_UUID, None) == P1_UUID
+    assert device_name_map([{"uuid": P1_UUID}, {"host_name": "x"}, "junk"]) == {}
+    assert device_name_map([P1_NODE]) == {P1_UUID: "P1"}
+    assert names[P1_UUID] == "P1"  # the plain dict form is what the tools build
+    # The helpers behind the map: which uuids a route needs, and the 127/8 check.
+    route = {"path-info-list": [VERIFIED_PATH, COMPLETED["path-info-list"][0]]}
+    assert path_device_uuids(route) == [P1_UUID, PE2_UUID, PE1_UUID]
+    assert path_device_uuids({}) == [] and path_device_uuids(NO_PATH) == []
+    assert is_mpls_oam_target("127.0.0.0") and is_mpls_oam_target("127.1.2.3")
+    assert not is_mpls_oam_target("10.0.0.3") and not is_mpls_oam_target("")
+    assert destination_text("10.0.0.3") == "10.0.0.3" and destination_text("") == "?"
 
 
 def test_probe_enum_helpers():
@@ -1028,6 +1076,7 @@ async def test_get_trace_route_failed_is_rendered_not_an_error(reads):
 @respx.mock
 async def test_get_trace_route_completed_renders_paths(reads):
     mock_trace_route(ok(out(**COMPLETED)))
+    inventory = mock_inventory()
     text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
     assert text.startswith(f"# OAM trace route {QUERY_ID} — completed (4)")
     assert f"- service: {POLICY_PATH} (service-name mcp-oam-91, service-type policy)" in text
@@ -1035,7 +1084,176 @@ async def test_get_trace_route_completed_renders_paths(reads):
     assert "- available-path-count: 1" in text
     assert "## Paths (1)" in text
     assert "- path 1: 10.0.0.1 -> 10.0.0.3 via next-hop 10.1.2.2 out-interface" in text
+    # ONE unfiltered inventory list resolved every per-path uuid to its host name.
+    assert inventory.call_count == 1
+    assert json.loads(inventory.calls[0].request.content) == UNFILTERED_LIST_BODY
+    assert f"devices PE1 ({PE1_UUID}), P1 ({P1_UUID}), PE2 ({PE2_UUID})" in text
+    assert "- device names:" not in text
     assert "cnc_get_device(uuid=...)" in text
+
+
+# The verified L3VPN success (2026-09-14): two ECMP paths PE1 -> P2 -> PE2 / PE1 -> P1 -> PE2.
+P2_UUID = "1b44ade3-5c6d-4e7f-8a9b-0c1d2e3f4a5b"
+P2_NODE = inventory_node(P2_UUID, "P2", "10.0.0.4")
+VERIFIED_SUCCESS = service_route(
+    4,
+    "Path trace Successful",
+    **{
+        "head-end-node-name": "PE1",
+        "head-end-te-router-id": "10.0.0.1",
+        "tail-end-node-name": "PE2",
+        "tail-end-te-router-id": "10.0.0.3",
+        "service-name": "agent-l3vpn-1",
+        "service-type": "ietf-l3vpn",
+        "yang-path": L3VPN_ID,
+        "available-path-count": 2,
+        "update-time": "1789324627000.0",
+        "path-info-list": [
+            {
+                "path": "Path 1",
+                "path-info": {**VERIFIED_PATH["path-info"], "device-uuids": [P2_UUID, PE2_UUID]},
+            },
+            {
+                "path": "Path 0",
+                "path-info": {
+                    **VERIFIED_PATH["path-info"],
+                    "out-interface": "GigabitEthernet0/0/0/0",
+                    "next-hop": "10.1.1.2",
+                    "device-uuids": [P1_UUID, PE2_UUID],
+                },
+            },
+        ],
+    },
+)
+FIVE_DEVICES = {
+    "data": [PE1_NODE, P1_NODE, PE2_NODE, P2_NODE, inventory_node("a" * 32, "PCE", "10.0.0.5")],
+    "result_count": 5,
+    "total_count": 5,
+}
+
+
+@respx.mock
+async def test_get_trace_route_verified_success_names_the_ecmp_legs(reads):
+    """The agent scenario (2026-09-14): the two paths read as 'via P2' / 'via P1' without a
+    cnc_get_device call per uuid, and the 127/8 target is explained."""
+    mock_trace_route(ok(out(**VERIFIED_SUCCESS)))
+    inventory = mock_inventory(httpx.Response(200, json=FIVE_DEVICES))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert inventory.call_count == 1
+    assert "## Paths (2)" in text
+    assert (
+        "- path Path 1: 10.0.0.1 -> 127.0.0.0 (MPLS-OAM LSP-ping target, expected — not a "
+        "router address) via next-hop 10.1.4.1 out-interface GigabitEthernet0/0/0/1; "
+        f"path-status found; devices P2 ({P2_UUID}), PE2 ({PE2_UUID})\n"
+    ) in text
+    assert (
+        "- path Path 0: 10.0.0.1 -> 127.0.0.0 (MPLS-OAM LSP-ping target, expected — not a "
+        "router address) via next-hop 10.1.1.2 out-interface GigabitEthernet0/0/0/0; "
+        f"path-status found; devices P1 ({P1_UUID}), PE2 ({PE2_UUID})\n"
+    ) in text
+    assert "    - hop 0: origin IP 10.0.0.1, destination IP 10.1.4.1, MRU 1500" in text
+    assert "an L3VPN between PE1 and PE2 answered two paths" in text
+    assert "devices = the transit device(s) then the tail-end" in text
+    # JSON keeps the raw output and adds the resolved map.
+    text = await call_tool_text(
+        reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID, "response_format": "json"}
+    )
+    payload = json.loads(text)
+    assert payload["path-info-list"][0]["path-info"]["device-uuids"] == [P2_UUID, PE2_UUID]
+    assert payload["device-names"] == {P2_UUID: "P2", PE2_UUID: "PE2", P1_UUID: "P1"}
+
+
+@respx.mock
+async def test_get_trace_route_paths_survive_an_inventory_failure(reads):
+    """The name lookup is auxiliary: a failed or incomplete inventory list leaves the uuids
+    as sent and says so, never turning a completed trace into an error."""
+    mock_trace_route(ok(out(**VERIFIED_SUCCESS)))
+    mock_inventory(httpx.Response(500, json={"error": "NATS request failed"}))
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert not text.startswith("Error:")
+    assert f"devices {P2_UUID}, {PE2_UUID}" in text
+    assert "- device names: not resolved (the inventory list failed:" in text
+    # A uuid the inventory does not hold stays a uuid and is named on the note.
+    mock_inventory(httpx.Response(200, json=INVENTORY_LIST))  # no P2
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert f"devices {P2_UUID}, PE2 ({PE2_UUID})" in text
+    assert f"- device names: 1 uuid(s) not in the inventory ({P2_UUID})" in text
+    assert "cnc_get_device(uuid=...) may still know them" in text
+    text = await call_tool_text(
+        reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID, "response_format": "json"}
+    )
+    assert json.loads(text)["device-names"] == {P1_UUID: "P1", PE2_UUID: "PE2"}
+
+
+@respx.mock
+async def test_get_trace_route_without_paths_never_lists_the_inventory(reads):
+    inventory = mock_inventory()
+    mock_trace_route(ok(out(**RUNNING)))
+    await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    mock_trace_route(ok(out(**NO_PATH_SHORT)))
+    text = await call_tool_text(
+        reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID, "response_format": "json"}
+    )
+    assert inventory.call_count == 0
+    assert "device-names" not in json.loads(text)
+
+
+@respx.mock
+async def test_get_trace_route_inventory_list_pages_only_while_there_is_more(reads):
+    """total_count above one page -> a second page is read (verified paging grammar);
+    the map merges both."""
+    mock_trace_route(ok(out(**VERIFIED_SUCCESS)))
+    page0 = {"data": [PE1_NODE, P1_NODE], "result_count": 201, "total_count": 201}
+    page1 = {"data": [PE2_NODE, P2_NODE], "result_count": 201, "total_count": 201}
+    inventory = mock_inventory(
+        httpx.Response(200, json=page0),
+        httpx.Response(200, json=page1),
+        httpx.Response(200, json={}),
+    )
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert inventory.call_count == 2
+    assert json.loads(inventory.calls[1].request.content)["filterData"]["PageNum"] == 1
+    assert f"devices P2 ({P2_UUID}), PE2 ({PE2_UUID})" in text
+
+
+@respx.mock
+async def test_get_trace_route_inventory_list_counts_the_rows_that_arrived(reads):
+    """A page shorter than the asked PageSize (200) while total_count says the inventory
+    is bigger — a platform page cap below the asked size, undocumented and not seen on
+    the 5-device lab — must fetch the next page: the walk counts delivered rows, never
+    ``(page + 1) * PageSize``, so the devices past the cap are not reported as missing."""
+    mock_trace_route(ok(out(**VERIFIED_SUCCESS)))
+    page0 = {"data": [PE1_NODE, P1_NODE], "result_count": 4, "total_count": 4}  # 2 of 4
+    page1 = {"data": [PE2_NODE, P2_NODE], "result_count": 4, "total_count": 4}
+    inventory = mock_inventory(
+        httpx.Response(200, json=page0),
+        httpx.Response(200, json=page1),
+        httpx.Response(200, json={}),
+    )
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert inventory.call_count == 2
+    assert json.loads(inventory.calls[0].request.content)["filterData"]["PageNum"] == 0
+    assert json.loads(inventory.calls[1].request.content)["filterData"]["PageNum"] == 1
+    assert f"devices P2 ({P2_UUID}), PE2 ({PE2_UUID})" in text
+    assert f"devices P1 ({P1_UUID}), PE2 ({PE2_UUID})" in text
+    assert "not in the inventory" not in text
+
+
+@respx.mock
+async def test_get_trace_route_inventory_list_stops_once_every_path_device_is_named(reads):
+    """The walk ends as soon as every uuid on the paths is resolved, even when total_count
+    says more pages exist: the rest of the inventory is not needed for the rendering."""
+    mock_trace_route(ok(out(**VERIFIED_SUCCESS)))
+    page0 = {"data": [P1_NODE, P2_NODE, PE2_NODE], "result_count": 201, "total_count": 201}
+    inventory = mock_inventory(
+        httpx.Response(200, json=page0),
+        httpx.Response(200, json={"data": [PE1_NODE], "result_count": 201, "total_count": 201}),
+    )
+    text = await call_tool_text(reads, "cnc_get_oam_trace_route", {"query_id": QUERY_ID})
+    assert inventory.call_count == 1
+    assert f"devices P2 ({P2_UUID}), PE2 ({PE2_UUID})" in text
+    assert f"devices P1 ({P1_UUID}), PE2 ({PE2_UUID})" in text
+    assert "- device names:" not in text
 
 
 @respx.mock
@@ -1162,12 +1380,34 @@ async def test_wait_failed_verdict_is_not_an_error(reads, fake_clock):
 @respx.mock
 async def test_wait_completed_renders_the_paths(reads, fake_clock):
     route = mock_trace_route(ok(out(**RUNNING)), ok(out(**COMPLETED)))
+    inventory = mock_inventory()
     text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
     assert route.call_count == 2
     assert text.startswith(
         f"Trace route {QUERY_ID} finished after 5s: completed (4): Path trace completed"
     )
     assert "## Paths (1)" in text
+    # The inventory is listed once, after the last poll — never per poll.
+    assert inventory.call_count == 1
+    assert f"devices PE1 ({PE1_UUID}), P1 ({P1_UUID}), PE2 ({PE2_UUID})" in text
+
+
+@respx.mock
+async def test_wait_verified_success_resolves_the_legs_once(reads, fake_clock):
+    """The agent scenario's wait: registered -> running -> 'Path trace Successful' with the
+    two ECMP legs, rendered with host names from ONE inventory list."""
+    route = mock_trace_route(
+        ok(out(**FULL_REGISTERED)), ok(out(**RUNNING)), ok(out(**VERIFIED_SUCCESS))
+    )
+    inventory = mock_inventory(httpx.Response(200, json=FIVE_DEVICES))
+    text = await call_tool_text(reads, "cnc_wait_for_oam_trace_route", {"query_id": QUERY_ID})
+    assert route.call_count == 3 and inventory.call_count == 1
+    assert text.startswith(
+        f"Trace route {QUERY_ID} finished after 10s: completed (4): Path trace Successful"
+    )
+    assert f"devices P2 ({P2_UUID}), PE2 ({PE2_UUID})" in text
+    assert f"devices P1 ({P1_UUID}), PE2 ({PE2_UUID})" in text
+    assert "127.0.0.0 (MPLS-OAM LSP-ping target, expected — not a router address)" in text
 
 
 @respx.mock

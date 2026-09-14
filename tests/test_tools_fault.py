@@ -2,16 +2,18 @@
 
 The module is registered directly (not through build_server) so the test does
 not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
-Fixtures mirror the shapes verified live on Crosswork 7.2 (2026-09-13, see the
-platform notes "Fault APIs"): the alarms/v1 alarm with AckHist/Notes, the event,
-the lifecycle {state, Message} answers, the alarm/v1 settings, severity-config
-items, recommended-action and suppression-policy documents, and the EMPTY
-rtm:alarm envelope (com.lastIndex -1, no com.data).
+Fixtures mirror the shapes verified live on Crosswork 7.2 (2026-09-13 and
+2026-09-14, see the platform notes "Fault APIs" / "Alarm ordering"): the
+alarms/v1 alarm with AckHist (date-only timestamps) and Notes (epoch ms), the
+event, the lifecycle {state, Message} answers, the alarm/v1 settings,
+severity-config items, recommended-action and suppression-policy documents,
+and the EMPTY rtm:alarm envelope (com.lastIndex -1, no com.data).
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -26,17 +28,32 @@ from cnc_mcp.errors import PlatformError
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import fault
 from cnc_mcp.tools.fault import (
+    ALARM_FETCH_PAGE,
+    ALARM_SORTS,
     ALARM_STATES,
-    ALL_ALARMS_CRITERIA,
+    STALE_ALARM_DAYS,
+    age_text,
+    alarm_criteria,
+    alarm_line,
+    alarm_markdown,
     canonical,
     check_lifecycle,
     check_query,
+    event_count,
     filter_alarms,
     filter_event_types,
     filter_events,
     find_alarm,
+    history_stamp,
+    is_stale,
+    sort_alarms,
+    stale_alarm_footer,
 )
 from tests.conftest import BASE_URL, call_tool_text
+
+# Fixed "now" for the age/stale helpers: 2025-09-14T12:00:00Z (the fixtures are dated
+# 2025-09-12/13, so ages are a day or two; the STALE alarm below is weeks older).
+NOW = datetime(2025, 9, 14, 12, 0, 0, tzinfo=UTC)
 
 ALARMS_V1 = f"{BASE_URL}/crosswork/alarms/v1"
 ALARM_V1 = f"{BASE_URL}/crosswork/alarm/v1"
@@ -93,12 +110,20 @@ ALARM = {
             "Flagging": False,
         },
     ],
+    # AckHist timestamps are DATE-ONLY strings on the wire (verified live 2026-09-14);
+    # the platform lists the newest day first with same-day entries in chronological
+    # order. Notes carry epoch ms and are listed newest first.
     "AckHist": [
-        {"CreatedBy": "admin", "Description": "Ack", "Timestamp": "1757751000000"},
-        {"CreatedBy": "admin", "Description": "UnAck", "Timestamp": "1757752000000"},
+        {"CreatedBy": "admin", "Description": "Ack", "Timestamp": "2025-09-13 00:00:00.0"},
+        {"CreatedBy": "admin", "Description": "UnAck", "Timestamp": "2025-09-13 00:00:00.0"},
     ],
     "Notes": [
-        {"CreatedBy": "admin", "Description": "checked by ops", "Timestamp": "1757753000000"}
+        {
+            "CreatedBy": "admin",
+            "Description": "Alarm unacknowledged",
+            "Timestamp": "1757753100000",
+        },
+        {"CreatedBy": "admin", "Description": "checked by ops", "Timestamp": "1757753000000"},
     ],
 }
 ALARM_ACKED = {
@@ -116,8 +141,26 @@ ALARM_ACKED = {
     "Created": "1757740000000",
     "Updated": "1757740000000",
     "Events": [],
-    "AckHist": [{"CreatedBy": "admin", "Description": "Ack", "Timestamp": "1757741000000"}],
+    "AckHist": [{"CreatedBy": "admin", "Description": "Ack", "Timestamp": "2025-09-13 00:00:00.0"}],
     "Notes": [],
+}
+# A pod-health alarm as seen live 2026-09-14 (dates shifted to the fixture year): open,
+# events_count 0, NO "Events" key at all, unchanged for weeks — Crosswork never
+# auto-clears these. Created/Updated 2025-08-07 15:30/16:00Z = 37.9 days before NOW.
+ALARM_STALE = {
+    "AlarmId": "a-stale",
+    "AlarmCategory": "System",
+    "State": "Major",
+    "Acknowledge": False,
+    "Description": "cwm-api-service is down.",
+    "object_id": "cwm-solutions-inventory",
+    "object_description": "cwm-api-service",
+    "origin_app_id": "capp-cwm-solutions",
+    "origin_service_id": "cwm-solutions-inventory-57b9448ffb-c8zxt",
+    "event_type": 0,
+    "events_count": 0,
+    "Created": "1754580624000",
+    "Updated": "1754582426000",
 }
 ALARM_CLEARED = {
     "AlarmId": "a-3",
@@ -138,6 +181,7 @@ ALARM_CLEARED = {
     "Notes": [],
 }
 ALL_ALARMS = {"state": "Success", "alarms": [ALARM_ACKED, ALARM, ALARM_CLEARED]}
+ALL_WITH_STALE = {"state": "Success", "alarms": [ALARM_ACKED, ALARM_STALE, ALARM, ALARM_CLEARED]}
 
 # Verified event shape (alarms/v1/event/query).
 EVENT = {
@@ -290,8 +334,23 @@ def sent(route: respx.Route, index: int = 0) -> dict:
     return json.loads(route.calls[index].request.content)
 
 
+PAGE0_OPEN = {"openAlarmsOnly": True, "criteria": alarm_criteria(ALARM_FETCH_PAGE, 0)}
+PAGE0_ALL = {"openAlarmsOnly": False, "criteria": alarm_criteria(ALARM_FETCH_PAGE, 0)}
+
+
 def mock_all_alarms(body: dict | None = None) -> respx.Route:
-    return respx.post(QUERY_URL).mock(return_value=httpx.Response(200, json=body or ALL_ALARMS))
+    """The alarms/v1 query: like the platform, ``openAlarmsOnly: true`` answers only the
+    alarms whose State is not Clear; an explicit ``body`` is answered verbatim."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if body is not None:
+            return httpx.Response(200, json=body)
+        if json.loads(request.content).get("openAlarmsOnly"):
+            rows = [a for a in ALL_ALARMS["alarms"] if a["State"] != "Clear"]
+            return httpx.Response(200, json={"state": "Success", "alarms": rows})
+        return httpx.Response(200, json=ALL_ALARMS)
+
+    return respx.post(QUERY_URL).mock(side_effect=answer)
 
 
 # --- registration / gating ---------------------------------------------------
@@ -338,6 +397,81 @@ def test_filter_alarms_sorts_newest_updated_first():
     assert [a["AlarmId"] for a in filter_alarms(ALL_ALARMS["alarms"])] == ["a-3", ALARM_ID, "a-2"]
     assert [a["AlarmId"] for a in filter_alarms(ALL_ALARMS["alarms"], acknowledged=True)] == ["a-2"]
     assert [a["AlarmId"] for a in filter_alarms(ALL_ALARMS["alarms"], text="p2 (")] == [ALARM_ID]
+
+
+def test_sort_alarms_created_desc_and_platform_order():
+    """The platform order is not newest-first (verified live 2026-09-14): every order
+    is applied client-side. Created: P2 (09-13 08:00) > a-2 (09-13 05:06) > a-3 (09-12)."""
+    alarms = ALL_ALARMS["alarms"]
+    ids = lambda rows: [a["AlarmId"] for a in rows]  # noqa: E731
+    assert ids(sort_alarms(alarms, "created_desc")) == [ALARM_ID, "a-2", "a-3"]
+    assert ids(sort_alarms(alarms, "updated_desc")) == ["a-3", ALARM_ID, "a-2"]
+    assert ids(sort_alarms(alarms, "platform")) == ["a-2", ALARM_ID, "a-3"]
+    assert ids(filter_alarms(alarms, sort="created_desc")) == [ALARM_ID, "a-2", "a-3"]
+    assert ids(filter_alarms(alarms, sort="platform")) == ["a-2", ALARM_ID, "a-3"]
+    assert ALARM_SORTS == ("updated_desc", "created_desc", "platform")
+    with pytest.raises(
+        PlatformError, match="Unknown sort order 'newest'. Use one of: updated_desc"
+    ):
+        canonical("newest", ALARM_SORTS, "sort order")
+
+
+def test_age_text_units_and_unparseable():
+    assert age_text("1757750400000", NOW) == "1d"  # 2025-09-13T08:00Z -> 28 h
+    assert age_text(str(int(NOW.timestamp() * 1000) - 5 * 3600 * 1000), NOW) == "5h"
+    assert age_text(str(int(NOW.timestamp() * 1000) - 12 * 60 * 1000), NOW) == "12m"
+    assert age_text(str(int(NOW.timestamp() * 1000) - 30 * 1000), NOW) == "<1m"
+    assert age_text(str(int(NOW.timestamp() * 1000) + 60 * 1000), NOW) == "<1m"  # clock skew
+    assert age_text("1754580624000", NOW) == "37d"
+    assert age_text(None, NOW) == "-" and age_text("", NOW) == "-" and age_text("x", NOW) == "-"
+    assert age_text("0", NOW) == "-"
+
+
+def test_event_count_and_is_stale():
+    assert event_count(ALARM) == 2
+    assert event_count(ALARM_STALE) == 0  # events_count 0 and no Events key at all
+    assert event_count({"Events": [{"EventId": "e"}]}) == 1 and event_count({}) == 0
+    assert is_stale(ALARM_STALE, NOW) is True
+    assert is_stale(ALARM, NOW) is False  # has events
+    assert is_stale({**ALARM_STALE, "State": "Clear"}, NOW) is False  # cleared
+    assert is_stale({**ALARM_STALE, "Updated": str(int(NOW.timestamp() * 1000))}, NOW) is False
+    edge = str(int((NOW.timestamp() - STALE_ALARM_DAYS * 86400) * 1000))
+    assert is_stale({**ALARM_STALE, "Updated": edge}, NOW) is True
+    assert is_stale({**ALARM_STALE, "Updated": str(int(edge) + 1000)}, NOW) is False
+    assert is_stale({**ALARM_STALE, "Updated": None, "Created": None}, NOW) is False
+
+
+def test_history_stamp_date_only_epoch_and_raw():
+    assert history_stamp("2026-09-14 00:00:00.0") == "2026-09-14 (date only)"
+    assert history_stamp("2026-09-14T00:00:00") == "2026-09-14 (date only)"
+    assert history_stamp("1757753000000") == "2025-09-13T08:43:20Z"
+    assert history_stamp("2026-09-14 02:16:17.0") == "2026-09-14 02:16:17.0"  # verbatim
+    assert history_stamp(None) == "-"
+
+
+def test_alarm_line_and_stale_footer():
+    assert alarm_line(ALARM_STALE, NOW) == (
+        "- [Major] cwm-api-service — cwm-api-service is down. (a-stale, ack=False, events=0, "
+        "created=2025-08-07T15:30:24Z, updated=2025-08-07T16:00:26Z, age=37d)"
+    )
+    assert alarm_line({}, NOW) == "- [?] ? — ? (?, ack=?, events=0, created=-, updated=-, age=-)"
+    assert stale_alarm_footer([ALARM, ALARM_ACKED], NOW) == []
+    footer = stale_alarm_footer([ALARM, ALARM_STALE], NOW)
+    assert footer[0] == ""
+    # The verb agrees with the count, and the hint is generic: the heuristic fires on
+    # ANY open 0-event alarm, so the pod-health check is scoped to "<pod> is down.".
+    assert footer[1].startswith(
+        f"Stale-alarm check: 1 of the alarms shown has 0 events and no update for "
+        f"{STALE_ALARM_DAYS}+ days. Possibly stale — Crosswork does not auto-clear such alarms "
+        "(verified live 2026-09-14 on pod-health alarms)."
+    )
+    assert (
+        'For "<pod> is down." alarms confirm with cnc_get_cluster_health / '
+        "cnc_list_microservices(app_id=...); for any other alarm verify the underlying "
+        "condition before reporting it as current."
+    ) in footer[1]
+    two = stale_alarm_footer([ALARM_STALE, {**ALARM_STALE, "AlarmId": "a-stale-2"}], NOW)
+    assert two[1].startswith("Stale-alarm check: 2 of the alarms shown have 0 events")
 
 
 def test_canonical_is_case_insensitive_and_blank_is_none():
@@ -395,30 +529,145 @@ def test_check_lifecycle_verified_answers():
 
 
 @respx.mock
-async def test_get_alarm_uses_the_no_limit_criteria_and_renders_history(settings):
+async def test_get_alarm_pages_open_alarms_first_and_renders_history(settings):
     route = mock_all_alarms()
     text = await call_tool_text(build(settings), "cnc_get_alarm", {"alarm_id": ALARM_ID})
-    assert sent(route) == {"openAlarmsOnly": False, "criteria": ALL_ALARMS_CRITERIA}
-    assert ALL_ALARMS_CRITERIA == "select * from alarm"
+    # An open alarm is found in the open-only scope: one page, no second pass.
+    assert route.call_count == 1 and sent(route) == PAGE0_OPEN
+    assert alarm_criteria(ALARM_FETCH_PAGE, 0) == "select * from alarm limit 200 page 0"
     assert f"# Alarm {ALARM_ID}" in text
     assert "- State: Major (category System)" in text
     assert "- Acknowledged: False" in text
     assert f"- Object: Device P2 ({P2_UUID}) (object_id {P2_UUID})" in text
-    assert "- Created: 2025-09-13T08:00:00Z — Updated: 2025-09-13T09:00:00Z" in text
+    assert "- Created: 2025-09-13T08:00:00Z (age " in text
+    assert ") — Updated: 2025-09-13T09:00:00Z (" in text and " ago)" in text
     assert "- Events: 2" in text and "[Major] SNMP timeout (e-1, 2025-09-13T08:00:00Z)" in text
+    assert "Stale-alarm check" not in text  # it has events
     assert "## Acknowledgement history (2)" in text
-    assert "- 2025-09-13T08:10:00Z admin: Ack" in text
-    assert "- 2025-09-13T08:26:40Z admin: UnAck" in text
-    assert "## Notes (1)" in text and "admin: checked by ops" in text
+    assert "(AckHist timestamps are date-only on this platform;" in text
+    assert (
+        "a note-less ack/un-ack writes the platform note 'Alarm acknowledged' / "
+        "'Alarm unacknowledged', an ack with a note stores that note instead."
+    ) in text
+    # Date-only stamps are rendered as such (never as a bogus ISO time), list order kept.
+    assert text.index("- 2025-09-13 (date only) admin: Ack") < text.index(
+        "- 2025-09-13 (date only) admin: UnAck"
+    )
+    assert "## Notes (2, newest first, permanent)" in text
+    assert text.index("- 2025-09-13T08:45:00Z admin: Alarm unacknowledged") < text.index(
+        "- 2025-09-13T08:43:20Z admin: checked by ops"
+    )
+
+
+def test_alarm_markdown_sorts_notes_newest_first_and_flags_stale_alarms():
+    reversed_notes = {**ALARM, "Notes": list(reversed(ALARM["Notes"]))}
+    text = alarm_markdown(reversed_notes, NOW)
+    assert text.index("Alarm unacknowledged") < text.index("checked by ops")
+    text = alarm_markdown(ALARM_STALE, NOW)
+    assert (
+        "- Created: 2025-08-07T15:30:24Z (age 37d) — Updated: 2025-08-07T16:00:26Z (37d ago)"
+        in (text)
+    )
+    assert "- Events: 0" in text
+    assert (
+        "- Stale-alarm check: 0 events and no update for 37d. Possibly stale — Crosswork does "
+        "not auto-clear such alarms (verified live 2026-09-14 on pod-health alarms). For "
+        '"<pod> is down." alarms confirm with cnc_get_cluster_health / '
+        "cnc_list_microservices(app_id=...); for any other alarm verify the underlying "
+        "condition before reporting it as current."
+    ) in text
+    assert "## Acknowledgement history (0)\n- none" in text
+    assert "## Notes (0, newest first, permanent)\n- none" in text
 
 
 @respx.mock
 async def test_get_alarm_json_is_the_raw_alarm_and_finds_cleared_ones(settings):
-    mock_all_alarms()
+    route = mock_all_alarms()
     text = await call_tool_text(
         build(settings), "cnc_get_alarm", {"alarm_id": "A-3", "response_format": "json"}
     )
     assert json.loads(text) == ALARM_CLEARED
+    # Not open -> second pass over open+cleared (page 0 of each scope).
+    assert route.call_count == 2
+    assert sent(route, 0) == PAGE0_OPEN and sent(route, 1) == PAGE0_ALL
+
+
+def synthetic_alarms(start: int, count: int, state: str = "Info") -> list[dict]:
+    return [
+        {
+            "AlarmId": f"syn-{n}",
+            "AlarmCategory": "System",
+            "State": state,
+            "Acknowledge": False,
+            "Description": f"synthetic {n}",
+            "object_description": "obj",
+            "events_count": 1,
+            "Created": str(1757750400000 + n),
+            "Updated": str(1757750400000 + n),
+        }
+        for n in range(start, start + count)
+    ]
+
+
+def mock_paged_alarms(pages: list[list[dict]]) -> respx.Route:
+    """Answer ``limit N page M`` with pages[M] (empty beyond the last), any scope."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        criteria = json.loads(request.content)["criteria"]
+        assert criteria.startswith(f"select * from alarm limit {ALARM_FETCH_PAGE} page ")
+        page = int(criteria.rsplit(" ", 1)[1])
+        rows = pages[page] if page < len(pages) else []
+        return httpx.Response(200, json={"state": "Success", "alarms": rows})
+
+    return respx.post(QUERY_URL).mock(side_effect=answer)
+
+
+@respx.mock
+async def test_alarm_fetch_pages_until_a_short_page_and_dedupes(settings):
+    """The no-limit criteria caps at 100 rows (verified live 2026-09-14), so the
+    collection is paged with limit 200 until a page comes back short; a row repeated
+    across pages is kept once."""
+    full = synthetic_alarms(0, ALARM_FETCH_PAGE)
+    route = mock_paged_alarms([full, [full[0], *synthetic_alarms(ALARM_FETCH_PAGE, 3), ALARM]])
+    text = await call_tool_text(
+        build(settings),
+        "cnc_search_alarms",
+        {"open_only": False, "limit": 1, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert route.call_count == 2  # page 1 was short -> no page 2
+    assert sent(route, 0)["criteria"] == alarm_criteria(ALARM_FETCH_PAGE, 0)
+    assert sent(route, 1)["criteria"] == alarm_criteria(ALARM_FETCH_PAGE, 1)
+    assert data["fetched"] == ALARM_FETCH_PAGE + 4 and data["total"] == ALARM_FETCH_PAGE + 4
+    assert data["items"][0]["AlarmId"] == ALARM_ID  # newest Updated, found on page 1
+
+
+@respx.mock
+async def test_get_alarm_beyond_the_first_page_is_found(settings):
+    """The live failure mode: an open alarm that the capped no-limit read dropped."""
+    route = mock_paged_alarms([synthetic_alarms(0, ALARM_FETCH_PAGE), [ALARM]])
+    text = await call_tool_text(build(settings), "cnc_get_alarm", {"alarm_id": ALARM_ID})
+    assert f"# Alarm {ALARM_ID}" in text and route.call_count == 2
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"text": "P2 is unreachable", "limit": 5}
+    )
+    assert ALARM_ID in text and f"{ALARM_FETCH_PAGE + 1} fetched" in text
+
+
+@respx.mock
+async def test_alarm_fetch_runaway_guard_stops_and_warns(settings, monkeypatch, caplog):
+    monkeypatch.setattr(fault, "ALARM_FETCH_MAX_PAGES", 2)
+    full = synthetic_alarms(0, ALARM_FETCH_PAGE)
+    route = mock_paged_alarms([full, full, full, full])
+    with caplog.at_level("WARNING", logger="cnc_mcp.tools.fault"):
+        text = await call_tool_text(
+            build(settings),
+            "cnc_search_alarms",
+            {"open_only": False, "limit": 1, "response_format": "json"},
+        )
+    assert route.call_count == 2
+    assert json.loads(text)["fetched"] == ALARM_FETCH_PAGE  # the repeated page was deduped
+    assert "alarm fetch stopped after 2 pages" in caplog.text
 
 
 @respx.mock
@@ -460,16 +709,69 @@ async def test_search_alarms_filters_sorts_and_caps_client_side(settings):
     text = await call_tool_text(
         build(settings), "cnc_search_alarms", {"text": "UNREACHABLE", "open_only": False}
     )
-    assert sent(route) == {"openAlarmsOnly": False, "criteria": ALL_ALARMS_CRITERIA}
+    assert route.call_count == 1 and sent(route) == PAGE0_ALL
     lines = [line for line in text.splitlines() if line.startswith("- [")]
-    # Newest Updated first: the cleared P1 alarm (Updated 1757760000000) before P2.
-    assert lines == [
-        "- [Clear] Device P1 (p1) — Device P1 is unreachable (a-3, ack=False, "
-        "updated=2025-09-13T10:40:00Z)",
+    # Newest Updated first: the cleared P1 alarm (Updated 1757760000000) before P2. Every
+    # line carries state, ack flag, event count, created/updated ISO and the age (the age
+    # depends on the wall clock, so it is checked by shape only).
+    assert len(lines) == 2
+    assert lines[0].startswith(
+        "- [Clear] Device P1 (p1) — Device P1 is unreachable (a-3, ack=False, events=2, "
+        "created=2025-09-12T18:00:00Z, updated=2025-09-13T10:40:00Z, age="
+    )
+    assert lines[1].startswith(
         f"- [Major] Device P2 ({P2_UUID}) — Device P2 is unreachable ({ALARM_ID}, ack=False, "
-        "updated=2025-09-13T09:00:00Z)",
-    ]
-    assert "2 shown of 2 matches, 3 fetched, open and cleared" in text
+        "events=2, created=2025-09-13T08:00:00Z, updated=2025-09-13T09:00:00Z, age="
+    )
+    assert all(line.endswith("d)") for line in lines)  # the fixtures are a year old
+    assert "2 shown of 2 matches, 3 fetched, open and cleared, sort updated_desc" in text
+    assert "Stale-alarm check" not in text
+
+
+@respx.mock
+async def test_search_alarms_sort_parameter(settings):
+    route = mock_all_alarms()
+    text = await call_tool_text(
+        build(settings),
+        "cnc_search_alarms",
+        {"open_only": False, "sort": "created_desc", "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["sort"] == "created_desc"
+    assert [a["AlarmId"] for a in data["items"]] == [ALARM_ID, "a-2", "a-3"]
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"open_only": False, "sort": "PLATFORM"}
+    )
+    assert "sort platform)" in text
+    lines = [line for line in text.splitlines() if line.startswith("- [")]
+    assert [line.split(", ack=")[0].rsplit("(", 1)[1] for line in lines] == ["a-2", ALARM_ID, "a-3"]
+    assert route.call_count == 2
+    text = await call_tool_text(build(settings), "cnc_search_alarms", {"sort": "newest"})
+    assert text.startswith("Error: Unknown sort order 'newest'. Use one of: updated_desc")
+    assert route.call_count == 2  # rejected before any call
+
+
+@respx.mock
+async def test_search_alarms_flags_stale_pod_health_alarms(settings):
+    mock_all_alarms(ALL_WITH_STALE)
+    text = await call_tool_text(build(settings), "cnc_search_alarms", {"state": "Major"})
+    assert (
+        "- [Major] cwm-api-service — cwm-api-service is down. (a-stale, ack=False, events=0, "
+        in (text)
+    )
+    assert text.rstrip().endswith(
+        "Stale-alarm check: 1 of the alarms shown has 0 events and no update for "
+        f"{STALE_ALARM_DAYS}+ days. Possibly stale — Crosswork does not auto-clear such alarms "
+        '(verified live 2026-09-14 on pod-health alarms). For "<pod> is down." alarms confirm '
+        "with cnc_get_cluster_health / cnc_list_microservices(app_id=...); for any other alarm "
+        "verify the underlying condition before reporting it as current."
+    )
+    # The footer counts only the alarms SHOWN (limit applies first).
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"state": "Major", "sort": "created_desc", "limit": 1}
+    )
+    assert "a-stale" not in text and "Stale-alarm check" not in text
+    assert "1 more matched; raise limit or narrow." in text
 
 
 @respx.mock
@@ -480,7 +782,7 @@ async def test_search_alarms_default_scope_state_and_ack_filters(settings):
         "cnc_search_alarms",
         {"state": "critical", "acknowledged": True, "category": "system", "limit": 1},
     )
-    assert sent(route) == {"openAlarmsOnly": True, "criteria": ALL_ALARMS_CRITERIA}
+    assert route.call_count == 1 and sent(route) == PAGE0_OPEN
     assert "- [Critical] Data Gateway dg-01 — Collection job failed (a-2, ack=True" in text
     assert ALARM_ID not in text and "a-3" not in text
 
@@ -489,7 +791,9 @@ async def test_search_alarms_default_scope_state_and_ack_filters(settings):
 async def test_search_alarms_limit_caps_and_reports_the_rest(settings):
     mock_all_alarms()
     text = await call_tool_text(
-        build(settings), "cnc_search_alarms", {"limit": 1, "response_format": "json"}
+        build(settings),
+        "cnc_search_alarms",
+        {"open_only": False, "limit": 1, "response_format": "json"},
     )
     data = json.loads(text)
     assert data["total"] == 3 and data["count"] == 1 and data["truncated"] is True
@@ -901,10 +1205,18 @@ async def test_acknowledge_alarm_resolves_then_puts(make_settings):
         "cnc_acknowledge_alarm",
         {"alarm_id": ALARM_ID, "note": "INC-1234"},
     )
-    assert sent(query) == {"openAlarmsOnly": False, "criteria": ALL_ALARMS_CRITERIA}
+    assert query.call_count == 1 and sent(query) == PAGE0_OPEN
     assert sent(put) == {"alarmId": ALARM_ID, "ack": True, "note": "INC-1234"}
     assert text.startswith(f"Alarm {ALARM_ID} acknowledged. The flag settles within a few seconds")
     assert "re-read with cnc_get_alarm" in text
+    # The permanent residue is spelled out (no delete API for AckHist entries or notes).
+    assert (
+        "Residue: an AckHist 'Ack' entry, the note 'INC-1234' as a Notes entry — permanent, "
+        "no delete API."
+    ) in text.split("\n\n", 1)[0]
+    # With a note the platform stores only that note (observed live): no platform note.
+    assert "platform note" not in text.split("\n\n", 1)[0]
+    assert "Alarm unacknowledged" not in text.split("\n\n", 1)[0]
     data = json.loads(text.split("\n\n", 1)[1])
     assert data["acknowledge"] is True and data["note"] == "INC-1234"
     assert data["before"] == {
@@ -929,6 +1241,92 @@ async def test_unacknowledge_without_note_omits_the_key(make_settings):
     )
     assert sent(put) == {"alarmId": "a-2", "ack": False}
     assert text.startswith("Alarm a-2 un-acknowledged.")
+    # An un-ack makes the platform append its own permanent note (verified live).
+    assert (
+        "Residue: an AckHist 'UnAck' entry, the platform note 'Alarm unacknowledged' — "
+        "permanent, no delete API."
+    ) in text.split("\n\n", 1)[0]
+
+
+@respx.mock
+async def test_acknowledge_without_note_reports_the_platform_note(make_settings):
+    """A note-less ack is NOT note-free: the platform appends 'Alarm acknowledged'
+    (observed live on the 2026-09-13 scout alarm — the text appears in no script or
+    test, yet sits in the Notes between two 'Alarm unacknowledged' entries)."""
+    mock_all_alarms()
+    put = respx.put(ACK_URL).mock(
+        return_value=httpx.Response(200, json={"state": "Success", "Message": "admin"})
+    )
+    text = await call_tool_text(
+        writable(make_settings), "cnc_acknowledge_alarm", {"alarm_id": ALARM_ID}
+    )
+    assert sent(put) == {"alarmId": ALARM_ID, "ack": True}
+    head = text.split("\n\n", 1)[0]
+    assert head.startswith(f"Alarm {ALARM_ID} acknowledged.")
+    assert (
+        "Residue: an AckHist 'Ack' entry, the platform note 'Alarm acknowledged' — "
+        "permanent, no delete API."
+    ) in head
+    assert "Alarm unacknowledged" not in head
+    assert json.loads(text.split("\n\n", 1)[1])["note"] is None
+
+
+@respx.mock
+async def test_unacknowledge_with_note_reports_the_note_and_hedges_the_platform_note(
+    make_settings,
+):
+    """Every live un-ack was note-less, so whether a user note replaces the platform's
+    'Alarm unacknowledged' (as it does for an ack) is unverified — say so."""
+    mock_all_alarms()
+    put = respx.put(ACK_URL).mock(
+        return_value=httpx.Response(200, json={"state": "Success", "Message": "admin"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_acknowledge_alarm",
+        {"alarm_id": "a-2", "acknowledge": False, "note": "handing back"},
+    )
+    assert sent(put) == {"alarmId": "a-2", "ack": False, "note": "handing back"}
+    head = text.split("\n\n", 1)[0]
+    assert (
+        "Residue: an AckHist 'UnAck' entry, the note 'handing back' as a Notes entry "
+        "(whether the platform also adds 'Alarm unacknowledged' next to a user note is "
+        "unverified) — permanent, no delete API."
+    ) in head
+    assert "the platform note" not in head
+
+
+async def test_alarm_tool_docstrings_state_the_verified_facts(make_settings):
+    """The agent-facing descriptions carry the live-verified ordering / residue facts."""
+    tools = {t.name: t.description or "" for t in await writable(make_settings).list_tools()}
+    events = tools["cnc_list_events"]
+    assert "newest first" in events and "verified live 2026-09-14" in events
+    assert "Timestamp descending" in events
+    search = tools["cnc_search_alarms"]
+    assert "NOT newest-first" in search and "sort='created_desc'" in search
+    # The stale-alarm advice is generic (the heuristic is), with the pod-health check
+    # scoped to "<pod> is down." alarms.
+    for doc in (search, tools["cnc_get_alarm"]):
+        flat = " ".join(doc.split())  # docstrings wrap mid-phrase
+        assert "does not auto-clear such alarms" in flat
+        assert 'For "<pod> is down." alarms' in flat and "cnc_get_cluster_health" in flat
+        assert "verify the underlying condition" in flat
+        assert "does not auto-clear pod-health alarms" not in flat
+    assert "DATE-ONLY" in tools["cnc_get_alarm"]
+    assert '"Alarm acknowledged" / "Alarm unacknowledged"' in tools["cnc_get_alarm"]
+    ack = tools["cnc_acknowledge_alarm"]
+    assert "PERMANENT RESIDUE" in ack and "Alarm unacknowledged" in ack and "DATE-ONLY" in ack
+    # A note-less ack stores the platform note 'Alarm acknowledged' (observed live);
+    # the old "unverified (every live ack carried one)" claim is gone.
+    assert "Alarm acknowledged" in ack and "with a note only that note is stored" in ack
+    assert "every live ack carried one" not in ack
+    assert "un-ack WITH a note" in ack and "UNVERIFIED" in ack
+    annotate = tools["cnc_annotate_alarm"]
+    assert "permanent" in annotate.lower() and '"Alarm acknowledged"' in annotate
+    schema = {t.name: t.input_schema for t in await writable(make_settings).list_tools()}
+    assert schema["cnc_search_alarms"]["properties"]["sort"]["default"] == "updated_desc"
+    note_doc = schema["cnc_acknowledge_alarm"]["properties"]["note"]["description"]
+    assert "PERMANENT" in note_doc and "Omitting it does NOT avoid a note" in note_doc
 
 
 @respx.mock

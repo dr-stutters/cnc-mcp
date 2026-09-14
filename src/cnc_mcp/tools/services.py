@@ -12,7 +12,9 @@ circuit-style SR-TE CFP, the IETF L3NM / L2NM VPN models (``ietf-l3vpn-ntw`` /
 restconf``) is the index Crosswork builds over those NSO services — what the
 "Services & Traffic Engineering" UI lists — and answers *which* services exist,
 of which type, and whether each one's NSO plan is ``completed`` / ``failed`` /
-``in-progress``. The service objects themselves stay in NSO and are read
+``in-progress`` (the **CAT plan status** — one layer above NSO's own
+**nano-plan** component states ``init`` / ``config-apply`` / ``ready``; see
+:data:`PLAN_STATUSES`). The service objects themselves stay in NSO and are read
 through the proxy (``/crosswork/proxy/nso/restconf/data/<yang-path>``).
 
 Path conventions (verified live 2026-09-13, see the platform notes):
@@ -68,7 +70,7 @@ from typing import Annotated, Any, NamedTuple
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from cnc_mcp.crosswork import INVENTORY, unwrap
+from cnc_mcp.crosswork import INVENTORY, query_body, unwrap
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, finalize, pagination_envelope, to_json
 from cnc_mcp.polling import wait_until
@@ -94,9 +96,10 @@ NSO_DATA_PREFIX = f"{NSO_DATA}/"
 FP_BASE = "/crosswork/cat/cat-fp-deployment-manager-service/v1/twophasecommitrunner"
 FP_PACKAGES_URL = f"{FP_BASE}/packages"
 FP_DEPLOYMENT_INFO_URL = f"{FP_BASE}/getDeploymentInfo"
-# Inventory lookup used to turn a TE router-id into the NSO device name (the
-# head-end key of get-associated-services-for-transport), as Cisco's own
-# service-underlay-change example does before calling the RPC.
+# Inventory lookups used by get-associated-services-for-transport: a TE router-id ->
+# the NSO device name (the RPC's head-end key), as Cisco's own service-underlay-change
+# example does before calling the RPC, and a host name -> its TE router-id (the RPC's
+# endpoint key is the policy endpoint IP).
 NODES_QUERY_URL = f"{INVENTORY}/nodes/query"
 NSO_PROVIDER_FAMILY = "ROBOT_PROVIDER_NSO"
 NODE_LOOKUP_PAGE_SIZE = 200
@@ -110,9 +113,34 @@ RPC_SUB_SERVICE_COUNT = "get-sub-service-count"
 RPC_SUB_SERVICE_PATHS = "get-sub-service-paths"
 RPC_SERVICES_FOR_TRANSPORT = "get-associated-services-for-transport"
 
+# Two plan vocabularies meet in this module — keep them apart:
+#
+# - the **CAT plan status** (``get-service-plan-data`` -> ``status``): completed /
+#   in-progress / delete-in-progress / failed / unknown — what cnc_get_service_plan
+#   reports and what cnc_wait_for_service_plan's ``target`` takes;
+# - the **NSO nano-plan** behind it (the ``<list>-plan`` object read through the
+#   proxy, shown by cnc_get_service_plan(detail=true) and summarised on the
+#   "Plan:" line of the service_provisioning create tools): per component
+#   (``self``, one ``head-end`` per device) the states init -> config-apply ->
+#   ready, each reached / not-reached / failed.
+#
+# CAT ``completed`` == every nano-plan component reached ``ready`` (verified live:
+# the create tools' "Plan: ready" and CAT's "completed" describe the same service).
+# ``ready`` is therefore accepted as an alias of the ``completed`` target.
 PLAN_STATUSES = ("completed", "failed", "in-progress", "delete-in-progress", "unknown")
+PLAN_STATUS_ALIASES = {"ready": "completed"}
 PLAN_NOT_FOUND_MARKER = "service plan data not found"
 DEFAULT_WAIT_TARGET = "completed"
+PLAN_VOCABULARY_NOTE = (
+    "Two plan vocabularies: the CAT plan status (completed / in-progress / "
+    "delete-in-progress / failed / unknown — this tool and the cnc_wait_for_service_plan "
+    "targets) and, behind it, NSO's nano plan (per component self / head-end: the states "
+    "init -> config-apply -> ready, each reached / not-reached / failed — "
+    "cnc_get_service_plan(detail=true) and the 'Plan:' line of the create tools). CAT "
+    "'completed' = every nano-plan component reached 'ready'; 'in-progress' / "
+    "'delete-in-progress' = still converging; 'failed' = read error-info (and the plan "
+    "detail); 'unknown' = no plan data."
+)
 
 
 class ServiceType(NamedTuple):
@@ -597,6 +625,45 @@ def _modified_summary(meta: dict[str, Any]) -> str:
     return " ".join(parts) or kv_text(modified)
 
 
+_BOOKKEEPING_TIMES = ("created", "last-modified", "last-run")
+
+
+def has_bookkeeping(meta: dict[str, Any]) -> bool:
+    """True when NSO's service metadata (any timestamp / modified / plan-location) is present."""
+    return any(meta.get(k) not in (None, "", {}, []) for k in _NSO_BOOKKEEPING)
+
+
+def bookkeeping_lines(meta: dict[str, Any], *, label: str = "") -> list[str]:
+    """The two markdown bookkeeping lines (timestamps + plan-location, then modified)."""
+    prefix = f"- {label}: " if label else "- "
+    times = " ".join(f"{k}={meta.get(k) or '-'}" for k in _BOOKKEEPING_TIMES)
+    lines = [f"{prefix}{times} plan-location={meta.get('plan-location') or '-'}"]
+    modified = f"{'  ' if label else ''}- modified: {_modified_summary(meta)}"
+    if isinstance(meta.get("directly-modified"), dict):
+        modified += (
+            f" directly-modified: {_modified_summary({'modified': meta['directly-modified']})}"
+        )
+    lines.append(modified)
+    return lines
+
+
+def per_node_bookkeeping(service: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """``[(vpn-node-id, bookkeeping)]`` for the vpn-nodes that carry NSO's metadata.
+
+    The L3NM / L2NM function packs keep NSO's ``created`` / ``last-modified``
+    / ``last-run`` / ``modified`` / ``plan-location`` on each ``vpn-node``
+    (every node is its own NSO service point) and NOT on the ``vpn-service``
+    itself — seen live 2026-09-14 on an L3VPN read through the proxy, whose
+    top level carried none of them while both vpn-nodes did.
+    """
+    found = []
+    for node in vpn_nodes(service):
+        meta, _body = split_bookkeeping(node)
+        if has_bookkeeping(meta):
+            found.append((str(field(node, "vpn-node-id") or "?"), meta))
+    return found
+
+
 def plan_entry_of(response: dict[str, Any], plan_path: str) -> dict[str, Any] | None:
     """The ``service-plan-data`` entry for ``plan_path`` (the first one when no path matches)."""
     entries = dict_list(response.get("service-plan-data"))
@@ -633,11 +700,21 @@ def plan_not_found(entry: dict[str, Any] | None) -> bool:
 
 
 def normalize_plan_status(value: str) -> str:
-    """``' Completed '`` / ``'in_progress'`` -> a :data:`PLAN_STATUSES` member, else error."""
+    """``' Completed '`` / ``'in_progress'`` -> a :data:`PLAN_STATUSES` member, else error.
+
+    ``ready`` — the NSO nano-plan word the create tools print — is mapped to
+    the CAT status ``completed`` (:data:`PLAN_STATUS_ALIASES`); any other
+    nano-plan word (``config-apply``, ``init``, ``reached``) is refused with
+    the two vocabularies spelled out.
+    """
     key = (value or "").strip().lower().replace("_", "-")
+    key = PLAN_STATUS_ALIASES.get(key, key)
     if key not in PLAN_STATUSES:
         raise PlatformError(
-            f"Unknown plan status '{value}'. Use one of: {', '.join(PLAN_STATUSES)}."
+            f"Unknown plan status '{value}'. Use one of the CAT plan statuses: "
+            f"{', '.join(PLAN_STATUSES)} ('ready' is accepted as an alias of 'completed'). "
+            "init / config-apply / ready are NSO nano-plan component states, not CAT plan "
+            "statuses — a service whose nano plan shows self ready=reached is 'completed' here."
         )
     return key
 
@@ -695,9 +772,10 @@ def transport_ref(
     A head-end selects the SR-policy form (``color`` sent as a string —
     verified) and then needs color and endpoint; otherwise a tunnel-id
     selects the RSVP-TE form and needs source and destination. Nothing is
-    sent for a half-given reference. ``headend`` is passed through as given:
-    the tool resolves a router-id to the NSO device name before calling this
-    (see :func:`looks_like_ip_address`).
+    sent for a half-given reference. ``headend`` and ``endpoint`` are passed
+    through as given: the tool resolves a router-id headend to the NSO
+    device name, and a host-name endpoint to its TE router-id, before calling
+    this (see :func:`looks_like_ip_address`).
     """
     head = headend.strip()
     end = endpoint.strip()
@@ -709,10 +787,10 @@ def transport_ref(
         if missing:
             raise PlatformError(
                 f"An SR policy reference needs headend, color and endpoint; missing: "
-                f"{', '.join(missing)}. Keys come from cnc_get_vpn_underlay_transport (headend = "
-                "the NSO device name, i.e. the inventory host_name, e.g. 'PE1'; endpoint = the "
-                "policy endpoint IP). cnc_list_sr_policies keys on TE router-ids instead — a "
-                "dotted-quad headend is resolved to the device name through the inventory."
+                f"{', '.join(missing)}. Both ends take a host name or a TE router-id (headend "
+                "'PE1' or '10.0.0.1', endpoint 'PE2' or '10.0.0.3' — the inventory maps one to "
+                "the other); cnc_get_vpn_underlay_transport shows the keys as CAT records them, "
+                "cnc_list_sr_policies as TE router-ids."
             )
         return {"sr-policy-ref": {"headend": head, "color": str(color), "endpoint": end}}
     if tunnel:
@@ -780,6 +858,26 @@ def nodes_with_te_router_id(nodes: list[dict[str, Any]], router_id: str) -> list
     return matches
 
 
+def host_name_query(host_name: str) -> dict[str, Any]:
+    """The ``nodes/query`` body for one host name — the verified ``host_name`` filter (exact,
+    case-insensitive) with the verified ``filterData`` paging."""
+    return query_body({"host_name": host_name}, page_size=NODE_LOOKUP_PAGE_SIZE, page=0)
+
+
+def nodes_with_host_name(nodes: list[dict[str, Any]], host_name: str) -> list[dict[str, Any]]:
+    """The nodes whose ``host_name`` is ``host_name`` (case-insensitive, checked client-side
+    like :func:`nodes_with_te_router_id`)."""
+    wanted = host_name.strip().lower()
+    return [n for n in nodes if str(n.get("host_name") or "").strip().lower() == wanted]
+
+
+def te_router_id_of(node: dict[str, Any]) -> str | None:
+    """``routing_info.te_router_id`` of an inventory node, or None when unset."""
+    routing = node.get("routing_info")
+    value = routing.get("te_router_id") if isinstance(routing, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 # --- markdown renderers -------------------------------------------------------------
 
 
@@ -829,18 +927,17 @@ def service_markdown(
     plan_note: str | None,
 ) -> str:
     meta, body = split_bookkeeping(service)
-    lines = [
-        f"# Service {service_key_of(service)} ({yang_path})",
-        "",
-        f"- created={meta.get('created') or '-'} last-modified={meta.get('last-modified') or '-'} "
-        f"last-run={meta.get('last-run') or '-'} plan-location={meta.get('plan-location') or '-'}",
-        f"- modified: {_modified_summary(meta)}"
-        + (
-            f" directly-modified: {_modified_summary({'modified': meta['directly-modified']})}"
-            if isinstance(meta.get("directly-modified"), dict)
-            else ""
-        ),
-    ]
+    lines = [f"# Service {service_key_of(service)} ({yang_path})", ""]
+    per_node = per_node_bookkeeping(service) if not has_bookkeeping(meta) else []
+    if per_node:
+        lines.append(
+            "- NSO bookkeeping per vpn-node (the VPN function packs keep it on each node, "
+            "not on the vpn-service):"
+        )
+        for node_id, node_meta in per_node:
+            lines.extend(bookkeeping_lines(node_meta, label=f"vpn-node {node_id}"))
+    else:
+        lines.extend(bookkeeping_lines(meta))
     if plan_note:
         lines.append(f"- plan {plan_path or '-'}: {plan_note}")
     elif plan_path is not None:
@@ -863,14 +960,7 @@ def plan_markdown(
         other = {k: v for k, v in plan_object.items() if k not in ("plan",) and k != "name"}
         if other:
             lines.append(f"- other: {kv_text(other)}")
-    lines.extend(
-        [
-            "",
-            "Statuses: completed = NSO applied the service (every component reached "
-            "tailf-ncs:ready), in-progress / delete-in-progress = still converging, failed = "
-            "read error-info (and the plan detail), unknown = no plan data.",
-        ]
-    )
+    lines.extend(["", PLAN_VOCABULARY_NOTE])
     return "\n".join(lines)
 
 
@@ -1013,10 +1103,12 @@ def underlay_markdown(layer: VpnLayer, vpn_id: str, container: dict[str, Any]) -
         [
             "",
             "These are the transport objects Crosswork discovered the VPN riding on; "
-            "cnc_find_services_on_transport answers the inverse question (pass headend exactly "
-            "as shown — it is the NSO device name). cnc_get_sr_policy / cnc_get_rsvp_te_tunnel "
-            "show the transport itself but key on TE router-ids, not device names: map the "
-            "headend through cnc_get_device (routing_info.te_router_id) first.",
+            "cnc_find_services_on_transport answers the inverse question (pass the keys as "
+            "shown — headend is the NSO device name = inventory host_name, endpoint the policy "
+            "endpoint IP; it also accepts a headend router-id or an endpoint host name and maps "
+            "them through the inventory). cnc_get_sr_policy / cnc_get_rsvp_te_tunnel show the "
+            "transport itself but key on TE router-ids, not device names: map the headend "
+            "through cnc_get_device (routing_info.te_router_id) first.",
         ]
     )
     return "\n".join(lines)
@@ -1119,6 +1211,44 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "provider_node_id nor a host_name; pass the head-end's NSO device name as headend."
             )
         return name
+
+    async def resolve_endpoint_router_id(host_name: str) -> str:
+        """A device host name -> its TE router-id (the endpoint key of the RPC).
+
+        ``POST nodes/query`` with the verified ``host_name`` filter, re-checked
+        client-side (case-insensitive). PlatformError when no device (or
+        more than one) carries that host name, or the device has no
+        ``routing_info.te_router_id``.
+        """
+        data = await client.request_json(
+            "POST", NODES_QUERY_URL, json_body=host_name_query(host_name), retryable=True
+        )
+        items, _result_count, _total = unwrap(data, "data")
+        matches = nodes_with_host_name([n for n in items if isinstance(n, dict)], host_name)
+        if not matches:
+            raise PlatformError(
+                f"unknown endpoint '{host_name}': it is neither an IP literal nor the host_name "
+                "of an inventory device, so it cannot be mapped to the policy endpoint (a TE "
+                "router-id). Pass the tail-end's host name as cnc_list_devices shows it, or its "
+                "TE router-id (cnc_list_topology_nodes / cnc_get_device routing_info."
+                "te_router_id, e.g. '10.0.0.3'); cnc_get_vpn_underlay_transport shows the exact "
+                "endpoint CAT records for a VPN."
+            )
+        if len(matches) > 1:
+            names = ", ".join(str(n.get("host_name")) for n in matches[:5])
+            raise PlatformError(
+                f"endpoint '{host_name}' matches {len(matches)} inventory devices ({names}); "
+                "pass the tail-end's TE router-id instead."
+            )
+        router_id = te_router_id_of(matches[0])
+        if not router_id:
+            raise PlatformError(
+                f"endpoint '{host_name}' is an inventory device without a te_router_id, so its "
+                "policy endpoint address is unknown here. Pass the endpoint IP directly (e.g. "
+                "'10.0.0.3' — cnc_list_sr_policies shows it), or set routing_info.te_router_id "
+                "with cnc_update_device."
+            )
+        return router_id
 
     async def restconf_get(url: str, params: dict[str, Any] | None = None) -> tuple[bool, Any]:
         """GET with ``Accept: application/yang-data+json`` -> ``(found, data)``.
@@ -1251,18 +1381,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``service-type-filters`` body answers 400 malformed-message "Schema
         node ... was not found"), so this is always the whole inventory.
         Answers ``services-count-per-type[{service-type, count}]`` plus
-        ``total-services-count``; a type with no services is simply absent.
-        The cheapest "is anything provisioned?" check, and the number to page
-        cnc_list_services against.
+        ``total-services-count``. **Every known type is listed, count 0
+        included** (verified live 2026-09-14 on an empty inventory: all
+        seven types at 0, total 0 — a type with no services is NOT absent);
+        the markdown therefore folds the zero-count types into one line and
+        prints only the populated types as rows. The cheapest "is anything
+        provisioned?" check, and the number to page cnc_list_services
+        against.
 
         Args:
-            response_format: markdown (one line per type with its label and
-                count, then the total) or json (the raw response).
+            response_format: markdown (one line per populated type with its
+                label and count, one line naming the types at 0, then the
+                total) or json (every type as returned, zeros included).
 
         Returns:
             str: Markdown, or JSON {"total": int, "per_type": [{"service-type",
-            "label", "count": int}]}. "No services are provisioned." (not an
-            error) when the total is zero. "Error: ..." on an API failure.
+            "label", "count": int}]} (``per_type`` keeps the zero-count types
+            exactly as the RPC lists them). "No services are provisioned.
+            ... (CAT knows N types: ...)" (not an error) when the total is
+            zero, whether the RPC listed the types at 0 or none at all.
+            "Error: ..." on an API failure.
         """
         try:
             response = await call_cat_rpc(RPC_SERVICES_COUNT, {})
@@ -1277,16 +1415,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             total = _int_or(response.get("total-services-count"), sum(e["count"] for e in per_type))
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json({"total": total, "per_type": per_type}), settings)
-            if total == 0 and not per_type:
+            populated = [e for e in per_type if e["count"] > 0]
+            empty = [e for e in per_type if e["count"] <= 0]
+            empty_labels = ", ".join(e["label"] for e in empty)
+            if total == 0 and not populated:
+                known = (
+                    f" CAT knows {len(empty)} service types, all at 0: {empty_labels}."
+                    if empty
+                    else " The RPC listed no service types."
+                )
                 return finalize(
                     "No services are provisioned. The CAT inventory is empty — create one through "
                     "the service_provisioning tools (e.g. cnc_create_odn_template) or the "
-                    "Services & Traffic Engineering UI.",
+                    f"Services & Traffic Engineering UI.{known}",
                     settings,
                 )
             lines = [f"# Services in the CAT inventory ({total} total)", ""]
-            for entry in per_type:
+            for entry in populated:
                 lines.append(f"- **{entry['label']}**: {entry['count']} ({entry['service-type']})")
+            if empty:
+                lines.append(f"- types with no services ({len(empty)}): {empty_labels}")
             lines.extend(["", "List them with cnc_list_services (filter by service_type)."])
             return finalize("\n".join(lines), settings)
         except Exception as e:
@@ -1483,7 +1631,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``last-modified``, ``last-run``, ``modified{devices[], services[]}``,
         ``directly-modified``, ``plan-location``). The bookkeeping says when
         the service was committed and which devices it touched; the rest is
-        the service configuration in the CFP's YANG. The path is what
+        the service configuration in the CFP's YANG. **The VPN function
+        packs keep that bookkeeping per ``vpn-node``, not on the
+        ``vpn-service``** (seen live 2026-09-14 on an L3VPN: the top level
+        carried none of the keys, each vpn-node carried all of them), so for
+        an L3NM / L2NM service the header shows one bookkeeping line per
+        vpn-node instead of ``-``. The path is what
         cnc_list_services returned as ``yang-path`` (a leading ``/`` or the
         full proxy URL is normalised) and MUST be keyed (``.../<list>=<key>``):
         an unkeyed list path is refused before anything is sent, because the
@@ -1506,8 +1659,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             yang_path: the service's keyed data path relative to the proxy's
                 /data/.
             include_plan: also fetch the CAT plan status (default true).
-            response_format: markdown (key, bookkeeping, plan line, then the
-                service body as JSON) or json.
+            response_format: markdown (key, bookkeeping — per vpn-node for
+                a VPN service — plan line, then the service body as JSON)
+                or json.
 
         Returns:
             str: Markdown, or JSON {"yang_path", "plan_yang_path",
@@ -1595,13 +1749,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Read-only. ``POST .../cat-inventory-rpc:get-service-plan-data`` with
         ``{"service-plan-yang-path": ["<plan path>"]}`` -> ``service-plan-data
         [{yang-path, status, creation-time, last-updated-time, error-info
-        {message}?}]``. ``status`` is ``completed`` (NSO applied the service),
-        ``in-progress`` / ``delete-in-progress`` (converging), ``failed``
-        (read ``error-info`` and the nano plan) or ``unknown`` — verified: an
-        unknown plan path answers HTTP 200 with ``unknown`` and "service plan
-        data not found", which the tool reports as "No plan data for <path>"
-        (not an error: the service does not exist, was never committed, or —
-        for a guessed plan path — is tracked under another list). A service
+        {message}?}]``. ``status`` is the **CAT plan status**: ``completed``
+        (NSO applied the service), ``in-progress`` / ``delete-in-progress``
+        (converging), ``failed`` (read ``error-info`` and the nano plan) or
+        ``unknown`` — verified: an unknown plan path answers HTTP 200 with
+        ``unknown`` and "service plan data not found", which the tool reports
+        as "No plan data for <path>" (not an error: the service does not
+        exist, was never committed, or — for a guessed plan path — is tracked
+        under another list). That vocabulary is one layer above the **NSO
+        nano plan** (``detail=true``, and the "Plan:" line of the create
+        tools), whose components (``self``, one ``head-end`` per device) walk
+        the states ``init`` -> ``config-apply`` -> ``ready``, each ``reached``
+        / ``not-reached`` / ``failed``: CAT ``completed`` == every component
+        reached ``ready`` (the create tools' "Plan: ready"); do not look for
+        'ready' / 'config-apply' in the CAT status. A service
         path is accepted and mapped to its plan path through the documented
         per-type table (``cs-sr-te-policy`` -> ``cisco-cs-sr-te-cfp:
         cs-sr-te-plan``, ``vpn-service`` -> ``vpn-services/cisco-l3vpn-ntw:
@@ -1678,9 +1839,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description=(
-                    "The plan status that ends the wait: 'completed' (default), 'in-progress', "
-                    "'delete-in-progress', 'failed', or 'unknown' (= the plan is gone, after a "
-                    "delete)."
+                    "The CAT plan status that ends the wait: 'completed' (default), "
+                    "'in-progress', 'delete-in-progress', 'failed', or 'unknown' (= the plan is "
+                    "gone, after a delete). 'ready' — the NSO nano-plan word the create tools' "
+                    "'Plan:' line prints — is accepted as an alias of 'completed'; 'init' / "
+                    "'config-apply' are nano-plan component states, not targets."
                 ),
                 min_length=1,
                 max_length=40,
@@ -1696,9 +1859,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         """Poll a service's CAT plan status until it reaches ``target`` (or fails).
 
         Read-only convergence wait. Call it after a provisioning write
-        (cnc_create_odn_template, cnc_create_l3vpn, a delete, ...) instead of
-        polling cnc_get_service_plan in a loop. Polls ``get-service-plan-
-        data`` every ``interval_seconds``:
+        (cnc_create_odn_template, cnc_create_l3vpn_service, a delete, ...)
+        instead of polling cnc_get_service_plan in a loop. ``target`` is a
+        **CAT plan status** (completed / in-progress / delete-in-progress /
+        failed / unknown) — NOT an NSO nano-plan state: the create tools'
+        "Plan: ready — self: init=reached, ready=reached; ..." line
+        summarises the nano plan (component states init / config-apply /
+        ready), and that same service is ``completed`` here (verified live:
+        CAT reports 'completed' for the service the create tool called
+        'ready'); 'ready' is accepted as an alias for convenience. Polls
+        ``get-service-plan-data`` every ``interval_seconds``:
 
         - status == ``target`` -> success ("... is completed after Ns");
         - status ``failed`` (and target is not 'failed') -> the wait ends at
@@ -1714,7 +1884,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Args:
             plan_yang_path: the plan (or service) path.
-            target: the status to wait for (default 'completed').
+            target: the CAT plan status to wait for (default 'completed';
+                'ready' = 'completed').
             timeout_seconds, interval_seconds: the polling budget.
 
         Returns:
@@ -1722,8 +1893,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             plan entry; on timeout (NOT an error) "Service plan <path> not
             <target> after Ns; current status: ..." plus the last entry.
             "Error: service plan <path> FAILED ..." with error-info when the
-            plan fails; "Error: ..." for an unknown target / unkeyed path or
-            an API failure.
+            plan fails; "Error: Unknown plan status '<x>'. Use one of the CAT
+            plan statuses: ..." for a target outside the CAT vocabulary
+            (nothing sent); "Error: ..." for an unkeyed path or an API
+            failure.
         """
         try:
             wanted = normalize_plan_status(target)
@@ -2158,11 +2331,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description=(
-                    "SR policy head-end as the NSO device name (= the inventory host_name, e.g. "
-                    "'PE1' — what cnc_get_vpn_underlay_transport shows); selects the SR-policy "
-                    "lookup and needs color + endpoint. A TE router-id (e.g. '10.0.0.1', the "
-                    "headend cnc_list_sr_policies reports) is accepted and resolved to the "
-                    "device name through the inventory first."
+                    "SR policy head-end: host name or TE router-id (e.g. 'PE1' or '10.0.0.1'). "
+                    "Selects the SR-policy lookup and needs color + endpoint. The RPC keys on "
+                    "the NSO device name (= the inventory host_name, what "
+                    "cnc_get_vpn_underlay_transport shows); a router-id (what "
+                    "cnc_list_sr_policies reports) is resolved to it through the inventory first."
                 ),
                 max_length=253,
             ),
@@ -2172,7 +2345,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ] = 0,
         endpoint: Annotated[
             str,
-            Field(description="SR policy endpoint IP (e.g. '10.0.0.3').", max_length=64),
+            Field(
+                description=(
+                    "SR policy endpoint: host name or TE router-id (e.g. 'PE2' or '10.0.0.3'). "
+                    "The RPC keys on the endpoint IP (the tail-end's TE router-id, what "
+                    "cnc_get_vpn_underlay_transport / cnc_list_sr_policies show); a host name is "
+                    "resolved to the device's routing_info.te_router_id through the inventory "
+                    "first — an unknown name is an error, never an empty match."
+                ),
+                max_length=253,
+            ),
         ] = "",
         tunnel_id: Annotated[
             str,
@@ -2203,18 +2385,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         wire — verified), endpoint}`` when a headend is given, else
         ``te-tunnel-ref {tunnel-id, source, destination}`` (the document's
         ``transport-yang-path`` form is NOT accepted by this build). A
-        half-given reference is refused before anything is sent. **The
-        head-end key is the NSO device name** ("SR policy Headend Device ID"
-        in the CFP YANG; the inventory ``host_name``, as
-        cnc_get_vpn_underlay_transport shows it) — a TE router-id, which is
-        what cnc_list_sr_policies / the SR-PCE report, silently matches
-        nothing. So a headend that is an IP literal is first resolved through
-        ``POST /crosswork/inventory/v1/nodes/query`` with the
-        ``routing_info.te_router_id`` filter (the lookup Cisco's own
-        underlay-change example performs before this RPC) to the node's NSO
-        id (``providers_family.ROBOT_PROVIDER_NSO.providers[].
-        provider_node_id``, else ``host_name``); no or several matching
-        devices is an error. The answer is ``service-path[]`` (service
+        half-given reference is refused before anything is sent. **Both ends
+        of the SR policy key take a host name or a TE router-id**, but the
+        RPC itself is strict: **the head-end key is the NSO device name**
+        ("SR policy Headend Device ID" in the CFP YANG; the inventory
+        ``host_name``, as cnc_get_vpn_underlay_transport shows it) and **the
+        endpoint key is the policy endpoint IP** (the tail-end's TE
+        router-id) — the wrong form silently matches nothing. So a headend
+        that is an IP literal is resolved through ``POST /crosswork/
+        inventory/v1/nodes/query`` with the ``routing_info.te_router_id``
+        filter (the lookup Cisco's own underlay-change example performs
+        before this RPC) to the node's NSO id (``providers_family.
+        ROBOT_PROVIDER_NSO.providers[].provider_node_id``, else
+        ``host_name``), and an endpoint that is NOT an IP literal is resolved
+        through the same query with the ``host_name`` filter to the device's
+        ``routing_info.te_router_id`` (verified live 2026-09-14: 'PE2' ->
+        '10.0.0.3'); no or several matching devices, or a device without a
+        te_router_id, is an error naming the fix — an unknown name is never
+        sent as an empty match. The answer is ``service-path[]`` (service
         instance paths — feed them to cnc_get_service), or
         ``{"cat-inventory-rpc:output": {}}`` when nothing is associated
         (verified), reported as "No service uses that transport." Use it
@@ -2223,17 +2411,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Args:
             headend, color, endpoint: the SR policy key (all three); headend
-                is the NSO device name or a TE router-id to resolve.
+                and endpoint each a host name or a TE router-id.
             tunnel_id, source, destination: the RSVP-TE tunnel key (all three).
             response_format: markdown or json.
 
         Returns:
             str: Markdown, or JSON {"transport": {...the reference sent...},
-            "headend_resolved_from": "<router-id>"?, "count": int,
+            "headend_resolved_from": "<router-id>"?,
+            "endpoint_resolved_from": "<host name>"?, "count": int,
             "service_paths": [str]}. "No service uses that transport ..."
             (not an error) when the association is empty; "Error: ..." for
             an incomplete reference (nothing sent), a router-id no (or more
-            than one) inventory device carries, or an API failure.
+            than one) inventory device carries, an endpoint that is neither
+            an IP nor a known host name ("Error: unknown endpoint 'X' ..."),
+            or an API failure.
         """
         try:
             reference = transport_ref(
@@ -2245,10 +2436,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 destination=destination,
             )
             resolved_from: str | None = None
+            endpoint_from: str | None = None
             sr_ref = reference.get("sr-policy-ref")
             if sr_ref is not None and looks_like_ip_address(sr_ref["headend"]):
                 resolved_from = sr_ref["headend"]
                 sr_ref["headend"] = await resolve_headend_device(resolved_from)
+            if sr_ref is not None and not looks_like_ip_address(sr_ref["endpoint"]):
+                endpoint_from = sr_ref["endpoint"]
+                sr_ref["endpoint"] = await resolve_endpoint_router_id(endpoint_from)
             response = await call_cat_rpc(RPC_SERVICES_FOR_TRANSPORT, reference)
             raw = response.get("service-path")
             paths = [str(p) for p in raw] if isinstance(raw, list) else []
@@ -2260,10 +2455,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             )
             if resolved_from:
                 label += f" (headend resolved from router-id {resolved_from})"
+            if endpoint_from:
+                label += f" (endpoint resolved from host name {endpoint_from})"
             if response_format is ResponseFormat.JSON:
                 payload: dict[str, Any] = {"transport": reference}
                 if resolved_from:
                     payload["headend_resolved_from"] = resolved_from
+                if endpoint_from:
+                    payload["endpoint_resolved_from"] = endpoint_from
                 payload.update({"count": len(paths), "service_paths": paths})
                 return finalize(to_json(payload), settings)
             if not paths:

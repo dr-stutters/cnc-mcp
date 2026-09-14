@@ -48,6 +48,13 @@ from cnc_mcp.errors import PlatformError, format_error
 from cnc_mcp.formatting import ResponseFormat, finalize, to_json
 from cnc_mcp.polling import wait_until
 from cnc_mcp.safety import AppContext, register_tool
+from cnc_mcp.tools.fault import (
+    ALARM_SORTS,
+    DEFAULT_ALARM_SORT,
+    alarm_line,
+    sort_alarms,
+    stale_alarm_footer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,22 +166,32 @@ def _applications_markdown(apps: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _alarms_markdown(alarms: list[dict], envelope: dict[str, Any], open_only: bool) -> str:
+def _alarms_markdown(
+    alarms: list[dict], envelope: dict[str, Any], open_only: bool, sort: str
+) -> str:
+    """One :func:`fault.alarm_line` per alarm (State, object, ISO times, age) so a page
+    can be triaged as-is, plus the stale-alarm footer — the same rendering as
+    cnc_search_alarms / cnc_get_alarm."""
     scope = "open only" if open_only else "open and cleared"
-    lines = [f"# Alarms ({envelope['count']} shown, page {envelope['page']}, {scope})", ""]
+    order = "platform order (NOT newest-first)" if sort == "platform" else f"sorted {sort}"
+    lines = [
+        f"# Alarms ({envelope['count']} shown, page {envelope['page']}, {scope}, {order})",
+        "",
+    ]
     if not alarms:
         lines.append("No alarms returned.")
-    for a in alarms:
-        line = (
-            f"- [{a.get('AlarmCategory', '?')}] {a.get('Description', '?')} "
-            f"— created {a.get('Created', '?')}, id {a.get('AlarmId', '?')}"
-        )
-        if a.get("Acknowledge") is not None:
-            line += f", acknowledged: {a['Acknowledge']}"
-        if a.get("events_count") is not None:
-            line += f", events: {a['events_count']}"
-        lines.append(line)
+    lines.extend(alarm_line(a) for a in alarms)
+    lines.extend(stale_alarm_footer(alarms))
     lines.extend(_more_hint(envelope))
+    if sort != "platform":
+        lines.extend(
+            [
+                "",
+                "Sorting is per page (client-side): the platform pages in its own order, so "
+                "the newest alarm overall may sit on another page — cnc_search_alarms fetches "
+                "every alarm and sorts the whole set.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -429,28 +446,50 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ] = True,
         limit: Annotated[int, Field(description="Alarms per page (e.g. 20).", ge=1, le=200)] = 20,
         page: Annotated[int, Field(description="0-based page number (e.g. 0).", ge=0)] = 0,
+        sort: Annotated[
+            str,
+            Field(
+                description=(
+                    "Order of the alarms ON THIS PAGE: 'updated_desc' (default, newest "
+                    "change first), 'created_desc' (newest alarm first) or 'platform' (as "
+                    "Crosswork returns them — NOT newest-first, verified live). "
+                    "E.g. 'created_desc'."
+                ),
+                max_length=20,
+            ),
+        ] = DEFAULT_ALARM_SORT,
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
         """List Crosswork platform alarms (device reachability, collection,
-        application health, ...), newest first as the platform orders them.
+        application health, ...) one page at a time.
 
         Read-only. Use it to find out why something is unhealthy before digging
         into devices or providers. Alarms are paged with a SQL-like criteria
         string ('select * from alarm limit N page M'); no other filtering is
         exposed. The platform reports no total, so 'has_more' means the page came
-        back full — request the next page to check.
+        back full — request the next page to check. ORDER (verified live
+        2026-09-14): the platform does NOT page newest-first, so the rows are
+        re-sorted client-side per page (``sort``); to find the newest alarm
+        overall, or to filter by state/text, use cnc_search_alarms (it fetches
+        every alarm). Each markdown line is the shared alarm rendering ([State]
+        object — description, id, ack, events, created/updated as ISO times,
+        age); open alarms with 0 events that have not changed for 7+ days are
+        flagged as possibly stale (Crosswork does not auto-clear pod-health
+        alarms — confirm with cnc_get_cluster_health / cnc_list_microservices
+        before reporting an outage).
 
         Args:
             open_only: True for open alarms only (default), False for all.
             limit / page: page size and 0-based page number.
+            sort: per-page order: updated_desc (default) | created_desc | platform.
 
         Returns:
-            str: Markdown with one line per alarm (category, description, created
-            time, id, acknowledged flag, event count; the Events detail is
-            omitted), or JSON:
+            str: Markdown with one line per alarm ([State] object — description,
+            id, ack, events, created, updated, age), a stale-alarm note when
+            any qualifies, or JSON (items in the requested order):
             {"total": null, "count": int, "page": int, "page_size": int,
              "items": [{"AlarmId": str, "AlarmCategory": str, "Description": str,
                         "Created": str, "Updated": str, "Acknowledge": bool,
@@ -460,6 +499,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             On failure: "Error: <actionable message>".
         """
         try:
+            order = sort.strip().lower()
+            if order not in ALARM_SORTS:
+                raise PlatformError(
+                    f"Unknown sort '{sort}'. Use one of: {', '.join(ALARM_SORTS)}. "
+                    "Nothing was sent."
+                )
             body = {
                 "openAlarmsOnly": open_only,
                 "criteria": f"select * from alarm limit {limit} page {page}",
@@ -471,13 +516,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     f"Platform said: {str(data.get('error') or data.get('message') or data)[:300]}"
                 )
             alarms, _, _ = unwrap(data, "alarms")
-            alarms = [a for a in alarms if isinstance(a, dict)]
+            alarms = sort_alarms([a for a in alarms if isinstance(a, dict)], order)
             envelope = page_envelope(
                 alarms, result_count=None, total_count=None, page_size=limit, page=page
             )
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(envelope), settings)
-            return finalize(_alarms_markdown(alarms, envelope, open_only), settings)
+                return finalize(to_json({**envelope, "sort": order}), settings)
+            return finalize(_alarms_markdown(alarms, envelope, open_only, order), settings)
         except Exception as e:
             return format_error(e)
 

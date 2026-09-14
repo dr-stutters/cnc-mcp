@@ -56,7 +56,10 @@ Facts this module encodes (see the platform notes for the wire captures):
   bodies are undocumented and not exposed.
 - ``aaa/v1/role`` (the ``access_rights`` map) and ``aaa/v1/api`` are huge:
   markdown summarises them; json hands back the raw object and lets
-  ``finalize()`` truncate.
+  ``finalize()`` truncate (with a tool-specific hint). The microservice
+  endpoints have no paging at all — a whole platform is ~109 pods / 85k
+  characters of JSON (verified live 2026-09-14) — so cnc_list_microservices
+  pages client-side over what it fetched.
 
 Timestamps: app-manager ``start_time`` / ``completion_time`` / ``event_time``
 are epoch-millisecond strings (rendered via ``formatting.epoch_iso``);
@@ -76,7 +79,7 @@ from urllib.parse import quote
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from cnc_mcp.crosswork import AAA, PLATFORM
+from cnc_mcp.crosswork import AAA, PLATFORM, page_envelope
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, to_json
 from cnc_mcp.safety import AppContext, register_tool
@@ -141,6 +144,26 @@ _BANNER_ICON_CHOICES = " | ".join(BANNER_ICONS)
 # echoing server can never loop the tool.
 CAPP_PAGE_SIZE = 100
 CAPP_MAX_PAGES = 20
+
+# cnc_list_microservices pages client-side over what it fetched. JSON rows are
+# ~700-800 characters (a 109-pod platform is 85k characters unpaged, verified live
+# 2026-09-14), so 40 per page keeps a full JSON page under the default 40 000-char
+# response cap; markdown lines are ~100 characters.
+MICROSERVICE_PAGE_SIZE = 40
+MICROSERVICE_MAX_PAGE_SIZE = 500
+
+# Truncation advice for the tools whose full answer can exceed the response cap
+# (finalize() otherwise gives a generic hint that names no parameter).
+_MICROSERVICES_HINT = (
+    "Lower page_size (JSON rows are ~700 characters; 40 per page fit) or narrow with "
+    "app_id / node_id / health, then step through with page."
+)
+_LIMIT_HINT = "Lower limit."
+_ROLES_HINT = (
+    "Use markdown for the per-role summary, or cnc_get_role_permissions / "
+    "cnc_get_role_tasks for one role."
+)
+_SECURED_APIS_HINT = "Narrow with feature, or use markdown."
 
 # Password policy: the ``*Enable`` flag -> the value it gates (the flag names do not
 # all derive from the value names: ``FailedLoginsBefLoEnable`` gates
@@ -286,6 +309,12 @@ def _microservice_line(ms: dict[str, Any], app: str | None) -> str:
     if recommendation and recommendation.lower() != "none":
         line += f" — recommendation: {recommendation}"
     return line
+
+
+def _more_hint(envelope: dict[str, Any]) -> list[str]:
+    if envelope.get("has_more"):
+        return ["", f"More available: repeat with page={envelope['next_page']}."]
+    return []
 
 
 def _user_record(key: str, u: dict[str, Any]) -> dict[str, Any]:
@@ -645,7 +674,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         CPU / memory / disk usage.
 
         Read-only. Use it to find a node's ``node_id`` (its management IP, e.g.
-        '198.18.134.221') for cnc_get_cluster_node / cnc_list_microservices, and
+        '192.0.2.21') for cnc_get_cluster_node / cnc_list_microservices, and
         to spot a node running hot. A single-VM deployment shows one HYBRID
         node. Resource figures are the platform's own text ("30 %", "2.40
         cores", "94.29 GB"); ``node_cpu_summary`` / ``node_mem_summary`` are the
@@ -705,7 +734,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description="Node id from cnc_list_cluster_nodes — the node's management IP "
-                "(e.g. '198.18.134.221').",
+                "(e.g. '192.0.2.21').",
                 min_length=1,
                 max_length=200,
             ),
@@ -802,7 +831,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         node_id: Annotated[
             str | None,
             Field(
-                description="Node id (management IP, e.g. '198.18.134.221') to scope to. "
+                description="Node id (management IP, e.g. '192.0.2.21') to scope to. "
                 "Give at most one of app_id / node_id.",
                 max_length=200,
             ),
@@ -815,13 +844,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=20,
             ),
         ] = None,
+        page_size: Annotated[
+            int,
+            Field(
+                description=f"Microservices per page (e.g. {MICROSERVICE_PAGE_SIZE}). Paged "
+                "client-side over the fetched list. JSON rows are ~700 characters, so the "
+                f"default keeps a full JSON page under the 40 000-character response cap; "
+                f"markdown lines are ~100 characters, so page_size={MICROSERVICE_MAX_PAGE_SIZE} "
+                "lists a whole platform in one markdown call.",
+                ge=1,
+                le=MICROSERVICE_MAX_PAGE_SIZE,
+            ),
+        ] = MICROSERVICE_PAGE_SIZE,
+        page: Annotated[int, Field(description="0-based page number (e.g. 0).", ge=0)] = 0,
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
         """List Crosswork microservices (pods) with health, uptime and version —
-        for one application, for one node, or for the whole platform.
+        for one application, for one node, or for the whole platform — paged.
 
         Read-only. Use it to find the unhealthy pod behind a degraded
         application (health='degraded' or 'down'), to check a pod's uptime
@@ -834,20 +876,36 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         - neither: POST capp/installedapplicationid/query {} for the installed
           application ids, then one microservice query per application (ten on
           a single-VM CNC), each row tagged with its app.
-        The health filter is applied client-side.
+        The health filter and the paging are applied client-side: the platform
+        has no paging on these endpoints, so the whole scope is fetched every
+        call and ``page_size`` / ``page`` (0-based) cut a window out of it.
+        The default page_size of 40 exists because JSON rows are ~700
+        characters (verified live 2026-09-14: 109 pods across ten applications
+        are 85 000 characters unpaged, well past the 40 000-character response
+        cap) — markdown lines are ~100 characters, so page_size=500 lists a
+        whole platform in one markdown call.
+
+        Args:
+            app_id / node_id: scope (at most one). health: client-side filter.
+            page_size / page: client-side paging; ``has_more`` / ``next_page``
+                (JSON) or "More available: repeat with page=N" (markdown) say
+                when to continue.
 
         Returns:
             str: Markdown, one line per microservice:
             "**Name** app=<app> health=<health_state> up=<up_time> version=<Version>"
             plus "— recommendation: ..." when the platform has one; or JSON:
-            {"count": int,
+            {"total": <matching microservices>, "count": <on this page>,
+             "page": int, "page_size": int, "has_more": bool, "next_page": int|null,
+             "collection_total": <fetched before the health filter>,
              "items": [{"app": str|null, "Name", "health_state": "Healthy"|...,
                         "up_time": "207d 11h 30m 10s", "recommendation",
                         "description", "is_dynamic", "Version", "version_history",
                         "micro_service_action": {"actions": [{"action_name",
                                                               "action_id"}]}}]}
-            "No microservices ..." (not an error) when nothing matched. On
-            failure: "Error: <actionable message>".
+            "No microservices ..." / "Page N is past the end ..." (not errors)
+            when nothing is on the page. On failure: "Error: <actionable
+            message>".
         """
         try:
             app, node = _clean(app_id), _clean(node_id)
@@ -879,16 +937,40 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 per_app = await asyncio.gather(*(fetch_microservices(a) for a in app_ids))
                 for app, services in zip(app_ids, per_app, strict=True):
                     rows.extend({"app": app, **ms} for ms in services)
+            fetched = len(rows)
             if wanted:
                 rows = [r for r in rows if str(r.get("health_state", "")).lower() == wanted]
+            start = page * page_size
+            shown = rows[start : start + page_size]
+            envelope = page_envelope(
+                shown,
+                result_count=len(rows),
+                total_count=fetched,
+                page_size=page_size,
+                page=page,
+            )
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json({"count": len(rows), "items": rows}), settings)
+                return finalize(to_json(envelope), settings, hint=_MICROSERVICES_HINT)
             suffix = f", health={wanted}" if wanted else ""
-            lines = [f"# Microservices ({len(rows)}; {scope}{suffix})", ""]
+            if len(shown) == len(rows):
+                heading = f"# Microservices ({len(rows)}; {scope}{suffix})"
+            else:
+                heading = (
+                    f"# Microservices ({len(shown)} shown of {len(rows)}, page {page}; "
+                    f"{scope}{suffix})"
+                )
+            lines = [heading, ""]
             if not rows:
                 lines.append(f"No microservices for {scope}{suffix}.")
-            lines.extend(_microservice_line(r, r.get("app")) for r in rows)
-            return finalize("\n".join(lines), settings)
+            elif not shown:
+                last = (len(rows) - 1) // page_size
+                lines.append(
+                    f"Page {page} is past the end: {len(rows)} microservices for {scope}"
+                    f"{suffix} fill pages 0-{last} at page_size={page_size}."
+                )
+            lines.extend(_microservice_line(r, r.get("app")) for r in shown)
+            lines.extend(_more_hint(envelope))
+            return finalize("\n".join(lines), settings, hint=_MICROSERVICES_HINT)
         except Exception as e:
             return format_error(e)
 
@@ -1026,7 +1108,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "items": items,
             }
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(envelope), settings)
+                return finalize(to_json(envelope), settings, hint=_LIMIT_HINT)
             lines = [f"# Application manager jobs ({len(items)} of {len(jobs)}, newest first)", ""]
             if not items:
                 lines.append("No application manager jobs returned.")
@@ -1054,7 +1136,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 lines.extend(["", f"{len(jobs) - limit} older job(s) not shown; raise limit."])
             if more_on_server:
                 lines.extend(_unfetched_note("jobs"))
-            return finalize("\n".join(lines), settings)
+            return finalize("\n".join(lines), settings, hint=_LIMIT_HINT)
         except Exception as e:
             return format_error(e)
 
@@ -1117,7 +1199,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "items": items,
             }
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(envelope), settings)
+                return finalize(to_json(envelope), settings, hint=_LIMIT_HINT)
             lines = [
                 f"# Application manager events ({len(items)} of {len(events)}, newest first)",
                 "",
@@ -1137,7 +1219,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 lines.extend(["", f"{len(events) - limit} older event(s) not shown; raise limit."])
             if more_on_server:
                 lines.extend(_unfetched_note("events"))
-            return finalize("\n".join(lines), settings)
+            return finalize("\n".join(lines), settings, hint=_LIMIT_HINT)
         except Exception as e:
             return format_error(e)
 
@@ -1552,7 +1634,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             data = await client.request_json("GET", ROLES_URL)
             roles = _dict(data)
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(roles), settings)
+                return finalize(to_json(roles), settings, hint=_ROLES_HINT)
             lines = [f"# Roles ({len(roles)})", ""]
             if not roles:
                 lines.append("No roles returned.")
@@ -1764,8 +1846,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if needle:
                 apis = {k: v for k, v in apis.items() if needle in k.lower()}
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(apis), settings)
-            return finalize(_secured_apis_markdown(apis, needle or None), settings)
+                return finalize(to_json(apis), settings, hint=_SECURED_APIS_HINT)
+            return finalize(
+                _secured_apis_markdown(apis, needle or None), settings, hint=_SECURED_APIS_HINT
+            )
         except Exception as e:
             return format_error(e)
 

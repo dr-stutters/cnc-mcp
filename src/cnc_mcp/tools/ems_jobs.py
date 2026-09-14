@@ -54,9 +54,13 @@ Wire facts (verified live on Crosswork 7.2, 2026-09-13, base :data:`JOBS`):
 - After a write the tools read the list back once and report the row. The
   write is reported as applied even when that read-back fails (the verdict
   is what proves the write); right after ``runJob`` the read-back may still
-  show Scheduled because the scheduler picks the run up a moment later —
-  the wait tool's ``previous_run_job_id`` (that read-back's
-  ``lastRunJobId``) keeps it from ending before the run has started.
+  show Scheduled with the OLD ``lastRunJobId`` because the scheduler picks
+  the run up a moment later (verified live 2026-09-14: 449580 before and
+  right after the write, the run finished as 449581). The run tool therefore
+  reads the row BEFORE the write, refuses a job that is already In-Progress
+  (not exercised live), and returns that id as ``previous_run_job_id`` plus
+  a ready-to-paste ``next`` line for the wait tool, whose
+  ``previous_run_job_id`` keeps it from ending before the run has started.
 """
 
 from __future__ import annotations
@@ -206,6 +210,19 @@ def job_markdown(row: dict[str, Any]) -> str:
     ):
         lines.append(f"- {label}: {_text(row.get(key))}")
     return "\n".join(lines)
+
+
+def wait_call(job_name: str, job_type: str, previous_run_job_id: str | None) -> str:
+    """The ready-to-paste ``cnc_wait_for_inventory_scheduler_job(...)`` call that follows
+    a run (``job_type`` only when it is not the default; names are limited to the
+    characters ``job_key`` allows, so single quotes are safe)."""
+    args = [f"job_name='{job_name.strip()}'"]
+    kind = job_type.strip() or DEFAULT_JOB_TYPE
+    if kind != DEFAULT_JOB_TYPE:
+        args.append(f"job_type='{kind}'")
+    if previous_run_job_id:
+        args.append(f"previous_run_job_id='{previous_run_job_id}'")
+    return f"cnc_wait_for_inventory_scheduler_job({', '.join(args)})"
 
 
 def verdict_of(response_text: str) -> bool:
@@ -396,16 +413,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         except Exception as e:
             return format_error(e)
 
-    async def act(
-        url: str,
-        verb: str,
-        job_name: str,
-        job_type: str,
-        done_text: str,
-        expected_state: str,
-        lag_note: str = "",
-    ) -> str:
-        """Send one scheduler write, then read the job back once.
+    async def perform(
+        url: str, verb: str, job_name: str, job_type: str
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        """Send one scheduler write, then read the job back once -> (key, row, read error).
 
         The bare ``true`` verdict is what proves the write; a read-back that
         fails or does not find the row is reported inside a non-error answer
@@ -419,6 +430,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             row = await read_job(job_name, job_type)
         except Exception as e:  # the write was applied; the read-back is best effort
             read_error = format_error(e)
+        return key, row, read_error
+
+    def render(
+        done_text: str,
+        key: str,
+        row: dict[str, Any] | None,
+        read_error: str | None,
+        expected_state: str,
+        lag_note: str = "",
+        extra: dict[str, Any] | None = None,
+        next_text: str | None = None,
+    ) -> str:
+        """The write's answer: summary line (+ "Next: ..." when given) and the JSON."""
         if read_error is not None:
             state = f"state not readable afterwards ({read_error})"
         elif row is None:
@@ -429,8 +453,25 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if actual != expected_state:
                 state += f" (expected {expected_state}{lag_note})"
         summary = f"{done_text} scheduler job '{key}': the scheduler answered true; {state}."
-        payload = {"job": key, "verdict": True, "state": row, "state_error": read_error}
+        if next_text is not None:
+            summary += f"\nNext: {next_text}"
+        payload: dict[str, Any] = {"job": key, "verdict": True}
+        payload.update(extra or {})
+        payload.update({"state": row, "state_error": read_error})
+        if next_text is not None:
+            payload["next"] = next_text
         return finalize(f"{summary}\n\n{to_json(payload)}", settings)
+
+    async def act(
+        url: str,
+        verb: str,
+        job_name: str,
+        job_type: str,
+        done_text: str,
+        expected_state: str,
+    ) -> str:
+        key, row, read_error = await perform(url, verb, job_name, job_type)
+        return render(done_text, key, row, read_error, expected_state)
 
     @register_tool(
         mcp,
@@ -452,19 +493,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         'Switch Inventory' to refresh the EMS inventory without waiting for
         the daily run).
 
-        WRITE. ``POST /crosswork/rs/json/jobSchedulerServiceInv/v1/runJob``
-        with the raw text body ``<jobName>:<jobType>`` (verified live) —
-        answers ``true`` and the job goes In-Progress within seconds (Failed
-        Feature Sync takes ~5 s on the lab); ``false`` was verified only for
-        a nonexistent key. The job's regular schedule is unchanged. The
-        read-back right after the write may still show Scheduled (the
-        scheduler has not picked the run up yet); follow with
-        cnc_wait_for_inventory_scheduler_job, passing that read-back's
-        ``lastRunJobId`` (the previous run's id while the row still shows
-        Scheduled) as ``previous_run_job_id`` so the wait cannot end before
-        the run starts. Not re-sent on a transport error (a second send could
-        queue a second run); running a job that is already In-Progress was
-        not exercised live.
+        WRITE. Reads the job's row FIRST (``GET getSystemLazyJobsSpecification``
+        with the Range header) to capture its ``lastRunJobId`` from before
+        the run — an unknown name is an Error with nothing sent, and a job
+        that is already In-Progress is refused (running one was not
+        exercised live; wait for it, then run). Then ``POST /crosswork/rs/
+        json/jobSchedulerServiceInv/v1/runJob`` with the raw text body
+        ``<jobName>:<jobType>`` (verified live) — answers ``true`` and the
+        job goes In-Progress within seconds (Failed Feature Sync takes ~5 s
+        on the lab); ``false`` was verified only for a nonexistent key. The
+        job's regular schedule is unchanged. The read-back right after the
+        write may still show Scheduled with the OLD ``lastRunJobId`` (verified
+        live 2026-09-14: 449580 before and right after the write, the run
+        then finished as 449581) — that is why the id is captured before the
+        write and handed to you as ``previous_run_job_id`` in the ``next``
+        line: paste it into cnc_wait_for_inventory_scheduler_job and the wait
+        cannot end before the run has started. If the pre-read fails the run
+        is still sent and the read-back's id is used while the row shows
+        Scheduled; when no id could be captured the ``next`` line says so.
+        Not re-sent on a transport error (a second send could queue a second
+        run).
 
         Args:
             job_name: exact job name.
@@ -475,29 +523,76 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             now In-Progress." (or "now Scheduled (expected In-Progress ...)"
             when the read-back is too early, or "state not readable
             afterwards (...)" when the read-back fails — the run was still
-            accepted) plus a JSON {"job", "verdict", "state": row|null,
-            "state_error": null|"Error: ..."}; ``state.lastRunJobId`` is the
-            value to hand cnc_wait_for_inventory_scheduler_job as
-            ``previous_run_job_id`` when ``state.workState`` is still
-            Scheduled. "Error: The job scheduler answered false to run
-            '<key>': no such job ..." for an unknown name, "... but the job
-            exists (workState <state>) — the scheduler refused the run ..."
-            when the row is listed; "Error: job_name ... Nothing was sent."
-            for a name the raw key cannot carry; "Error: ..." on an HTTP
-            failure of the write itself.
+            accepted), then "Next: cnc_wait_for_inventory_scheduler_job(
+            job_name='<name>', previous_run_job_id='<id>') waits for the run
+            to finish ...", plus a JSON {"job", "verdict",
+            "previous_run_job_id": str|null, "state": row|null,
+            "state_error": null|"Error: ...", "next": str}. "Error: no
+            scheduler job '<key>' ... Nothing was sent." for an unknown name
+            (the pre-read); "Error: scheduler job '<key>' is already
+            In-Progress ... Nothing was sent."; "Error: The job scheduler
+            answered false to run '<key>' ..." when the write is refused;
+            "Error: job_name ... Nothing was sent." for a name the raw key
+            cannot carry; "Error: ..." on an HTTP failure of the write
+            itself.
         """
         try:
-            return await act(
-                RUN_URL,
-                "run",
-                job_name,
-                job_type,
+            key = job_key(job_name, job_type)
+            previous_id: str | None = None
+            before_error: str | None = None
+            try:
+                before = await read_job(job_name, job_type)
+            except Exception as e:  # capture is best effort; the run itself still goes
+                before_error = format_error(e)
+            else:
+                if before is None:
+                    raise PlatformError(
+                        f"no scheduler job '{key}' (names are case-sensitive; the built-in jobs "
+                        f"are {', '.join(BUILT_IN_JOBS)} — cnc_list_inventory_scheduler_jobs "
+                        "lists them). Nothing was sent."
+                    )
+                if before.get("workState") == STATE_IN_PROGRESS:
+                    raise PlatformError(
+                        f"scheduler job '{key}' is already In-Progress (lastRunJobId "
+                        f"{_text(before.get('lastRunJobId'))}); running a job that is already "
+                        "In-Progress was not exercised live, so nothing was sent. Wait for it "
+                        f"with {wait_call(job_name, job_type, None)} and run it again."
+                    )
+                previous_id = _text(before.get("lastRunJobId"), "") or None
+            key, row, read_error = await perform(RUN_URL, "run", job_name, job_type)
+            if (
+                previous_id is None
+                and row is not None
+                and row.get("workState") != STATE_IN_PROGRESS
+            ):
+                # The pre-read failed: a read-back that still shows Scheduled carries the
+                # previous run's id (verified live 2026-09-14).
+                previous_id = _text(row.get("lastRunJobId"), "") or None
+            call = wait_call(job_name, job_type, previous_id)
+            if previous_id is not None:
+                next_text = (
+                    f"{call} waits for the run to finish (previous_run_job_id {previous_id} is "
+                    "the job's lastRunJobId from before the run)."
+                )
+            else:
+                reason = before_error or "the row carried no lastRunJobId"
+                next_text = (
+                    f"{call} waits for the run to finish; the job's lastRunJobId could not be "
+                    f"captured before the run ({reason}), so compare lastRunJobId / startTime "
+                    "with the read-back below."
+                )
+            return render(
                 "Started",
+                key,
+                row,
+                read_error,
                 STATE_IN_PROGRESS,
                 lag_note=(
                     " — the scheduler picks the run up within seconds; "
                     "cnc_wait_for_inventory_scheduler_job follows it"
                 ),
+                extra={"previous_run_job_id": previous_id},
+                next_text=next_text,
             )
         except Exception as e:
             return format_error(e)
@@ -616,11 +711,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str | None,
             Field(
                 description=(
-                    "The job's lastRunJobId from BEFORE the run (cnc_get_inventory_scheduler_job "
-                    "before calling run, or the run tool's read-back while it still shows "
-                    "Scheduled). With it the wait cannot end before the scheduler has started "
-                    "the run: it finishes only once the job is not In-Progress AND lastRunJobId "
-                    "differs from this value (or In-Progress was observed). E.g. '449540'."
+                    "The job's lastRunJobId from BEFORE the run — cnc_run_inventory_scheduler_job "
+                    "captures it and hands it back as previous_run_job_id / in its ready-to-paste "
+                    "'next' line (or read it with cnc_get_inventory_scheduler_job before running). "
+                    "With it the wait cannot end before the scheduler has started the run: it "
+                    "finishes only once the job is not In-Progress AND lastRunJobId differs from "
+                    "this value (or In-Progress was observed). E.g. '449540'."
                 ),
                 max_length=50,
             ),
@@ -639,11 +735,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         only once the job is not In-Progress and ``lastRunJobId`` has moved
         on from that value — or In-Progress was observed, so a run that is
         caught mid-flight finishes even if the id did not change (each run
-        getting a fresh ``lastRunJobId`` is inferred from the field's name,
-        not verified live). Without the parameter the answer says whether
-        In-Progress was observed; when it was not, compare the row's
-        ``lastRunJobId`` / ``startTime`` with the run's read-back, or call
-        again a few seconds later.
+        getting a fresh ``lastRunJobId`` was verified live 2026-09-14, one
+        run: 449580 before, 449581 once the run had finished). Without the
+        parameter the answer says whether In-Progress was observed; when it
+        was not, compare the row's ``lastRunJobId`` / ``startTime`` with the
+        run's read-back, or call again a few seconds later.
 
         Args:
             job_name: exact job name.

@@ -5,7 +5,12 @@ Every listing tool supports two output formats (agents pick via response_format)
 - json: complete structured data for programmatic processing
 
 Every tool response passes through finalize() so oversized payloads are
-truncated with a note instead of flooding the agent's context.
+truncated with a note instead of flooding the agent's context. A JSON
+payload is shortened by dropping whole trailing list entries (so it stays
+parseable and carries a ``"truncated": true`` marker); anything else is cut
+at the character cap with a bracketed note. The note's hint is generic
+unless the tool passes its own — finalize() must never promise a parameter
+the tool does not have.
 """
 
 from __future__ import annotations
@@ -53,15 +58,100 @@ def pagination_envelope(
     }
 
 
-def finalize(text: str, settings: Settings) -> str:
-    """Apply the response-size cap. Call as the last step of every tool."""
+# What an oversized response tells the agent to do when the tool gave no hint of
+# its own. Deliberately names no parameter: not every tool pages, and the ones
+# that do spell out their paging arguments in their own description.
+TRUNCATION_HINT = (
+    "Narrow the query with the tool's filters, or page through the results if the "
+    "tool offers paging (its description says so)."
+)
+
+# JSON-aware truncation parses the whole payload once; past this size the plain
+# character cut is used so a pathological response cannot stall the server.
+_JSON_AWARE_MAX_CHARS = 8_000_000
+
+
+def finalize(text: str, settings: Settings, *, hint: str | None = None) -> str:
+    """Apply the response-size cap. Call as the last step of every tool.
+
+    ``hint`` is the tool's own advice for an oversized answer (e.g. "Lower
+    page_size or narrow with app_id."); without it the generic
+    :data:`TRUNCATION_HINT` is used. A JSON payload (a list, or an object with
+    a list-valued key — ``items`` preferred, else the largest list) is
+    shortened by dropping whole trailing entries of that list, so the result
+    stays parseable and reports what happened: ``"truncated": true``,
+    ``"shown": <entries kept>`` and ``"truncation_note"``; a bare list is
+    wrapped as ``{"items": [...]}`` to carry the marker. When that cannot
+    keep at least one entry, or the text is not such a JSON payload, the
+    text is cut at the cap and a bracketed note is appended instead.
+    """
     limit = settings.max_response_chars
     if len(text) <= limit:
         return text
-    return (
-        text[:limit] + f"\n\n[Truncated: response exceeded {limit} characters. "
-        "Narrow the query with filters, or page through results with limit/offset.]"
-    )
+    advice = hint or TRUNCATION_HINT
+    shortened = _truncate_json(text, limit, advice)
+    if shortened is not None:
+        return shortened
+    return text[:limit] + f"\n\n[Truncated: response exceeded {limit} characters. {advice}]"
+
+
+def _truncate_json(text: str, limit: int, advice: str) -> str | None:
+    """Parseable shortening of an oversized JSON payload, or None when not possible.
+
+    Only a top-level list, or an object with at least one list-valued key,
+    qualifies; entries are dropped from the end of that list (``items`` when
+    present, otherwise the largest list) until the re-serialised payload fits.
+    None when the text is not JSON, has no list to shorten, or not even one
+    entry fits — the caller then falls back to the plain cut.
+    """
+    if len(text) > _JSON_AWARE_MAX_CHARS or text.lstrip()[:1] not in ("{", "["):
+        return None
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    if isinstance(data, list):
+        container: dict[str, Any] = {"items": data}
+        key = "items"
+    elif isinstance(data, dict):
+        lists = {k: v for k, v in data.items() if isinstance(v, list)}
+        if not lists:
+            return None
+        container = data
+        key = "items" if "items" in lists else max(lists, key=lambda k: len(to_json(lists[k])))
+    else:
+        return None
+    entries = container[key]
+    total = len(entries)
+
+    def render(shown: int) -> str:
+        note = (
+            f"Response exceeded {limit} characters: {total - shown} of {total} '{key}' "
+            f"entries were dropped. {advice}"
+        )
+        out: dict[str, Any] = {"truncated": True, "shown": shown, "truncation_note": note}
+        out.update((k, v) for k, v in container.items() if k not in out)
+        out[key] = entries[:shown]
+        return to_json(out)
+
+    # Largest number of entries (at least one) whose rendering fits the cap.
+    # Probes shrink geometrically while they overshoot, so the total work is
+    # about one serialisation of the original payload.
+    best = 0
+    lo, hi = 1, total - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if len(render(mid)) <= limit:
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    if not best:
+        return None
+    result = render(best)
+    while len(result) > limit and best > 1:  # the note's digits shift by a char or two
+        best -= 1
+        result = render(best)
+    return result if len(result) <= limit else None
 
 
 def epoch_iso(value: Any) -> str:

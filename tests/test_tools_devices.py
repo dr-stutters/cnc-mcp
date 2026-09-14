@@ -263,6 +263,59 @@ async def test_get_device_by_host_name(settings):
     assert json.loads(text)["uuid"] == PE1_UUID
 
 
+# Read live 2026-09-14 (PE2): state_map keyed by the numeric RobotNodeStateElement enum,
+# no ``element`` leaf on the wire, epoch-second strings. ``uptime`` below is the value as of
+# state_map["1"].last_updated_time (the reachability check refreshes it every 1200 s on the
+# lab); ``last_upd_time`` is the record's last modification, ~30 h older, and does not move
+# with it.
+STATE_MAP = {
+    "1": {"value": "UP", "last_updated_time": "1789352986", "next_check_time": "1789352986"},
+    "2": {"value": "UP", "last_updated_time": "1789339778", "next_check_time": "1789339778"},
+    "3": {"value": "UP", "last_updated_time": "1789352369", "next_check_time": "1789352369"},
+}
+
+
+@respx.mock
+async def test_get_device_labels_state_map_keys_and_keeps_the_rest(settings):
+    pe2 = {
+        **node("ec35be58-0000-4000-8000-000000000002", "PE2", "198.18.140.13"),
+        "state_map": {**STATE_MAP, "9": {"value": "UP"}, "4": "odd"},
+        "uptime": "0w1d14h4m30s",
+        "last_upd_time": "1789244994",
+    }
+    respx.post(NODES_QUERY).mock(return_value=httpx.Response(200, json={"data": [pe2]}))
+    mcp = build(settings)
+    text = await call_tool_text(mcp, "cnc_get_device", {"host_name": "PE2"})
+    data = json.loads(text)
+    assert data["state_map"]["1"] == {"element": "REACHABILITY", **STATE_MAP["1"]}
+    assert data["state_map"]["2"] == {"element": "DISCOVERY", **STATE_MAP["2"]}
+    assert data["state_map"]["3"] == {"element": "CLOCK_DRIFT", **STATE_MAP["3"]}
+    # Outside the enum / not a dict: passed through untouched.
+    assert data["state_map"]["9"] == {"value": "UP"} and data["state_map"]["4"] == "odd"
+    # The snapshot fields are returned exactly as read (the docstring says what they mean).
+    assert data["uptime"] == "0w1d14h4m30s" and data["last_upd_time"] == "1789244994"
+    # The fixture itself was not mutated.
+    assert "element" not in pe2["state_map"]["1"]
+    # The docstring's provenance for ``uptime`` is the one verified live 2026-09-14: the
+    # reachability check's timestamp, not last_upd_time; nd.sys-up-time is a snapshot too.
+    tools = {t.name: t for t in await mcp.list_tools()}
+    description = tools["cnc_get_device"].description or ""
+    assert '``state_map["1"].last_updated_time``' in description
+    assert "NOT tied to ``last_upd_time``" in description
+    assert "``nd.sys-up-time`` is itself a snapshot as of ``nd.collection-time``" in description
+    assert "snapshot captured by the last" not in description
+
+
+def test_label_state_map_respects_a_platform_element_and_missing_maps():
+    node_with_element = {"state_map": {"1": {"element": "X", "value": "UP"}}}
+    assert devices.label_state_map(node_with_element)["state_map"]["1"]["element"] == "X"
+    assert devices.label_state_map({"host_name": "PE1"}) == {"host_name": "PE1"}
+    assert devices.label_state_map({"state_map": "?"}) == {"state_map": "?"}
+    assert devices.STATE_MAP_ELEMENTS["5"] == "SYNC" and devices.STATE_MAP_ELEMENTS["0"] == (
+        "UNSUPPORTED"
+    )
+
+
 @respx.mock
 async def test_get_device_not_found(settings):
     respx.post(NODES_QUERY).mock(return_value=httpx.Response(200, json={"total_count": 5}))

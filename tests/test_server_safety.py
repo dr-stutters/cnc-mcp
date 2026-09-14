@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from cnc_mcp.server import build_instructions, build_server, quiet_http_logging
 
 READ_TOOLS = {
@@ -85,6 +87,8 @@ async def test_every_tool_has_annotations_and_docs(make_settings):
         assert tool.name.startswith("cnc_"), tool.name
         assert tool.annotations is not None, tool.name
         assert tool.description and len(tool.description) > 40, tool.name
+        # Unknown argument names are rejected (register_tool), and the schema says so.
+        assert tool.input_schema.get("additionalProperties") is False, tool.name
         # Flat parameters: enum $refs (ResponseFormat) are fine, object models are not.
         defs = tool.input_schema.get("$defs", {})
         for prop_name, prop in tool.input_schema.get("properties", {}).items():
@@ -92,6 +96,39 @@ async def test_every_tool_has_annotations_and_docs(make_settings):
             if ref:
                 target = defs.get(ref.rsplit("/", 1)[-1], {})
                 assert target.get("type") != "object", f"{tool.name}.{prop_name} wraps a model"
+
+
+async def test_unknown_argument_name_is_rejected_not_dropped(make_settings):
+    """Agent scenario 2026-09-14: {"host_names": ...} used to answer 'Pass exactly one
+    of uuid or host_name' as if nothing had been passed."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    mcp = build_server(make_settings(enable_writes=False))
+    with pytest.raises(ToolError) as info:
+        await mcp.call_tool("cnc_check_device_nso_state", {"host_names": "PE1,PE2"})
+    assert "unknown argument 'host_names' (did you mean 'host_name'?)" in str(info.value)
+    assert "PE1,PE2" not in str(info.value)
+    # The aliased parameter of cnc_get_performance_statistics ('schema' shadows a
+    # BaseModel method, so the SDK stores it as field_schema) is still accepted by its
+    # wire name — it must not be reported as unknown.
+    with pytest.raises(ToolError) as info:
+        await mcp.call_tool("cnc_get_performance_statistics", {"schema": "CPU", "hour": 1})
+    assert "unknown argument 'hour' (did you mean 'hours'?)" in str(info.value)
+    assert "'schema'" not in str(info.value).split("accepted:")[0]
+
+
+async def test_field_validation_errors_echo_the_offending_value(make_settings):
+    """Strict argument names must not cost the per-field input echo pydantic gives
+    every other MCP server (response_format='JSON' -> input_value='JSON')."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    mcp = build_server(make_settings(enable_writes=False))
+    with pytest.raises(ToolError) as info:
+        await mcp.call_tool("cnc_list_devices", {"response_format": "JSON"})
+    text = str(info.value)
+    assert "response_format" in text
+    assert "Input should be 'markdown' or 'json'" in text
+    assert "input_value='JSON'" in text
 
 
 async def test_destructive_annotations(make_settings):

@@ -14,6 +14,11 @@ behaviour verified live (see ``crosswork.py`` and the platform notes):
 - every write (``POST``/``PATCH``/``DELETE`` on the collection URL, body keyed
   ``providers``) answers with a job envelope, and a failed write is HTTP 200
   with ``state != JOB_COMPLETED`` — every write goes through ``check_job``.
+- XTC is Crosswork's wire name for the SR-PCE provider family: a provider
+  written as ``ROBOT_PROVIDER_SR_PCE`` reads back ``family:
+  ROBOT_PROVIDER_XTC``, and a ``family: ROBOT_PROVIDER_SR_PCE`` filter on
+  ``providers/query`` matches that provider (both verified live 2026-09-14).
+  Markdown renders the family as ``sr_pce``; JSON keeps the wire value.
 """
 
 from __future__ import annotations
@@ -53,12 +58,33 @@ _LOOKUP_MAX_PAGES = 20
 # filter at all and relies on the client-side match.
 _QUERY_FILTER_FIELDS = frozenset({"name", "family"})
 
+# XTC is Crosswork's wire name for the SR-PCE family (verified live 2026-09-14): the
+# provider is WRITTEN as ROBOT_PROVIDER_SR_PCE and READS BACK as ROBOT_PROVIDER_XTC.
+# Rendering maps the read value to the friendly 'sr_pce'; JSON keeps the wire value.
+SR_PCE_WIRE = PROVIDER_FAMILIES["sr_pce"]
+XTC_WIRE = "ROBOT_PROVIDER_XTC"
+_XTC_ALIASES = frozenset({"xtc", XTC_WIRE.lower()})
+
 _FAMILY_LABELS = {wire: friendly for friendly, wire in PROVIDER_FAMILIES.items()}
+_FAMILY_LABELS[XTC_WIRE] = "sr_pce"
 _REACH_LABELS = {wire: friendly for friendly, wire in REACHABILITY_STATES.items()}
 _TRANSPORT_LABELS = {wire: friendly for friendly, wire in TRANSPORTS.items()}
 
 _FAMILY_CHOICES = ", ".join(sorted(PROVIDER_FAMILIES))
 _TRANSPORT_CHOICES = ", ".join(sorted(TRANSPORTS))
+
+
+def family_filter(value: str | None) -> str | None:
+    """Friendly / wire family -> the ``providers/query`` filter value.
+
+    Like :func:`wire_enum`, plus the read-side alias of the SR-PCE family:
+    ``xtc`` / ``ROBOT_PROVIDER_XTC`` (what the provider record shows) is sent
+    as ``ROBOT_PROVIDER_SR_PCE`` — the filter value verified live to match the
+    provider whose record reads ``ROBOT_PROVIDER_XTC``.
+    """
+    if value is not None and value.strip().lower() in _XTC_ALIASES:
+        return SR_PCE_WIRE
+    return wire_enum(PROVIDER_FAMILIES, value, "provider family")
 
 
 def _label(table: dict[str, str], wire: Any) -> str:
@@ -217,7 +243,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(
                 description=(
                     f"Provider family filter, one of: {_FAMILY_CHOICES} (e.g. 'sr_pce'); "
-                    "wire values such as 'ROBOT_PROVIDER_SR_PCE' are accepted too."
+                    "wire values such as 'ROBOT_PROVIDER_SR_PCE' are accepted too, and so is "
+                    "'ROBOT_PROVIDER_XTC' (XTC is Crosswork's wire name for the SR-PCE "
+                    "family, which is what an SR-PCE provider's record shows)."
                 ),
                 max_length=64,
             ),
@@ -242,21 +270,33 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Filters AND together. Only ``name`` and ``family`` are supported
         filters on this endpoint. Page with ``page``/``page_size`` (0-based).
 
+        XTC is Crosswork's wire name for the SR-PCE provider family: the
+        SR-PCE provider's record reads ``family: ROBOT_PROVIDER_XTC`` although
+        it is created as ``ROBOT_PROVIDER_SR_PCE``. Markdown shows that family
+        as ``sr_pce``; JSON keeps the wire value ``ROBOT_PROVIDER_XTC``. A
+        ``family`` filter of 'sr_pce' / 'ROBOT_PROVIDER_SR_PCE' / 'xtc' /
+        'ROBOT_PROVIDER_XTC' all select it (the filter is sent as
+        ``ROBOT_PROVIDER_SR_PCE``, verified live 2026-09-14 to match the
+        provider that reads back XTC).
+
         Args:
             name: exact/wildcard name filter (case-insensitive).
             family: friendly family name (sr_pce, nso, wae, syslog_storage,
-                alert, proxy, onc, accedian_proxy) or wire value.
+                alert, proxy, onc, accedian_proxy) or wire value (the XTC
+                alias of sr_pce included).
             page_size, page: paging; ``has_more``/``next_page`` say whether to
                 fetch another page.
             response_format: markdown (one line per provider: name, uuid,
                 family, reachability, endpoints, credential profile) or json.
 
         Returns:
-            str: Markdown listing, or JSON:
+            str: Markdown listing (family rendered friendly: nso, sr_pce, ...),
+            or JSON:
             {"total": int|null, "count": int, "page": int, "page_size": int,
-             "items": [{"uuid", "name", "family", "profile",
-                        "reachability_state", "connectivity_info": [...],
-                        "properties": {...}, ...}],
+             "items": [{"uuid", "name", "family" (wire value, e.g.
+                        "ROBOT_PROVIDER_NSO" / "ROBOT_PROVIDER_XTC" for SR-PCE),
+                        "profile", "reachability_state",
+                        "connectivity_info": [...], "properties": {...}, ...}],
              "has_more": bool, "next_page": int|null,
              "collection_total": int|null, "offset": int, "next_offset": int|null}
             ``total`` is the number of providers matching the filter (absent /
@@ -267,10 +307,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             request rather than an outage).
         """
         try:
-            filters = {
-                "name": name,
-                "family": wire_enum(PROVIDER_FAMILIES, family, "provider family"),
-            }
+            filters = {"name": name, "family": family_filter(family)}
             body = query_body(filters, page_size=page_size, page=page)
             data = await client.request_json("POST", PROVIDERS_QUERY_URL, json_body=body)
             items, result_count, total_count = unwrap(data, "data")
@@ -332,9 +369,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str: JSON object with every provider field as Crosswork returns it
             (note ``connectivity_info[].ipaddrs[].inet_af`` reads as
             'ROBOT_INET_ADDR_TYPE_v4'; write bodies use 0 — don't round-trip a
-            read object into a write). "Error: ..." when neither or both
-            selectors are given, when no provider matches (verify with
-            cnc_list_providers), or on an API failure.
+            read object into a write). ``family`` is the wire value: the
+            SR-PCE provider reads ``"ROBOT_PROVIDER_XTC"`` — XTC is
+            Crosswork's wire name for the SR-PCE family (it is created as
+            ``ROBOT_PROVIDER_SR_PCE``; cnc_list_providers' markdown shows it
+            as ``sr_pce``). "Error: ..." when neither or both selectors are
+            given, when no provider matches (verify with cnc_list_providers),
+            or on an API failure.
         """
         try:
             if bool(uuid) == bool(name):
@@ -458,7 +499,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         routable from CNC: auto-onboard creates inventory devices keyed on the
         TE router-ID, which then sit Unreachable. Only the sr_pce wire value
         was verified live; the other families use the same
-        ``ROBOT_PROVIDER_<FAMILY>`` pattern as the UI shows them.
+        ``ROBOT_PROVIDER_<FAMILY>`` pattern as the UI shows them. An SR-PCE
+        provider is written as ``ROBOT_PROVIDER_SR_PCE`` and reads back as
+        ``ROBOT_PROVIDER_XTC`` (XTC is Crosswork's wire name for the SR-PCE
+        family) — that is the same provider, not a family change.
 
         Args:
             name, family, credential_profile, ip_address: required.

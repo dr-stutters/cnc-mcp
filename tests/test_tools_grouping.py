@@ -2,11 +2,13 @@
 
 The module is registered directly (not through build_server) so the test does
 not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
-Fixtures: the ``device/rule/conditions`` document as verified live on
-Crosswork 7.2 (2026-09-13, see the platform notes "Grouping") and the bare
-uuid list of ``group/root/<classifiers>/uuid``; the hierarchy, group-details
-and group-devices documents follow the 7.2 OpenAPI examples (the lab has no
-device groups, so those were not exercised with real uuids).
+Fixtures: the ``device/rule/conditions`` document and the bare uuid list of
+``group/root/<classifiers>/uuid`` as verified live on Crosswork 7.2
+(2026-09-13, see the platform notes "Grouping"); the brief hierarchy of the
+lab's system device groups, the group-details documents and the windowed
+group-devices answers as read live on 2026-09-14 (``end`` exclusive, ``total``
+= the whole group); the remaining hierarchy documents follow the 7.2 OpenAPI
+examples.
 """
 
 from __future__ import annotations
@@ -56,10 +58,20 @@ from tests.conftest import BASE_URL, call_tool_text
 GROUPING = f"{BASE_URL}/crosswork/grouping/v1/grouping"
 DEVICE_CONDITIONS_URL = f"{GROUPING}/device/rule/conditions"
 PORT_CONDITIONS_URL = f"{GROUPING}/ports/rule/conditions"
-ROOT_URL = f"{GROUPING}/group/root/PortType,UserDefinedPorts/uuid"
+# The tool's default classifiers are the three device ones (verified live 2026-09-14).
+ROOT_URL = f"{GROUPING}/group/root/DeviceAccess,LocationDevices,TopologyTypeDevices/uuid"
+PORT_ROOT_URL = f"{GROUPING}/group/root/PortType,UserDefinedPorts/uuid"
 
 PORT_TYPE_UUID = "efc42cda-6ce5-4a47-ad96-d1e08a16b228"
 USER_PORTS_UUID = "9ac87805-69a9-403c-9fda-a0d892f362a8"
+# The lab's device roots, in the order the platform answered them (NOT the classifier order:
+# Location, ALL-ACCESS, Topology Type for DeviceAccess,LocationDevices,TopologyTypeDevices).
+LOCATION_ROOT_UUID = "bac76a9e-5d07-43bd-8199-353fbec19b09"
+ALL_ACCESS_UUID = "21153ff8-4560-4062-977d-cea569c51cd1"
+TOPOLOGY_ROOT_UUID = "268cfe1e-6bb6-4df1-a1fa-7cb6943dd9fe"
+ALL_LOCATIONS_UUID = "7913c888-f691-4c08-ac71-55a35b236e49"
+UNASSIGNED_UUID = "c820712b-460b-439f-b184-6fa159ae6a7c"
+DEVICE_ROOT_UUIDS = [LOCATION_ROOT_UUID, ALL_ACCESS_UUID, TOPOLOGY_ROOT_UUID]
 GROUP_UUID = "f76ef571-dda1-49cc-aeb4-d98b2aac06b0"
 PARENT_UUID = "e2305b86-6a2c-425d-abb1-bd0660656e86"
 DEVICE_UUID = "d4f18380-dd49-469d-97c7-857ea51f74a6"
@@ -97,6 +109,56 @@ PORT_CONDITIONS = {
 }
 # Verified live: a bare JSON list of uuids (2 on the lab for the port classifiers).
 ROOT_UUIDS = [PORT_TYPE_UUID, USER_PORTS_UUID]
+# Read live 2026-09-14: GET groups/<the two device roots>?brief=true&direct=false. The brief
+# view has NO classifier; childrenCount is the member-device count (5 = the whole lab
+# inventory on the groups with direct members — the leaf Unassigned Devices AND the root
+# ALL-ACCESS —, 0 on All Locations which only holds a sub-group, absent on the Location
+# root).
+HIERARCHY_BRIEF_LIVE = [
+    {
+        "uuid": LOCATION_ROOT_UUID,
+        "name": "Location",
+        "children": [
+            {
+                "uuid": ALL_LOCATIONS_UUID,
+                "name": "All Locations",
+                "children": [
+                    {
+                        "uuid": UNASSIGNED_UUID,
+                        "name": "Unassigned Devices",
+                        "childrenCount": 5,
+                        "operations": {"showMem": True, "cpf": True, "addMem": True, "mv": 1},
+                    }
+                ],
+                "childrenCount": 0,
+                "operations": {"cpf": True, "subGrp": True},
+            }
+        ],
+        "operations": {"cpf": True},
+    },
+    {
+        "uuid": ALL_ACCESS_UUID,
+        "name": "ALL-ACCESS",
+        "childrenCount": 5,
+        "operations": {"subGrp": True},
+    },
+]
+# Read live 2026-09-14: GET group/<Unassigned Devices>/details — childrenCount is 0 here
+# although the group has 5 members.
+UNASSIGNED_DETAILS = {
+    "status": "Success",
+    "group": {
+        "uuid": UNASSIGNED_UUID,
+        "name": "Unassigned Devices",
+        "discoveryType": "StaticSystem",
+        "nodeType": "Group",
+        "classifier": "LocationDevices",
+        "parentUuid": ALL_LOCATIONS_UUID,
+        "parentName": "All Locations",
+        "childrenCount": 0,
+        "operations": {"showMem": True, "cpf": True, "addMem": True, "mv": 1},
+    },
+}
 # 7.2 OpenAPI example of GET groups/<uuids> (brief view).
 HIERARCHY_BRIEF = [
     {"uuid": PORT_TYPE_UUID, "name": "Port Type", "classifier": "PortType"},
@@ -392,12 +454,17 @@ def test_as_count_coerces_numeric_strings_and_rejects_the_rest():
     assert as_count("-1") is None
 
 
-def test_device_page_never_lets_total_turn_has_more_off_on_a_full_window():
+def test_device_page_trusts_total_and_falls_back_to_window_fullness():
+    # Verified live 2026-09-14: ``total`` is the whole group's member count and ``end`` is
+    # exclusive, so has_more is start + count < total whenever a total is reported.
     three = [PE1_DEVICE, PE1_DEVICE, PE1_DEVICE]
-    # Full window, total == count (the "total is this answer" reading): still has_more.
+    # Full window that reaches the total: nothing more (the live 5-member group's last page).
     page = device_page(three, 3, 3, 6)
-    assert page["window_full"] is True and page["has_more"] is True
-    assert page["next_offset"] == 6 and page["total"] == 3 and page["count"] == 3
+    assert page["window_full"] is True and page["has_more"] is False
+    assert page["next_offset"] is None and page["total"] == 3 and page["count"] == 3
+    # Full window with members beyond it: more, continuing right after this window.
+    page = device_page([PE1_DEVICE, PE1_DEVICE], 5, 0, 2)
+    assert page["window_full"] is True and page["has_more"] is True and page["next_offset"] == 2
     # Full window, no total: has_more from fullness alone.
     page = device_page(three, None, 0, 3)
     assert page["window_full"] is True and page["has_more"] is True and page["next_offset"] == 3
@@ -405,17 +472,17 @@ def test_device_page_never_lets_total_turn_has_more_off_on_a_full_window():
     page = device_page([PE1_DEVICE], None, 0, 100)
     assert page["window_full"] is False and page["has_more"] is False
     assert page["next_offset"] is None
-    # Short window, total == start + count: nothing more.
-    page = device_page([PE1_DEVICE], 1, 0, 100)
+    # Short window, total == start + count: nothing more (the live last page 4-6 of 5).
+    page = device_page([PE1_DEVICE], 5, 4, 6)
     assert page["window_full"] is False and page["has_more"] is False
-    # Short window, total claims more: has_more (unverified), next_offset skips nothing.
+    # Short window, total claims more: has_more, next_offset skips nothing.
     page = device_page([PE1_DEVICE], 7, 0, 100)
     assert page["window_full"] is False and page["has_more"] is True and page["next_offset"] == 1
-    # Empty window at start 0 with a positive total: has_more (the total is not trusted either way).
-    page = device_page([], 3, 0, 100)
-    assert page["has_more"] is True and page["next_offset"] == 0
-    # The platform returned MORE than the window: still a full window, offset moves past all of it.
-    page = device_page(three, 3, 0, 2)
+    # Empty window with total 0 (All Locations: members live in its sub-group): nothing more.
+    page = device_page([], 0, 0, 100)
+    assert page["has_more"] is False and page["next_offset"] is None
+    # The platform returned MORE than the window: still a full window, offset moves past it.
+    page = device_page(three, 9, 0, 2)
     assert page["window_full"] is True and page["next_offset"] == 3
 
 
@@ -437,6 +504,9 @@ def test_group_tree_lines_indent_children_and_count_them():
     assert group_line({"uuid": "u", "name": "n", "classifier": "c", "extra": 1}) == (
         '**n** (u) classifier=c other={"extra":1}'
     )
+    # The brief view carries no classifier (verified live): no "classifier=-" filler.
+    assert group_line({"uuid": "u", "name": "n", "childrenCount": 5}) == "**n** (u) childrenCount=5"
+    assert "classifier" not in group_line(HIERARCHY_BRIEF_LIVE[1])
 
 
 def test_check_result_status_handling():
@@ -546,14 +616,28 @@ async def test_list_rule_conditions_500_is_an_http_error(settings):
 
 
 @respx.mock
-async def test_list_root_groups_default_classifiers(settings):
-    route = respx.get(ROOT_URL).mock(return_value=httpx.Response(200, json=ROOT_UUIDS))
+async def test_list_root_groups_default_classifiers_are_the_device_ones(settings):
+    # Verified live 2026-09-14: the three device classifiers answer the lab's 3 system roots.
+    route = respx.get(ROOT_URL).mock(return_value=httpx.Response(200, json=DEVICE_ROOT_UUIDS))
     text = await call_tool_text(build(settings), "cnc_list_root_groups", {})
-    assert DEFAULT_CLASSIFIERS == "PortType,UserDefinedPorts"
+    assert DEFAULT_CLASSIFIERS == "DeviceAccess,LocationDevices,TopologyTypeDevices"
     assert str(route.calls[0].request.url) == ROOT_URL
+    assert "# Root groups for DeviceAccess, LocationDevices, TopologyTypeDevices (3)" in text
+    for uuid in DEVICE_ROOT_UUIDS:
+        assert f"- {uuid}" in text
+    assert "not the classifiers' order" in text and "cnc_get_group_hierarchy expands" in text
+    assert "unverified" not in text
+
+
+@respx.mock
+async def test_list_root_groups_port_classifiers_are_the_alternative(settings):
+    route = respx.get(PORT_ROOT_URL).mock(return_value=httpx.Response(200, json=ROOT_UUIDS))
+    text = await call_tool_text(
+        build(settings), "cnc_list_root_groups", {"classifiers": "PortType,UserDefinedPorts"}
+    )
+    assert str(route.calls[0].request.url) == PORT_ROOT_URL
     assert "# Root groups for PortType, UserDefinedPorts (2)" in text
     assert f"- {PORT_TYPE_UUID}" in text and f"- {USER_PORTS_UUID}" in text
-    assert "cnc_get_group_hierarchy expands these uuids" in text
 
 
 @respx.mock
@@ -583,7 +667,10 @@ async def test_list_root_groups_empty_list_is_not_an_error(settings):
         build(settings), "cnc_list_root_groups", {"classifiers": "DeviceGroup,Device,Devices"}
     )
     assert text.startswith("No root groups for classifiers DeviceGroup, Device, Devices")
-    assert "verified names are PortType, UserDefinedPorts" in text
+    assert (
+        "verified names are DeviceAccess, LocationDevices, TopologyTypeDevices, PortType, "
+        "UserDefinedPorts"
+    ) in text
     assert not text.startswith("Error")
 
 
@@ -651,6 +738,41 @@ async def test_get_group_hierarchy_flat_list_and_params(settings):
     )
     assert f"- **Port Type** ({PORT_TYPE_UUID}) classifier=PortType" in text
     assert f"- **User Defined** ({USER_PORTS_UUID}) classifier=UserDefinedPorts" in text
+
+
+@respx.mock
+async def test_get_group_hierarchy_brief_view_as_read_live(settings):
+    # The live brief view (2026-09-14): no classifier on any line, childrenCount explained.
+    url = f"{GROUPING}/groups/{LOCATION_ROOT_UUID},{ALL_ACCESS_UUID}"
+    respx.get(url).mock(return_value=httpx.Response(200, json=HIERARCHY_BRIEF_LIVE))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_group_hierarchy",
+        {"group_uuids": f"{LOCATION_ROOT_UUID},{ALL_ACCESS_UUID}"},
+    )
+    assert "# Group hierarchy (4 group(s), entire hierarchy, brief view, tree)" in text
+    assert f"\n- **Location** ({LOCATION_ROOT_UUID})\n" in text
+    assert f"\n  - **All Locations** ({ALL_LOCATIONS_UUID}) childrenCount=0\n" in text
+    assert f"\n    - **Unassigned Devices** ({UNASSIGNED_UUID}) childrenCount=5\n" in text
+    assert f"\n- **ALL-ACCESS** ({ALL_ACCESS_UUID}) childrenCount=5\n" in text
+    assert "classifier=" not in text
+    assert "childrenCount = devices that are direct members of the group" in text
+    # The ALL-ACCESS root carries childrenCount, so the footer must not claim roots lack it.
+    assert "absent on some roots, e.g. Location and Topology Type" in text
+    assert "absent on roots" not in text
+    assert "The brief view carries no classifier: pass brief=False" in text
+    assert "unverified" not in text and "other=" not in text  # operations is a known leaf
+    # The full view names the classifier and does not carry the brief-view note.
+    full = [{**g, "classifier": "LocationDevices"} for g in HIERARCHY_BRIEF_LIVE]
+    respx.get(url).mock(return_value=httpx.Response(200, json=full))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_group_hierarchy",
+        {"group_uuids": f"{LOCATION_ROOT_UUID},{ALL_ACCESS_UUID}", "brief": False},
+    )
+    assert f"- **Location** ({LOCATION_ROOT_UUID}) classifier=LocationDevices" in text
+    assert "The brief view carries no classifier" not in text
+    assert "childrenCount = devices that are direct members" in text
 
 
 @respx.mock
@@ -789,6 +911,28 @@ async def test_get_group_details_markdown(settings):
 
 
 @respx.mock
+async def test_get_group_details_live_shape_and_childrencount_caveat(settings):
+    # Read live 2026-09-14: the details call names parent and classifier; its childrenCount
+    # is 0 on a 5-member group, and the tool's description says so.
+    url = f"{GROUPING}/group/{UNASSIGNED_UUID}/details"
+    respx.get(url).mock(return_value=httpx.Response(200, json=UNASSIGNED_DETAILS))
+    mcp = build(settings)
+    text = await call_tool_text(mcp, "cnc_get_group_details", {"group_uuid": UNASSIGNED_UUID})
+    assert (
+        f"- **Unassigned Devices** ({UNASSIGNED_UUID}) classifier=LocationDevices "
+        f"discoveryType=StaticSystem nodeType=Group childrenCount=0 "
+        f"parent=All Locations ({ALL_LOCATIONS_UUID})"
+    ) in text
+    tools = {t.name: t for t in await mcp.list_tools()}
+    description = tools["cnc_get_group_details"].description or ""
+    assert "childrenCount`` here is NOT a member count" in description
+    assert "unverified live" not in description
+    for name in ("cnc_list_root_groups", "cnc_get_group_hierarchy", "cnc_list_group_devices"):
+        assert "unverified" not in (tools[name].description or ""), name
+        assert "no device groups" not in (tools[name].description or ""), name
+
+
+@respx.mock
 async def test_get_group_details_json_is_the_raw_document(settings):
     respx.get(f"{GROUPING}/group/{GROUP_UUID}/details").mock(
         return_value=httpx.Response(200, json=GROUP_DETAILS)
@@ -905,13 +1049,10 @@ async def test_list_group_devices_string_total_is_coerced_and_pages(settings):
         build(settings), "cnc_list_group_devices", {"group_uuid": GROUP_UUID}
     )
     assert f"# Devices in group {GROUP_UUID} (1 of 7; indexes 0-100)" in text
-    # A short window with a larger total is reported as unverified, never as a
-    # "repeat with start=1, end=101" hint that re-requests the range just answered.
-    assert (
-        "Note: the platform reports total=7 but the window 0-100 was not full "
-        "(1 device(s) answered) — what total counts is unverified on this build"
-    ) in text
-    assert "More available" not in text and "repeat with" not in text
+    # total is the whole group's member count (verified live), so it drives has_more; the
+    # continuation starts right after the last device answered.
+    assert "More available: repeat with start=1, end=101." in text
+    assert "unverified" not in text
     text = await call_tool_text(
         build(settings),
         "cnc_list_group_devices",
@@ -924,32 +1065,29 @@ async def test_list_group_devices_string_total_is_coerced_and_pages(settings):
 
 
 @respx.mock
-async def test_list_group_devices_full_window_pages_even_when_total_equals_count(settings):
-    # The spec's "total number of devices included in the result" may be this answer's
-    # count, so a full window must never stop paging on total's say-so.
+async def test_list_group_devices_full_window_stops_when_total_is_reached(settings):
+    # Verified live 2026-09-14 (a 5-member group read in windows 0-2, 2-4, 4-6): total is the
+    # whole group's count, so a full window that reaches it is the last one.
     url = f"{GROUPING}/device/{GROUP_UUID}"
     three = [PE1_DEVICE, PE1_DEVICE, PE1_DEVICE]
     respx.get(url).mock(
-        return_value=httpx.Response(200, json={"status": "Success", "devices": three, "total": 3})
+        return_value=httpx.Response(200, json={"status": "Success", "devices": three, "total": 6})
     )
     text = await call_tool_text(
         build(settings),
         "cnc_list_group_devices",
         {"group_uuid": GROUP_UUID, "start": 3, "end": 6},
     )
-    assert f"# Devices in group {GROUP_UUID} (3; indexes 3-6)" in text
-    assert (
-        "Window full: more may be available — repeat with start=6, end=9 (the platform "
-        "reports total=3, which would mean none, but what total counts is unverified"
-    ) in text
+    assert f"# Devices in group {GROUP_UUID} (3 of 6; indexes 3-6)" in text
+    assert "More available" not in text and "Window full" not in text and "Note:" not in text
     text = await call_tool_text(
         build(settings),
         "cnc_list_group_devices",
         {"group_uuid": GROUP_UUID, "start": 3, "end": 6, "response_format": "json"},
     )
     payload = json.loads(text)
-    assert payload["count"] == 3 and payload["total"] == 3
-    assert payload["has_more"] is True and payload["next_offset"] == 6
+    assert payload["count"] == 3 and payload["total"] == 6
+    assert payload["has_more"] is False and payload["next_offset"] is None
     assert payload["window_full"] is True
     # A full window whose total says more is a plain "More available".
     respx.get(url).mock(
@@ -961,7 +1099,6 @@ async def test_list_group_devices_full_window_pages_even_when_total_equals_count
         {"group_uuid": GROUP_UUID, "start": 0, "end": 3},
     )
     assert "More available: repeat with start=3, end=6." in text
-    assert "Window full" not in text and "Note:" not in text
     # A bool or text total is not a count: no "of N", has_more falls back to a full window.
     respx.get(url).mock(
         return_value=httpx.Response(
@@ -986,7 +1123,13 @@ async def test_list_group_devices_empty_and_partial(settings):
     text = await call_tool_text(
         build(settings), "cnc_list_group_devices", {"group_uuid": GROUP_UUID}
     )
-    assert text == f"No devices are members of group {GROUP_UUID} in the index window 0-100."
+    # Verified live: All Locations (members in its sub-group) answers devices [] / total 0.
+    assert text == (
+        f"No devices are members of group {GROUP_UUID} in the index window 0-100 (a group "
+        "whose members sit in its sub-groups answers none here — expand it with "
+        "cnc_get_group_hierarchy and query a leaf group)."
+    )
+    assert not text.startswith("Error")
     respx.get(url).mock(
         return_value=httpx.Response(200, json={"status": "Success", "devices": [], "total": 3})
     )
@@ -997,16 +1140,15 @@ async def test_list_group_devices_empty_and_partial(settings):
     )
     assert text == (
         f"No devices are members of group {GROUP_UUID} in the index window 50-60 "
-        "(the platform reports a total of 3; try an earlier window)."
+        "(the group has 3 members; try an earlier window)."
     )
-    # There is no earlier window than 0: the unverified total is named, not "tried".
+    # There is no earlier window than 0: the platform's own claim is reported as-is.
     text = await call_tool_text(
         build(settings), "cnc_list_group_devices", {"group_uuid": GROUP_UUID}
     )
     assert text == (
         f"No devices are members of group {GROUP_UUID} in the index window 0-100 "
-        "(the platform reports a total of 3 yet answered none — what total counts is "
-        "unverified on this build)."
+        "(the platform reports 3 members yet answered none here)."
     )
     respx.get(url).mock(
         return_value=httpx.Response(

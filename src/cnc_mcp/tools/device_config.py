@@ -38,7 +38,11 @@ Object model:
   about 6 s on the lab) and leaves a backup named ``<job>_<run_id>`` on each
   device. Job ``status`` SCHEDULED|RUNNING|COMPLETED|FAILED|PAUSED|BLOCKED;
   ``last_run_status`` NOT_STARTED|IN_PROGRESS|SUCCESS|RUN_FAILED|PARTIAL. A
-  duplicate job name is HTTP 500 ``"Job already exists with name <n>"``.
+  duplicate job name is HTTP 500 ``"Job already exists with name <n>"``. The
+  job's ``run_count`` counter lags its ``job_runs`` list (seen live
+  2026-09-14: ``0`` while the run was already listed SUCCESS), so the per-job
+  tools count the runs they list and keep the counter as
+  ``run_count_reported``.
 - **Templates** (``POST templates/query``, ``GET templates/<name>``, ``POST
   templates`` -> 204, ``DELETE templates {"templateName": [...]}`` -> 204):
   Velocity configlets (``${var}``, ``#if``) with a ``variables`` list
@@ -582,7 +586,15 @@ def run_view(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def job_view(job: dict[str, Any], device_count: int | None = None) -> dict[str, Any]:
+def job_view(
+    job: dict[str, Any],
+    device_count: int | None = None,
+    runs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The job summary. With ``runs`` (the ``job_runs`` list of a per-job read)
+    ``run_count`` is the number of runs LISTED and the platform's own counter moves
+    to ``run_count_reported``: that counter lags the runs list — seen live 2026-09-14,
+    a job whose only run was already listed SUCCESS still reported ``run_count 0``."""
     view = {
         "name": job.get("name"),
         "job_type": job.get("job_type"),
@@ -594,6 +606,9 @@ def job_view(job: dict[str, Any], device_count: int | None = None) -> dict[str, 
         "run_count": as_int(job.get("run_count")),
         "created_by": job.get("created_by"),
     }
+    if runs is not None:
+        view["run_count_reported"] = view["run_count"]
+        view["run_count"] = len(runs)
     if device_count is not None:
         view["device_count"] = device_count
     return view
@@ -847,6 +862,17 @@ def _message_of(response: httpx.Response) -> str:
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return response.text.strip()
+
+
+# The verified 200 text of DELETE config-backup/<uuid>/<name>: "Deleted backup <name>for
+# device: <uuid>" — the platform omits the space after the name, so the tool renders its
+# own line instead of echoing it.
+_DELETE_BACKUP_CONFIRMATION_PREFIX = "deleted backup"
+
+
+def is_delete_backup_confirmation(message: str) -> bool:
+    """True when a 2xx text of the backup DELETE is the verified confirmation."""
+    return message.strip().lower().startswith(_DELETE_BACKUP_CONFIRMATION_PREFIX)
 
 
 # --- tools -------------------------------------------------------------------
@@ -1248,9 +1274,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         BLOCKED); ``last_run_status`` is the outcome of the last run
         (NOT_STARTED, IN_PROGRESS, SUCCESS, RUN_FAILED, PARTIAL). A one-shot
         job that ran reads COMPLETED / SUCCESS with ``next_run_at`` at the
-        epoch (rendered '-'). Drill into a job's runs with
-        cnc_get_config_backup_job; create one with cnc_backup_device_config;
-        remove one with cnc_delete_config_backup_job.
+        epoch (rendered '-'). ``run_count`` here is the platform's own
+        counter, which LAGS the job's run list (seen live 2026-09-14: 0 for a
+        job whose run was already SUCCESS) — the per-job read counts the runs
+        it lists. Drill into a job's runs with cnc_get_config_backup_job;
+        create one with cnc_backup_device_config; remove one with
+        cnc_delete_config_backup_job.
 
         Args:
             status: comma-separated statuses to keep; omit for all.
@@ -1345,7 +1374,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         RUN_FAILED | PARTIAL and its ``run_id`` is the suffix of the backups
         it produced (``<job>_<run_id>`` in cnc_list_device_backups). To wait
         for a run to finish use cnc_wait_for_config_backup_job instead of
-        polling this tool.
+        polling this tool. The platform's ``run_count`` counter LAGS the
+        ``job_runs`` list (seen live 2026-09-14: ``run_count 0`` while the
+        only run was already listed SUCCESS), so ``job.run_count`` here is
+        the number of runs listed and the platform's counter is kept as
+        ``job.run_count_reported``.
 
         Args:
             name: the job name (exact).
@@ -1356,7 +1389,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             run ... at ... (ms), next run ..., N device(s), by user") and one
             "- run <run_id>: <status>, started <t>, <ms>" line per run; or
             JSON {"job": {"name", "job_type", "status", "last_run_status",
-            "last_run_at", "next_run_at", "duration_ms", "run_count",
+            "last_run_at", "next_run_at", "duration_ms", "run_count" (runs
+            listed), "run_count_reported" (the platform's lagging counter),
             "created_by", "device_count"}, "runs": [{"run_id", "run_status",
             "start_at", "duration_ms"}]}. "Error: no backup/restore job
             '<name>'" when unknown; "Error: ..." on an API failure.
@@ -1369,8 +1403,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 raise PlatformError(
                     f"no backup/restore job '{wanted}' (cnc_list_config_backup_jobs lists them)."
                 )
-            view = job_view(job, device_count_of(data))
             runs = [run_view(r) for r in runs_of(data)]
+            view = job_view(job, device_count_of(data), runs)
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json({"job": view, "runs": runs}), settings)
             lines = [job_line(view), f"{len(runs)} run(s):"]
@@ -1916,7 +1950,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         On timeout the answer is NOT an error: "Backup job <name> not
         finished after Ns; ..." — call again to keep waiting. Job names are
         unique, so a name that ran before answers its old outcome at once
-        (a job cannot be re-run through this server).
+        (a job cannot be re-run through this server). The platform's
+        ``run_count`` counter lags the ``job_runs`` list (seen live
+        2026-09-14: ``run_count 0`` in the very answer that listed the run as
+        SUCCESS), so ``job.run_count`` here is the number of runs listed and
+        the platform's counter is kept as ``job.run_count_reported``.
 
         Args:
             name: the job name.
@@ -1924,13 +1962,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Returns:
             str: On success: "Backup job <name> finished SUCCESS after Ns (N
-            run(s))." followed by JSON {"job": {...}, "runs": [{"run_id",
-            "run_status", "start_at", "duration_ms"}], "elapsed_seconds"}.
-            On timeout (not an error): "Backup job <name> not finished after
-            Ns; status ..., last run ..." (or "... not found (yet) ...") plus
-            the same JSON. "Error: backup job <name> failed ..." / "...
-            finished PARTIAL ..." with the runs; "Error: ..." on an API
-            failure.
+            run(s))." followed by JSON {"job": {..., "run_count" (runs
+            listed), "run_count_reported" (the platform's lagging counter),
+            ...}, "runs": [{"run_id", "run_status", "start_at",
+            "duration_ms"}], "elapsed_seconds"}. On timeout (not an error):
+            "Backup job <name> not finished after Ns; status ..., last run
+            ..." (or "... not found (yet) ...") plus the same JSON. "Error:
+            backup job <name> failed ..." / "... finished PARTIAL ..." with
+            the runs; "Error: ..." on an API failure.
         """
         try:
             wanted = name.strip()
@@ -1942,7 +1981,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             )
             job = job_of(data)
             runs = [run_view(r) for r in runs_of(data)]
-            view = job_view(job, device_count_of(data)) if job else None
+            view = job_view(job, device_count_of(data), runs) if job else None
             payload = {"job": view, "runs": runs, "elapsed_seconds": round(elapsed)}
             state = (job or {}).get("last_run_status")
             if finished and state == RUN_SUCCESS:
@@ -2081,22 +2120,35 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         device with ``POST nodes/query`` first, then ``DELETE
         /crosswork/config/v1/config-backup/<uuid>/<name>`` (URL-encoded,
         verified) -> HTTP 200 with the text "Deleted backup <name>for device:
-        <uuid>". An unknown backup name is HTTP 500 with the text "Backup
-        with name <n> not found for device: <uuid>" and is reported as "Error:
-        no backup ...". Whether the platform lets ``Initial_Version`` or a
-        pinned backup go was not exercised — it decides. Idempotent in effect
-        (a second call is the not-found error); auto-retried on 5xx/transport
-        errors other than that 500.
+        <uuid>" (sic — the platform runs the name and "for" together, verified
+        live 2026-09-14). That text is NOT echoed: the tool's own line and
+        the JSON carry the same facts with the name quoted. A 2xx whose text
+        is not that confirmation (not seen live) is reported as a non-error
+        "Backup '<name>' of PE1 (uuid): HTTP <code> but the platform's text
+        is not the usual 'Deleted backup ...' confirmation: <text>. Confirm
+        with cnc_list_device_backups." — the platform's text is echoed there
+        because it is the only evidence of what happened. An unknown backup
+        name is HTTP 500 with the text "Backup with name <n> not found for
+        device: <uuid>" and is reported as "Error: no backup ...". Whether
+        the platform lets ``Initial_Version`` or a pinned backup go was not
+        exercised — it decides. Idempotent in effect (a second call is the
+        not-found error); auto-retried on 5xx/transport errors other than
+        that 500.
 
         Args:
             name: the backup name (exact).
             uuid / host_name: exactly one selector, one device.
 
         Returns:
-            str: "Deleted backup '<name>' of PE1 (uuid)." followed by JSON
-            {"device": {"host_name", "uuid"}, "backup": str, "message": str}.
-            "Error: no backup '<name>' for PE1 (uuid) ...", "Error: no device
-            matches ..." (nothing sent), or "Error: ..." on an API failure.
+            str: "Deleted backup '<name>' of PE1 (uuid) (HTTP 200)." followed
+            by JSON {"device": {"host_name", "uuid"}, "backup": str,
+            "status_code": int}; or, on a 2xx without the usual confirmation
+            text, the non-error "Backup '<name>' of PE1 (uuid): HTTP <code>
+            but the platform's text is not the usual 'Deleted backup ...'
+            confirmation: <text>. Confirm with cnc_list_device_backups."
+            followed by the same JSON. "Error: no backup '<name>' for PE1
+            (uuid) ...", "Error: no device matches ..." (nothing sent), or
+            "Error: ..." on an API failure.
         """
         try:
             node = await find_one_device(_selector(uuid, host_name))
@@ -2115,11 +2167,22 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 )
             if not response.is_success:
                 raise http_error(response)
-            payload = {"device": device_ref(node), "backup": wanted, "message": message}
-            return finalize(
-                f"Deleted backup '{wanted}' of {device_label(node)}.\n{to_json(payload)}",
-                settings,
+            head = (
+                f"Deleted backup '{wanted}' of {device_label(node)} (HTTP {response.status_code})."
             )
+            if not is_delete_backup_confirmation(message):
+                head = (
+                    f"Backup '{wanted}' of {device_label(node)}: HTTP {response.status_code} "
+                    "but the platform's text is not the usual 'Deleted backup ...' "
+                    f"confirmation: {message or '(empty body)'}. Confirm with "
+                    "cnc_list_device_backups."
+                )
+            payload = {
+                "device": device_ref(node),
+                "backup": wanted,
+                "status_code": response.status_code,
+            }
+            return finalize(f"{head}\n{to_json(payload)}", settings)
         except Exception as e:
             return format_error(e)
 

@@ -9,7 +9,10 @@ the two built-in policies, the deployment-history entry, a devices page with
 and without ``total_count``, the policy templates, retention, health
 settings, statistics with plain and ``{unit, value}`` metrics, top-N, the
 summary series, the Spring 400 envelopes, and the NPM sample / max / empty
-answers.
+answers. The SRPOLICY statistics row (color 0, endpoint "", unit NUMBER) is
+verbatim from the live answer of 2026-09-14, as are the template unit facts:
+CEPMCRC crc is PACKETS_PER_SECOND, and OTUCONTROLLERSINFO uc is the only
+metric whose template unit is NUMBER (27 metrics have no unitType at all).
 """
 
 from __future__ import annotations
@@ -33,12 +36,18 @@ from cnc_mcp.tools.performance import (
     NPM_EMPTY_CAVEAT,
     TOP_N_SCHEMAS,
     device_uuid_key,
+    entry_has_unresolved_unit,
+    entry_is_all_zero,
     error_envelope,
+    fill_sr_policy_keys,
+    group_list_text,
+    hours_or_window,
     interface_key,
     keys_label,
     lsp_key,
     lsp_label,
     max_text,
+    metric_text,
     npm_time,
     num_text,
     parse_collection_status,
@@ -50,8 +59,11 @@ from cnc_mcp.tools.performance import (
     performance_time,
     router_id,
     series_stats,
+    sr_policy_name_parts,
     summary_rows,
+    template_units_of,
     time_window,
+    unit_unresolved,
 )
 from tests.conftest import BASE_URL, call_tool_text
 
@@ -92,7 +104,8 @@ INTERFACE_TEMPLATE = {
             },
         },
         "CEPMCRC": {
-            "crc": {"min": "0", "unitType": "NUMBER", "TCAEnabled": True},
+            # Live (GET policies/policy-templates, 2026-09-14): crc is PACKETS_PER_SECOND.
+            "crc": {"min": "0", "unitType": "PACKETS_PER_SECOND", "TCAEnabled": True},
             "crcPercentage": {
                 "min": "0",
                 "max": "100",
@@ -116,6 +129,28 @@ SRPOLICY_TEMPLATE = {
         }
     },
     "schemaDisplayMap": {"SRPOLICY": "LSP traffic"},
+    "portGroupSupported": False,
+}
+# Verified live 2026-09-14: OTUCONTROLLERSINFO uc is the ONLY metric of the whole catalogue
+# whose unitType is NUMBER (a genuine count), and 27 metrics carry no unitType at all — the
+# "ec" entry below stands in for those (shape only; which metrics lack a unit is not
+# asserted here).
+OPTICALZRP_TEMPLATE = {
+    "policyTemplate": "OPTICALZRP",
+    "schemasInterval": {
+        "OPTICSLANE": {"defaultInterval": 300, "pollingIntervals": [0, 300, 900, 1800, 3600]},
+        "OTUCONTROLLERSINFO": {
+            "defaultInterval": 300,
+            "pollingIntervals": [0, 300, 900, 1800, 3600],
+        },
+    },
+    "schemasFieldMetadata": {
+        "OTUCONTROLLERSINFO": {
+            "uc": {"min": "0", "unitType": "NUMBER", "TCAEnabled": True},
+            "ec": {"min": "0", "TCAEnabled": False},
+        }
+    },
+    "schemaDisplayMap": {"OPTICSLANE": "Optics lane", "OTUCONTROLLERSINFO": "OTU controllers"},
     "portGroupSupported": False,
 }
 DEVICE_HEALTH_TEMPLATE = {
@@ -205,6 +240,7 @@ TEMPLATES = {
     "SRPOLICY": SRPOLICY_TEMPLATE,
     "INTERFACE": INTERFACE_TEMPLATE,
     "deviceHealth": DEVICE_HEALTH_TEMPLATE,
+    "OPTICALZRP": OPTICALZRP_TEMPLATE,
 }
 RETENTION_ALL = {
     "DeviceEnvTemp": {
@@ -306,21 +342,79 @@ STATISTICS = {
         },
     ],
 }
+SRPOLICY_KEYS_PE1 = {
+    "endpoint": "",
+    "hostname": "PE1",
+    "color": 0,
+    "name": "srte_c_100_ep_10.0.0.3",
+    "device": PE1_UUID,
+}
+SRPOLICY_KEYS_PE2 = {
+    "endpoint": "",
+    "hostname": "PE2",
+    "color": 0,
+    "name": "srte_c_100_ep_10.0.0.1",
+    "device": PE2_UUID,
+}
+# Verified live 2026-09-14: every SRPOLICY row carries color 0 / endpoint "" and, with
+# units=true, unit "NUMBER" for both metrics (the template says BITS_PER_SECOND /
+# PACKETS_PER_SECOND).
 STATISTICS_UNITS = {
     "schema": "SRPOLICY",
+    "page": 1,
+    "records": 2,
+    "entries": [
+        {
+            "keys": SRPOLICY_KEYS_PE1,
+            "metrics": {
+                "outBitRate": {"unit": "NUMBER", "value": 12.5},
+                "outPktsRate": {"unit": "NUMBER", "value": 0.0},
+            },
+        },
+        {
+            "keys": SRPOLICY_KEYS_PE2,
+            "metrics": {
+                "outBitRate": {"unit": "NUMBER", "value": 0.0},
+                "outPktsRate": {"unit": "NUMBER", "value": 0.0},
+            },
+        },
+    ],
+}
+# A schema whose template unit really IS NUMBER (OTUCONTROLLERSINFO uc, a count): with
+# units=true the wire unit and the template agree, so nothing is "unresolved". The row's
+# keys are illustrative (the OTU key columns were not captured); only the metric shape
+# matters here.
+STATISTICS_NUMBER_UNIT = {
+    "schema": "OTUCONTROLLERSINFO",
     "page": 1,
     "records": 1,
     "entries": [
         {
-            "keys": {
-                "hostname": "PE1",
-                "name": "srte_c_100_ep_10.0.0.3",
-                "color": 0,
-                "endpoint": "",
-                "device": PE1_UUID,
+            "keys": {"hostname": "PE1", "interfaceName": "Optics0/0/0/0", "device": PE1_UUID},
+            "metrics": {
+                "uc": {"unit": "NUMBER", "value": 5},
+                "ec": {"unit": "NUMBER", "value": 0},
             },
-            "metrics": {"outBitRate": {"unit": "KBITS_PER_SECOND", "value": 12.5}},
         }
+    ],
+}
+STATISTICS_ZEROS = {
+    "schema": "CEPMINTERFACE",
+    "page": 1,
+    "records": 3,
+    "entries": [
+        {
+            "keys": {"hostname": "PE1", "interfaceName": "GigabitEthernet0/0/0/0"},
+            "metrics": {"ifInErrorsRate": 0.0, "ifOutErrorsRate": 0},
+        },
+        {
+            "keys": {"hostname": "PE1", "interfaceName": "GigabitEthernet0/0/0/1"},
+            "metrics": {"ifInErrorsRate": 0.0, "ifOutErrorsRate": 0.0125},
+        },
+        {
+            "keys": {"hostname": "PE2", "interfaceName": "GigabitEthernet0/0/0/0"},
+            "metrics": {"ifInErrorsRate": 0, "ifOutErrorsRate": 0},
+        },
     ],
 }
 STATISTICS_EMPTY = {"schema": "CPU", "page": 1, "records": 0, "entries": []}
@@ -507,6 +601,16 @@ NPM_500 = httpx.Response(
         "detail": "Failed to map json to class interface java.util.Map",
     },
 )
+NOW = datetime(2026, 9, 14, 8, 30, 15, 987654, tzinfo=UTC)
+# The last-6-hours window ending at NOW (whole seconds), as the NPM key carries it.
+LAST_6H = {"from": "2026-09-14T02:30:15Z", "to": "2026-09-14T08:30:15Z"}
+
+
+@pytest.fixture
+def fixed_now(monkeypatch) -> datetime:
+    monkeypatch.setattr(performance, "utcnow", lambda: NOW)
+    return NOW
+
 
 TOOLS = {
     "cnc_list_performance_policies",
@@ -576,31 +680,122 @@ async def test_paging_is_one_based_and_flat(make_settings):
 
 async def test_lsp_tools_use_the_shared_te_key_names(make_settings):
     """headend / endpoint / color / tunnel_id — the names cnc_list_sr_policies and
-    cnc_get_sr_policy_performance_metrics use, so their output chains without remapping."""
+    cnc_get_sr_policy_performance_metrics use, so their output chains without remapping.
+    The window is ``hours`` (default 24) or an optional explicit from_time / to_time, as
+    in cnc_get_performance_statistics (deliberate change: from/to used to be required)."""
     tools = {t.name: t for t in await build(make_settings()).list_tools()}
     for name in ("cnc_get_lsp_utilization", "cnc_get_lsp_delay"):
         schema = tools[name].input_schema
         props = schema["properties"]
-        assert set(schema["required"]) == {"headend", "endpoint", "from_time", "to_time"}, name
+        assert set(schema["required"]) == {"headend", "endpoint"}, name
         assert "headend_router_id" not in props and "endpoint_router_id" not in props, name
         assert "NOT the host name" in props["headend"]["description"], name
         assert props["color"]["default"] == 0 and "refused" in props["color"]["description"], name
         assert props["tunnel_id"]["default"] == "", name
+    assert set(tools["cnc_get_interface_delay"].input_schema["required"]) == {
+        "device_uuid",
+        "interface",
+    }
+
+
+async def test_every_pm_window_says_either_time_form_is_accepted(make_settings):
+    """One time convention across the family: every from_time / to_time description names
+    both ISO forms and epoch milliseconds; the hours-or-window tools default hours to 24
+    with from_time / to_time optional, the from/to-only dashboards keep them required."""
+    tools = {t.name: t for t in await build(make_settings()).list_tools()}
+    windowed = {
+        "cnc_get_performance_statistics": True,
+        "cnc_get_performance_top_n": False,
+        "cnc_get_performance_summary": False,
+        "cnc_get_lsp_utilization": True,
+        "cnc_get_lsp_delay": True,
+        "cnc_get_interface_delay": True,
+    }
+    for name, has_hours in windowed.items():
+        schema = tools[name].input_schema
+        props = schema["properties"]
+        for key in ("from_time", "to_time"):
+            text = props[key]["description"]
+            assert "either form is accepted" in text, (name, key)
+            assert "epoch milliseconds" in text and "+02:00" in text, (name, key)
+        if has_hours:
+            assert props["hours"]["default"] == 24 and props["hours"]["minimum"] == 1, name
+            assert props["hours"]["maximum"] == 9072, name
+            assert props["from_time"]["default"] == "" and props["to_time"]["default"] == ""
+            assert "from_time" not in schema["required"], name
+        else:
+            assert "hours" not in props, name
+            assert {"from_time", "to_time"} <= set(schema["required"]), name
 
 
 # --- pure helpers ---------------------------------------------------------------
 
 
-def test_parse_iso_time_accepts_utc_with_optional_millis_and_refuses_the_rest():
-    assert parse_iso_time("2026-09-13T12:00:00Z", "from_time") == datetime(
-        2026, 9, 13, 12, 0, 0, tzinfo=UTC
-    )
+def test_parse_iso_time_accepts_every_documented_form_and_refuses_the_rest():
+    """ONE parser for the PM family: ISO with or without fractional seconds, 'Z' or a UTC
+    offset (converted to UTC), epoch milliseconds (13 digits) or seconds (10 digits)
+    (deliberate changes: an offset used to be refused, and any 1-16 digit integer used to
+    be accepted — so a bare year or a dashless date was silently read as an epoch in 1970
+    and the window answered empty). A zone-less timestamp stays refused (ambiguous)."""
+    noon = datetime(2026, 9, 13, 12, 0, 0, tzinfo=UTC)
+    assert parse_iso_time("2026-09-13T12:00:00Z", "from_time") == noon
+    assert parse_iso_time("2026-09-13T12:00:00.000Z", "from_time") == noon
+    assert parse_iso_time("2026-09-13T12:00:00z", "from_time") == noon
     assert parse_iso_time(" 2026-09-13T12:00:00.250Z ", "x").microsecond == 250000
-    for bad in ("", "2026-09-13", "2026-09-13T12:00:00", "2026-09-13T12:00:00+00:00", "now"):
-        with pytest.raises(PlatformError, match="must be an ISO-8601 UTC timestamp"):
+    assert parse_iso_time("2026-09-13T12:00:00.123456789Z", "x").microsecond == 123456
+    # Offsets: +02:00 / +0200 / -05:30 all land on the same UTC instant.
+    assert parse_iso_time("2026-09-13T14:00:00+02:00", "from_time") == noon
+    assert parse_iso_time("2026-09-13T14:00:00.000+0200", "from_time") == noon
+    assert parse_iso_time("2026-09-13T06:30:00-05:30", "from_time") == noon
+    assert parse_iso_time("2026-09-13T12:00:00+00:00", "from_time") == noon
+    assert parse_iso_time("2026-09-13T12:00:00+00:00", "x").tzinfo == UTC
+    # Epoch milliseconds (13 digits) and seconds (10 digits), by magnitude.
+    assert parse_iso_time("1789300800000", "from_time") == noon
+    assert parse_iso_time(" 1789300800 ", "from_time") == noon
+    assert parse_iso_time("1789300800250", "x").microsecond == 250000
+    # A bare year, a dashless date / datetime, 0 / 1, and an implausibly long integer are
+    # NOT epochs: they get the "must be an ISO-8601 timestamp ... or epoch milliseconds"
+    # refusal the parameter descriptions promise, never a 1970 window.
+    for bad in (
+        "",
+        "2026-09-13",
+        "2026-09-13T12:00:00",
+        "now",
+        "2026-09-13 12:00:00Z",
+        "-5",
+        "2026",
+        "20260913",
+        "202609131200",
+        "20260913120000",
+        "0",
+        "1",
+        "9999999999999999",
+    ):
+        with pytest.raises(PlatformError, match="from_time must be an ISO-8601 timestamp"):
             parse_iso_time(bad, "from_time")
     with pytest.raises(PlatformError, match="not a real date/time"):
         parse_iso_time("2026-02-30T12:00:00Z", "to_time")
+    with pytest.raises(PlatformError, match="impossible UTC offset"):
+        parse_iso_time("2026-09-13T12:00:00+25:00", "to_time")
+
+
+def test_hours_or_window(monkeypatch):
+    now = datetime(2026, 9, 14, 8, 30, 15, 987654, tzinfo=UTC)
+    monkeypatch.setattr(performance, "utcnow", lambda: now)
+    start, end, explicit = hours_or_window(6, "", " ")
+    assert explicit is False
+    assert end == datetime(2026, 9, 14, 8, 30, 15, tzinfo=UTC)  # whole seconds
+    assert start == datetime(2026, 9, 14, 2, 30, 15, tzinfo=UTC)
+    start, end, explicit = hours_or_window(6, "1789300800000", "2026-09-13T20:00:00+02:00")
+    assert explicit is True
+    assert (start, end) == (
+        datetime(2026, 9, 13, 12, tzinfo=UTC),
+        datetime(2026, 9, 13, 18, tzinfo=UTC),
+    )
+    for one in (("2026-09-13T12:00:00Z", ""), ("", "2026-09-13T12:00:00Z")):
+        with pytest.raises(PlatformError, match="pass both from_time and to_time") as info:
+            hours_or_window(24, *one)
+        assert "Nothing was sent" in str(info.value)
 
 
 def test_time_window_orders_and_formats_for_both_services():
@@ -716,10 +911,21 @@ def test_rendering_helpers():
         num_text(1234.56789) == "1234.5679" and num_text(None) == "-" and num_text(True) == "true"
     )
     assert keys_label(STATISTICS["entries"][0]["keys"]) == "PE1 GigabitEthernet0/0/0/0"
-    assert (
-        keys_label(STATISTICS_UNITS["entries"][0]["keys"]) == "PE1 srte_c_100_ep_10.0.0.3 color=0"
+    # An SRPOLICY row: color / endpoint come from the name, never "color=0".
+    assert keys_label(SRPOLICY_KEYS_PE1) == (
+        "PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3"
+    )
+    assert keys_label({"hostname": "PE1", "name": "other", "color": 0, "endpoint": ""}) == (
+        "PE1 other"
     )
     assert keys_label({}) == "?"
+    assert group_list_text("device group", [GROUP_UUID]) == (
+        f"device group uuids {GROUP_UUID} (names: cnc_get_group_details)"
+    )
+    assert group_list_text("device group", ["All Locations"]) == "device groups All Locations"
+    assert group_list_text("port group", [GROUP_UUID, "Core ports"]) == (
+        f"port groups {GROUP_UUID}, Core ports"
+    )
     assert summary_rows(SUMMARY[0]) == [
         {"timestamp": "2026-09-13T00:00:00Z", "average": 0.5, "minimum": 0.0, "maximum": 1.0},
         {"timestamp": "2026-09-13T02:00:00Z", "average": 0.75, "minimum": 0.1, "maximum": 2.0},
@@ -747,6 +953,67 @@ def test_rendering_helpers():
     )
 
 
+def test_sr_policy_keys_are_filled_from_the_name():
+    assert sr_policy_name_parts("srte_c_100_ep_10.0.0.3") == (100, "10.0.0.3")
+    assert sr_policy_name_parts(" srte_c_4294967295_ep_2001:db8::1 ") == (
+        4294967295,
+        "2001:db8::1",
+    )
+    for other in ("", None, "GigabitEthernet0/0/0/0", "srte_c_x_ep_1", "srte_c_100_ep_"):
+        assert sr_policy_name_parts(other) is None, other
+    filled = fill_sr_policy_keys(SRPOLICY_KEYS_PE1)
+    assert filled == {**SRPOLICY_KEYS_PE1, "color": 100, "endpoint": "10.0.0.3"}
+    assert SRPOLICY_KEYS_PE1["color"] == 0  # the input is never mutated
+    # Populated values win over the name; a non-policy name is left alone.
+    populated = {"name": "srte_c_100_ep_10.0.0.3", "color": 200, "endpoint": "10.0.0.9"}
+    assert fill_sr_policy_keys(populated) == populated
+    plain = STATISTICS["entries"][0]["keys"]
+    assert fill_sr_policy_keys(plain) == plain
+
+
+def test_metric_text_annotates_an_unresolved_unit_and_entry_is_all_zero():
+    assert metric_text(12.5) == "12.5"
+    assert metric_text({"unit": "PERCENTAGE", "value": 0.5}) == "0.5 PERCENTAGE"
+    assert metric_text({"unit": "NUMBER", "value": 0.0}) == "0 NUMBER"
+    assert metric_text({"unit": "NUMBER", "value": 12.5}, "BITS_PER_SECOND") == (
+        "12.5 NUMBER (template unit BITS_PER_SECOND)"
+    )
+    # Only a NUMBER unit the template contradicts is annotated: a resolved unit is printed
+    # as-is, and a genuine NUMBER (OTUCONTROLLERSINFO uc: template NUMBER) is NOT
+    # "unresolved" — it used to render '5 NUMBER (template unit NUMBER)'.
+    assert metric_text({"unit": "PERCENTAGE", "value": 1}, "BITS_PER_SECOND") == "1 PERCENTAGE"
+    assert metric_text({"unit": "NUMBER", "value": 5}, "NUMBER") == "5 NUMBER"
+    assert metric_text({"value": 3}) == "3"
+    assert unit_unresolved({"unit": "NUMBER", "value": 0}, "BITS_PER_SECOND")
+    assert not unit_unresolved({"unit": "NUMBER", "value": 0}, "NUMBER")
+    assert not unit_unresolved({"unit": "NUMBER", "value": 0}, None)
+    assert not unit_unresolved({"unit": "NUMBER", "value": 0}, "")
+    assert not unit_unresolved({"unit": "PERCENTAGE", "value": 0}, "BITS_PER_SECOND")
+    assert not unit_unresolved(0.0, "BITS_PER_SECOND")
+    assert entry_has_unresolved_unit(
+        STATISTICS_UNITS["entries"][0], {"outBitRate": "BITS_PER_SECOND"}
+    )
+    assert not entry_has_unresolved_unit(STATISTICS_UNITS["entries"][0], {"other": "X"})
+    assert not entry_has_unresolved_unit(STATISTICS_NUMBER_UNIT["entries"][0], {"uc": "NUMBER"})
+    assert template_units_of(TEMPLATES, "SRPOLICY") == {
+        "outBitRate": "BITS_PER_SECOND",
+        "outPktsRate": "PACKETS_PER_SECOND",
+    }
+    assert template_units_of(TEMPLATES, "CEPMCRC") == {
+        "crc": "PACKETS_PER_SECOND",
+        "crcPercentage": "PERCENTAGE",
+    }
+    # A metric without unitType (27 of them live) is simply absent from the map.
+    assert template_units_of(TEMPLATES, "OTUCONTROLLERSINFO") == {"uc": "NUMBER"}
+    assert template_units_of(TEMPLATES, "NOPE") == {} and template_units_of(None, "CPU") == {}
+    zero, nonzero, zero2 = STATISTICS_ZEROS["entries"]
+    assert entry_is_all_zero(zero) and entry_is_all_zero(zero2) and not entry_is_all_zero(nonzero)
+    assert entry_is_all_zero(STATISTICS_UNITS["entries"][1])  # {unit, value} rows too
+    assert not entry_is_all_zero(STATISTICS_UNITS["entries"][0])
+    assert entry_is_all_zero({"keys": {}, "metrics": {}})
+    assert entry_is_all_zero({"metrics": {"x": "n/a", "y": None, "z": True}})
+
+
 # --- cnc_list_performance_policies ----------------------------------------------
 
 
@@ -759,14 +1026,17 @@ async def test_list_policies_markdown(settings):
     assert lines[0] == "# 2 performance monitoring policies"
     assert lines[2] == (
         "- **Default LSP traffic** (id 2, template SRPOLICY): active, collection OK; SRPOLICY "
-        f"every 300 s; device groups {GROUP_UUID}; changed 2026-09-13T00:00:00Z"
+        f"every 300 s; device group uuids {GROUP_UUID} (names: cnc_get_group_details); changed "
+        "2026-09-13T00:00:00Z"
     )
     assert lines[3] == (
         "- **Default interface health** (id 1, template INTERFACE): active, collection OK; "
-        f"CEPMINTERFACE every 300 s, CEPMCRC off; device groups {GROUP_UUID}; changed "
-        "2026-09-12T00:00:00Z"
+        f"CEPMINTERFACE every 300 s, CEPMCRC off; device group uuids {GROUP_UUID} (names: "
+        "cnc_get_group_details); changed 2026-09-12T00:00:00Z"
     )
     assert "cnc_get_performance_policy(policy_id)" in text
+    assert "cnc_get_group_details(group_uuid)" in text
+    assert "cnc_get_performance_policy_history(policy_id)" in text
 
 
 @respx.mock
@@ -820,7 +1090,7 @@ async def test_get_policy_markdown_lists_the_template_metrics(settings):
     assert text.startswith("# Performance policy 1: Default interface health\n\n")
     assert "- template INTERFACE; active; collection status OK\n" in text
     assert "- polling: CEPMINTERFACE every 300 s, CEPMCRC off\n" in text
-    assert f"- scope: device groups {GROUP_UUID}\n" in text
+    assert f"- scope: device group uuids {GROUP_UUID} (names: cnc_get_group_details)\n" in text
     assert "- created 2026-09-12T00:00:00Z; last changed 2026-09-12T00:00:00Z\n" in text
     assert "- thresholds: none\n" in text
     assert "## Template INTERFACE schemas and metrics\n" in text
@@ -830,8 +1100,8 @@ async def test_get_policy_markdown_lists_the_template_metrics(settings):
         "(PERCENTAGE)\n"
     ) in text
     assert text.endswith(
-        "- CEPMCRC (CRC) — default 0 s, allowed 0/300/900/1800/3600 s: crc (NUMBER), "
-        "crcPercentage (PERCENTAGE)"
+        "- CEPMCRC (CRC) — default 0 s, allowed 0/300/900/1800/3600 s: crc "
+        "(PACKETS_PER_SECOND), crcPercentage (PERCENTAGE)"
     )
 
 
@@ -1009,7 +1279,7 @@ async def test_list_policy_templates(settings):
     text = await call_tool_text(build(settings), "cnc_list_performance_policy_templates", {})
     assert route.call_count == 1
     assert text.startswith(
-        "# 3 performance policy templates\n\n## SRPOLICY (port groups not supported)\n"
+        "# 4 performance policy templates\n\n## SRPOLICY (port groups not supported)\n"
     )
     assert (
         "- SRPOLICY (LSP traffic) — default 300 s, allowed 0/300/900/1800/3600 s: outBitRate "
@@ -1027,7 +1297,7 @@ async def test_list_policy_templates_json(settings):
         build(settings), "cnc_list_performance_policy_templates", {"response_format": "json"}
     )
     data = json.loads(text)
-    assert data["count"] == 3
+    assert data["count"] == 4
     device_health = data["templates"][2]
     assert device_health["template"] == "deviceHealth"
     assert device_health["port_group_supported"] is False
@@ -1197,7 +1467,10 @@ async def test_get_statistics_by_hours(settings):
 
 @respx.mock
 async def test_get_statistics_window_metrics_device_and_units(settings):
+    """The SRPOLICY shape verified live 2026-09-14: color 0 / endpoint "" are filled from
+    the name, and the NUMBER unit is annotated from one policy-templates GET."""
     route = get(STATISTICS_URL, STATISTICS_UNITS)
+    templates = get(TEMPLATES_URL, TEMPLATES)
     text = await call_tool_text(
         build(settings),
         "cnc_get_performance_statistics",
@@ -1208,7 +1481,7 @@ async def test_get_statistics_window_metrics_device_and_units(settings):
             "from_time": "2026-09-13T00:00:00Z",
             "to_time": "2026-09-13T12:00:00Z",
             "with_units": True,
-            "page_size": 1,
+            "page_size": 2,
             "page": 1,
         },
     )
@@ -1219,15 +1492,147 @@ async def test_get_statistics_window_metrics_device_and_units(settings):
         "metrics": "outBitRate,outPktsRate",
         "device": PE1_UUID,
         "units": "true",
-        "pageSize": "1",
+        "pageSize": "2",
         "page": "1",
     }
+    assert templates.call_count == 1
     assert text == (
         "# SRPOLICY statistics — 2026-09-13T00:00:00.000Z to 2026-09-13T12:00:00.000Z, page 1 "
-        f"(1 rows; metrics outBitRate, outPktsRate; device {PE1_UUID})\n\n"
-        "- PE1 srte_c_100_ep_10.0.0.3 color=0: outBitRate=12.5 KBITS_PER_SECOND\n\n"
+        f"(2 rows; metrics outBitRate, outPktsRate; device {PE1_UUID})\n\n"
+        "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3: outBitRate=12.5 NUMBER "
+        "(template unit BITS_PER_SECOND), outPktsRate=0 NUMBER (template unit "
+        "PACKETS_PER_SECOND)\n"
+        "- PE2 srte_c_100_ep_10.0.0.1 color=100 endpoint=10.0.0.1: outBitRate=0 NUMBER "
+        "(template unit BITS_PER_SECOND), outPktsRate=0 NUMBER (template unit "
+        "PACKETS_PER_SECOND)\n\n"
+        "(unit NUMBER where the template says otherwise = the platform did not resolve the "
+        "unit; the template unit in brackets is from cnc_list_performance_policy_templates)"
+        "\n\n(page full: more may exist, call again with page=2)"
+    )
+    assert "color=0" not in text
+
+
+@respx.mock
+async def test_get_statistics_srpolicy_json_fills_color_and_endpoint(settings):
+    get(STATISTICS_URL, STATISTICS_UNITS)
+    templates = get(TEMPLATES_URL, TEMPLATES)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "SRPOLICY", "with_units": True, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["template_units"] == {
+        "outBitRate": "BITS_PER_SECOND",
+        "outPktsRate": "PACKETS_PER_SECOND",
+    }
+    assert data["records"] == 2 and data["count"] == 2 and data["only_nonzero"] is False
+    assert [e["keys"] for e in data["entries"]] == [
+        {**SRPOLICY_KEYS_PE1, "color": 100, "endpoint": "10.0.0.3"},
+        {**SRPOLICY_KEYS_PE2, "color": 100, "endpoint": "10.0.0.1"},
+    ]
+    assert data["entries"][0]["metrics"] == STATISTICS_UNITS["entries"][0]["metrics"]
+    assert templates.call_count == 1
+    # A resolved unit (CEPMINTERFACE) or no units at all: no template lookup.
+    get(STATISTICS_URL, STATISTICS)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "CEPMINTERFACE", "with_units": True, "response_format": "json"},
+    )
+    assert json.loads(text)["template_units"] is None and templates.call_count == 1
+
+
+@respx.mock
+async def test_get_statistics_genuine_number_unit_is_not_annotated(settings):
+    """OTUCONTROLLERSINFO uc really is a NUMBER (a count): the wire unit and the template
+    agree, so the row prints '5 NUMBER' with no '(template unit NUMBER)' and no 'did not
+    resolve' footer. The one policy-templates GET is still needed to tell the two cases
+    apart, and the JSON carries the schema's template units as looked up."""
+    get(STATISTICS_URL, STATISTICS_NUMBER_UNIT)
+    templates = get(TEMPLATES_URL, TEMPLATES)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "OTUCONTROLLERSINFO", "with_units": True, "hours": 6, "page_size": 10},
+    )
+    assert templates.call_count == 1
+    assert text == (
+        "# OTUCONTROLLERSINFO statistics — last 6 h, page 1 (1 rows)\n\n"
+        "- PE1 Optics0/0/0/0: uc=5 NUMBER, ec=0 NUMBER"
+    )
+    assert "template unit" not in text and "did not resolve" not in text
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "OTUCONTROLLERSINFO", "with_units": True, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["template_units"] == {"uc": "NUMBER"}
+    assert data["entries"] == STATISTICS_NUMBER_UNIT["entries"]
+    assert templates.call_count == 2
+
+
+@respx.mock
+async def test_get_statistics_unresolved_unit_survives_a_failed_template_lookup(make_settings):
+    """The unit annotation is a nicety: if policy-templates fails the row still renders."""
+    get(STATISTICS_URL, STATISTICS_UNITS)
+    respx.get(TEMPLATES_URL).mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        "cnc_get_performance_statistics",
+        {"schema": "SRPOLICY", "with_units": True},
+    )
+    assert text.startswith("# SRPOLICY statistics — last 24 h, page 1 (2 rows)\n\n")
+    assert "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3: outBitRate=12.5 NUMBER, " in (
+        text
+    )
+    assert "template unit" not in text
+
+
+@respx.mock
+async def test_get_statistics_only_nonzero(settings):
+    route = get(STATISTICS_URL, STATISTICS_ZEROS)
+    args = {
+        "schema": "CEPMINTERFACE",
+        "metrics": "ifInErrorsRate,ifOutErrorsRate",
+        "hours": 6,
+        "only_nonzero": True,
+        "page_size": 100,
+    }
+    text = await call_tool_text(build(settings), "cnc_get_performance_statistics", args)
+    assert params_of(route)["pageSize"] == "100"  # the filter is client-side
+    assert text == (
+        "# CEPMINTERFACE statistics — last 6 h, page 1 (3 rows, 1 shown after dropping 2 "
+        "all-zero; metrics ifInErrorsRate, ifOutErrorsRate)\n\n"
+        "- PE1 GigabitEthernet0/0/0/1: ifInErrorsRate=0, ifOutErrorsRate=0.0125"
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {**args, "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["only_nonzero"] is True and data["records"] == 3 and data["count"] == 1
+    assert data["has_more"] is False
+    assert data["entries"] == [STATISTICS_ZEROS["entries"][1]]
+    # Every row zero: a non-error answer that says so (and keeps the paging hint).
+    all_zero = {**STATISTICS_ZEROS, "records": 2, "entries": STATISTICS_ZEROS["entries"][::2]}
+    get(STATISTICS_URL, all_zero)
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {**args, "page_size": 2}
+    )
+    assert text == (
+        "All 2 rows of CEPMINTERFACE statistics for last 6 h (page 1; metrics ifInErrorsRate, "
+        "ifOutErrorsRate) are zero: no non-zero value on this page.\n"
         "(page full: more may exist, call again with page=2)"
     )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {**args, "page_size": 2, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["records"] == 2 and data["count"] == 0 and data["entries"] == []
+    assert data["has_more"] is True and data["next_page"] == 2
 
 
 @respx.mock
@@ -1278,13 +1683,33 @@ async def test_get_statistics_time_errors(settings):
         "cnc_get_performance_statistics",
         {"schema": "CEPMINTERFACE", "from_time": "yesterday", "to_time": "2026-09-13T00:00:00Z"},
     )
-    assert text.startswith("Error: from_time must be an ISO-8601 UTC timestamp")
-    assert route.call_count == 0
+    assert text.startswith("Error: from_time must be an ISO-8601 timestamp with a zone")
+    assert "epoch milliseconds" in text and route.call_count == 0
     text = await call_tool_text(
         build(settings), "cnc_get_performance_statistics", {"schema": "CEPMINTERFACE"}
     )
     assert text.startswith("Error: the platform needs a time window (MISSING_TIME_DETAILS).")
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_get_statistics_accepts_offset_and_epoch_times(settings):
+    """Either time form is normalised to the dashboard's .SSSZ form on the wire."""
+    route = get(STATISTICS_URL, STATISTICS)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {
+            "schema": "CEPMINTERFACE",
+            "from_time": "2026-09-13T02:00:00+02:00",
+            "to_time": "1789300800000",
+        },
+    )
+    assert params_of(route)["from"] == "2026-09-13T00:00:00.000Z"
+    assert params_of(route)["to"] == "2026-09-13T12:00:00.000Z"
+    assert text.startswith(
+        "# CEPMINTERFACE statistics — 2026-09-13T00:00:00.000Z to 2026-09-13T12:00:00.000Z"
+    )
 
 
 @respx.mock
@@ -1619,6 +2044,37 @@ async def test_get_lsp_utilization_refuses_color_0_for_sr(settings):
 
 
 @respx.mock
+async def test_get_lsp_utilization_hours_window(settings, fixed_now):
+    """hours (default 24) replaces an explicit window: from/to are the last N hours ending
+    now, whole seconds; from_time / to_time (either form) win when both are given, and one
+    without the other is refused before anything is sent."""
+    samples = post(f"{NPM_BASE}/lsp/utilizations", UTILIZATIONS)
+    maximum = post(f"{NPM_BASE}/lsp/max/utilization", MAX_UTIL)
+    base = {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100}
+    text = await call_tool_text(build(settings), "cnc_get_lsp_utilization", {**base, "hours": 6})
+    assert sent(samples) == {**LSP_KEY_SR, **LAST_6H} and sent(maximum) == {**LSP_KEY_SR, **LAST_6H}
+    assert text.startswith(
+        "# Utilization of SR LSP 10.0.0.1 -> 10.0.0.3 color 100, 2026-09-14T02:30:15Z to "
+        "2026-09-14T08:30:15Z\n"
+    )
+    await call_tool_text(build(settings), "cnc_get_lsp_utilization", base)
+    assert sent(samples, 1)["from"] == "2026-09-13T08:30:15Z"  # the default 24 h
+    assert sent(samples, 1)["to"] == "2026-09-14T08:30:15Z"
+    # An explicit window (offset + epoch-ms forms) is normalised and beats hours.
+    await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {**base, "hours": 6, "from_time": "2026-09-13T14:00:00+02:00", "to_time": "1789322400000"},
+    )
+    assert sent(samples, 2) == LSP_KEY_SR
+    text = await call_tool_text(
+        build(settings), "cnc_get_lsp_utilization", {**base, "from_time": FROM}
+    )
+    assert text.startswith("Error: pass both from_time and to_time") and "Nothing was sent" in text
+    assert samples.call_count == 3 and maximum.call_count == 3
+
+
+@respx.mock
 async def test_get_lsp_utilization_host_name_and_api_error(make_settings):
     samples = post(f"{NPM_BASE}/lsp/utilizations", UTILIZATIONS)
     text = await call_tool_text(
@@ -1724,6 +2180,34 @@ async def test_get_lsp_delay_all_empty_and_json(settings):
 
 
 @respx.mock
+async def test_get_lsp_delay_hours_window(settings, fixed_now):
+    routes = [
+        post(f"{NPM_BASE}/lsp/delay", []),
+        post(f"{NPM_BASE}/lsp/max/delay", MAX_DELAY_NONE),
+        post(f"{NPM_BASE}/lsp/delayVariance", []),
+        post(f"{NPM_BASE}/lsp/loss", []),
+    ]
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_delay",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100, "hours": 6},
+    )
+    for route in routes:
+        assert sent(route) == {**LSP_KEY_SR, **LAST_6H}
+    assert text.startswith(
+        "No LSP delay, delay-variance or loss samples for SR LSP 10.0.0.1 -> 10.0.0.3 color 100 "
+        "between 2026-09-14T02:30:15Z and 2026-09-14T08:30:15Z"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_delay",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100, "to_time": TO},
+    )
+    assert text.startswith("Error: pass both from_time and to_time")
+    assert all(route.call_count == 1 for route in routes)
+
+
+@respx.mock
 async def test_get_lsp_delay_host_name_color_0_and_api_error(make_settings):
     routes = [
         post(f"{NPM_BASE}/lsp/delay", LSP_DELAY),
@@ -1823,6 +2307,33 @@ async def test_get_interface_delay_empty_json_and_missing_interface(settings):
     )
     assert text.startswith("Error: device_uuid") and "both required" in text
     assert delays.call_count == 2
+
+
+@respx.mock
+async def test_get_interface_delay_hours_window(settings, fixed_now):
+    routes = [
+        post(f"{NPM_BASE}/interface/delays", INTERFACE_DELAYS),
+        post(f"{NPM_BASE}/interface/max/delay", MAX_DELAY),
+        post(f"{NPM_BASE}/interface/loss", []),
+    ]
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_interface_delay",
+        {"device_uuid": PE1_UUID, "interface": "GigabitEthernet0/0/0/0", "hours": 6},
+    )
+    for route in routes:
+        assert sent(route) == {**INTERFACE_KEY, **LAST_6H}
+    assert text.startswith(
+        f"# Delay and loss of GigabitEthernet0/0/0/0 on {PE1_UUID}, 2026-09-14T02:30:15Z to "
+        "2026-09-14T08:30:15Z\n"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_interface_delay",
+        {"device_uuid": PE1_UUID, "interface": "GigabitEthernet0/0/0/0", "from_time": FROM},
+    )
+    assert text.startswith("Error: pass both from_time and to_time")
+    assert all(route.call_count == 1 for route in routes)
 
 
 @respx.mock

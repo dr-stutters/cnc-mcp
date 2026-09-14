@@ -57,15 +57,23 @@ Wire facts (verified live on Crosswork 7.2, 2026-09-13 — platform notes,
   collection job ... empty device id item in list)". ``transport-type`` 1/2/3
   fails with "Invalid Transport Type" — it is never sent (0 / absent).
 - Status codes seen (all verified): **3** registered / running, **4**
-  completed (verified 2026-09-14: ``status 4, status-message "No path found
-  between the selected devices", available-path-count 0`` after ~10 s — a
-  completed verdict with zero paths, seen ONLY for the short form on a
-  ``policy`` service; a full-form status 4 has not been observed — the
-  verified full-form traces ended in status 5 — and a trace that finds
-  paths carries them in ``path-info-list`` per the document), **5** failed
-  (the reason is the ``status-message``), **6** unknown query-id. Times are
+  completed — two verified forms: ``status-message "No path found between
+  the selected devices", available-path-count 0`` after ~10 s (a completed
+  verdict with zero paths, seen ONLY for the short form on a ``policy``
+  service, answered without tracing) and, with ``mpls oam`` on the routers
+  (2026-09-14, full form on an L3VPN between PE1 and PE2), ``"Path trace
+  Successful"`` with ``available-path-count 2`` and ``path-info-list[]`` —
+  one entry per ECMP path (``path "Path 1"``, ``path-info {source
+  "10.0.0.1", destination "127.0.0.0", next-hop, out-interface,
+  path-status "found", device-uuids [<transit>, <tail-end>], path-details
+  "<UI markup, one line per hop>"}``); **5** failed (the reason is the
+  ``status-message``), **6** unknown query-id. Times are
   epoch-milliseconds sent as decimal STRINGS (``"1789324616899.0"``),
-  rendered ISO-8601 here.
+  rendered ISO-8601 here. The per-path ``device-uuids`` are inventory
+  uuids: the tools list the inventory ONCE per rendering (``POST
+  /crosswork/inventory/v1/nodes/query``, unfiltered) and show each as
+  ``<host_name> (<uuid>)``; ``destination`` is the 127/8 LSP-ping target
+  (RFC 8029) and is annotated as such.
 
 What the network needs. Without a **gNMI** connectivity type on the devices
 (the lab's state until 2026-09-14: SNMP + SSH only) every trace fails with
@@ -112,6 +120,7 @@ Not exposed: ``set-oam-delete-interval`` (not exercised live).
 
 from __future__ import annotations
 
+import ipaddress
 import uuid as uuid_lib
 from typing import Annotated, Any, NamedTuple
 from urllib.parse import unquote
@@ -151,7 +160,15 @@ RPC_START_TRACE_ROUTE = "set-oam-trace-route-by-calc"
 
 # The inventory lookup that turns a device uuid into the host_name and TE router-id
 # the full trace-route form carries (the verified nodes/query grammar of devices.py).
+# The same query, unfiltered, lists the inventory ONCE per rendering so the per-path
+# ``device-uuids`` of a completed trace read as host names.
 NODES_QUERY_URL = f"{INVENTORY}/nodes/query"
+DEVICE_LIST_PAGE_SIZE = 200
+DEVICE_LIST_MAX_PAGES = 10  # 2000 devices — far beyond any single-VM inventory
+# LSP-ping / MPLS-OAM traceroute targets: the head-end sends the echo requests to a
+# 127/8 address (RFC 8029), so a path's ``destination`` is never a real router
+# address (verified live 2026-09-14: "destination 127.0.0.0" on both ECMP paths).
+MPLS_OAM_TARGET_NET = ipaddress.ip_network("127.0.0.0/8")
 
 # Service Health probe manager (Go/JSON; verified routed on the lab).
 PROBEMGR = "/crosswork/probemgr/v1"
@@ -679,10 +696,67 @@ def hop_lines(details: str) -> list[str]:
     return lines
 
 
-def path_line(entry: dict[str, Any]) -> str:
-    """One ``path-info-list[]`` entry (verified live 2026-09-14 on a successful L3VPN trace)."""
+def is_mpls_oam_target(value: str) -> bool:
+    """True for a 127/8 address — the LSP-ping target the head-end traces towards."""
+    try:
+        return ipaddress.ip_address(value) in MPLS_OAM_TARGET_NET
+    except ValueError:
+        return False
+
+
+def destination_text(value: str) -> str:
+    """``127.0.0.0`` -> ``127.0.0.0 (MPLS-OAM LSP-ping target, expected)``; else as given."""
+    if not value:
+        return "?"
+    if is_mpls_oam_target(value):
+        return f"{value} (MPLS-OAM LSP-ping target, expected — not a router address)"
+    return value
+
+
+def path_device_uuids(route: dict[str, Any]) -> list[str]:
+    """Every ``device-uuids`` entry of the route's paths, canonical lower-case, deduplicated."""
+    seen: list[str] = []
+    for entry in dict_list(route.get("path-info-list")):
+        info = entry.get("path-info") if isinstance(entry.get("path-info"), dict) else {}
+        for device_uuid in str_list(info.get("device-uuids")):
+            key = device_uuid.strip().lower()
+            if key and key not in seen:
+                seen.append(key)
+    return seen
+
+
+def device_name_map(nodes: list[Any]) -> dict[str, str]:
+    """``{uuid (lower-case): host_name}`` of the inventory nodes that carry both."""
+    names: dict[str, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        device_uuid = text_of(node.get("uuid")).lower()
+        host = text_of(node.get("host_name"))
+        if device_uuid and host:
+            names[device_uuid] = host
+    return names
+
+
+def device_text(device_uuid: str, names: dict[str, str] | None) -> str:
+    """``P2 (1b44ade3-...)`` when the inventory resolved the uuid, else the uuid alone."""
+    host = (names or {}).get(device_uuid.strip().lower())
+    return f"{host} ({device_uuid})" if host else device_uuid
+
+
+def path_line(entry: dict[str, Any], names: dict[str, str] | None = None) -> str:
+    """One ``path-info-list[]`` entry (verified live 2026-09-14 on a successful L3VPN trace).
+
+    ``names`` (uuid -> host_name, from one inventory list) turns the
+    ``device-uuids`` into ``P2 (<uuid>)``; without it the uuids are shown as
+    the engine sent them. A 127/8 ``destination`` is annotated as the
+    MPLS-OAM LSP-ping target it is.
+    """
     info = entry.get("path-info") if isinstance(entry.get("path-info"), dict) else {}
-    hops = f"{text_of(info.get('source')) or '?'} -> {text_of(info.get('destination')) or '?'}"
+    hops = (
+        f"{text_of(info.get('source')) or '?'} -> "
+        f"{destination_text(text_of(info.get('destination')))}"
+    )
     next_hop = text_of(info.get("next-hop"))
     if next_hop:
         hops += f" via next-hop {next_hop}"
@@ -695,7 +769,7 @@ def path_line(entry: dict[str, Any]) -> str:
         parts.append(f"path-status {status}")
     devices = str_list(info.get("device-uuids"))
     if devices:
-        parts.append("devices " + ", ".join(devices))
+        parts.append("devices " + ", ".join(device_text(d, names) for d in devices))
     line = "; ".join(parts)
     details = text_of(info.get("path-details"))
     if details:
@@ -703,7 +777,9 @@ def path_line(entry: dict[str, Any]) -> str:
     return line
 
 
-def route_lines(route: dict[str, Any]) -> list[str]:
+def route_lines(
+    route: dict[str, Any], names: dict[str, str] | None = None, names_note: str | None = None
+) -> list[str]:
     """The field lines of one ServiceRoute, then its ``## Paths`` section when any."""
     lines = [
         f"- status: {status_line(route)}",
@@ -721,7 +797,9 @@ def route_lines(route: dict[str, Any]) -> list[str]:
     paths = dict_list(route.get("path-info-list"))
     if paths:
         lines.extend(["", f"## Paths ({len(paths)})"])
-        lines.extend(path_line(p) for p in paths)
+        lines.extend(path_line(p, names) for p in paths)
+        if names_note:
+            lines.append(f"- device names: {names_note}")
     return lines
 
 
@@ -750,9 +828,11 @@ def route_footer(route: dict[str, Any], query_id: str) -> str:
             "SHORT input form (yang-path + the two uuids, as another client may register it) "
             "on a 'policy' service, where the engine answers it at once WITHOUT tracing "
             "anything on the router; a FULL-form query (the one cnc_start_oam_trace_route "
-            "registers: service-type/name, node names and TE router-ids) answering status 4 "
-            "has NOT been observed live — the verified full-form traces ended in status 5. So "
-            f"judge it by its timing (both times are shown above{verdict_delay_text(route)}): "
+            "registers: service-type/name, node names and TE router-ids) with ZERO paths "
+            "answering status 4 has NOT been observed live — the verified full-form traces "
+            "ended in status 5 (no 'mpls oam') or in status 4 'Path trace Successful' WITH "
+            f"paths. So judge it by its timing (both times are shown above"
+            f"{verdict_delay_text(route)}): "
             "a verdict within seconds of create-time (the short form's arrived within ~10 s) "
             "most likely means the engine did not trace at all — re-check that service-type "
             "is the CAT label the engine expects and service-name the service's list key "
@@ -765,9 +845,17 @@ def route_footer(route: dict[str, Any], query_id: str) -> str:
             "(cnc_get_oam_settings)."
         )
     return (
-        "Each path entry names the source, destination, next-hop and out-interface the "
-        "head-end reported; device uuids resolve with cnc_get_device(uuid=...). The query is "
-        "auto-deleted after the OAM delete interval (cnc_get_oam_settings)."
+        "Each path entry is one LSP-ping traceroute the head-end ran (verified live "
+        "2026-09-14: an L3VPN between PE1 and PE2 answered two paths — the ECMP legs via P1 "
+        "and via P2): source = the head-end's TE router-id, destination = the 127/8 "
+        "MPLS-OAM LSP-ping target (expected, not a router), next-hop / out-interface = the "
+        "head-end's first hop, devices = the transit device(s) then the tail-end (the head-end "
+        "itself is not listed; verified with one transit hop per path), then the hops with "
+        "their labels and LSP-ping return "
+        "codes (0 sent, 8 label-switched, 3 egress '!'). Device uuids are shown with their "
+        "host names from one inventory list; a uuid left unresolved can be looked up with "
+        "cnc_get_device(uuid=...). The query is auto-deleted after the OAM delete interval "
+        "(cnc_get_oam_settings)."
     )
 
 
@@ -812,9 +900,14 @@ def start_summary(route: dict[str, Any], query_id: str) -> str:
     )
 
 
-def route_markdown(route: dict[str, Any], query_id: str) -> str:
+def route_markdown(
+    route: dict[str, Any],
+    query_id: str,
+    names: dict[str, str] | None = None,
+    names_note: str | None = None,
+) -> str:
     lines = [f"# OAM trace route {query_id} — {status_word(trace_status(route))}", ""]
-    lines.extend(route_lines(route))
+    lines.extend(route_lines(route, names, names_note))
     lines.extend(["", route_footer(route, query_id)])
     return "\n".join(lines)
 
@@ -989,6 +1082,52 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "shows the inventory; cnc_get_device(host_name='<name>') shows a device's uuid."
             )
         return trace_end_of_node(node, device_uuid, what)
+
+    async def device_names_for(route: dict[str, Any]) -> tuple[dict[str, str], str | None]:
+        """``(uuid -> host_name, note)`` for the devices on the route's paths.
+
+        ONE unfiltered ``POST /crosswork/inventory/v1/nodes/query`` (the
+        verified paging grammar, :data:`DEVICE_LIST_PAGE_SIZE` asked per
+        page, a further page only while the rows that actually arrived fall
+        short of the inventory's ``total_count`` AND a wanted uuid is still
+        unresolved) per rendering — nothing at all when the route has no
+        paths. The rows are counted as delivered, not as requested: a
+        platform page cap below the asked size (none is documented, and only
+        a 5-device inventory was verified) must not end the walk early and
+        report the devices past the cap as "not in the inventory". A failure
+        of that auxiliary read never fails the trace-route answer: the uuids
+        are shown as sent and ``note`` says why.
+        """
+        wanted = path_device_uuids(route)
+        if not wanted:
+            return {}, None
+        names: dict[str, str] = {}
+        fetched = 0
+        try:
+            for page in range(DEVICE_LIST_MAX_PAGES):
+                data = await client.request_json(
+                    "POST",
+                    NODES_QUERY_URL,
+                    json_body=query_body({}, page_size=DEVICE_LIST_PAGE_SIZE, page=page),
+                    retryable=True,
+                )
+                nodes, _result_count, total_count = unwrap(data, "data")
+                names.update(device_name_map(nodes))
+                fetched += len(nodes)
+                if not nodes or total_count is None or fetched >= total_count:
+                    break
+                if all(u in names for u in wanted):
+                    break  # every device on the paths is named — the rest is not needed
+        except (PlatformError, httpx.HTTPError) as e:
+            return names, f"not resolved (the inventory list failed: {e})"
+        names = {u: names[u] for u in wanted if u in names}  # only the devices on the paths
+        missing = [u for u in wanted if u not in names]
+        if missing:
+            return names, (
+                f"{len(missing)} uuid(s) not in the inventory ({', '.join(missing)}) — "
+                "cnc_get_device(uuid=...) may still know them"
+            )
+        return names, None
 
     async def probemgr_post(url: str, service_id: str) -> tuple[httpx.Response, Any]:
         """POST ``{"serviceId": ...}`` to the probe manager; the response and its JSON body.
@@ -1202,13 +1341,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         oam-operations:get-oam-trace-route-by-query-id`` with ``{"input":
         {"query-id": "<id>"}}`` (verified live) answers the ServiceRoute:
         ``status`` 3 = registered / running ("Path trace registered|running for
-        calculation"), 4 = completed — verified as "No path found between the
+        calculation"), 4 = completed — either "No path found between the
         selected devices" with ``available-path-count`` 0 (a completed verdict
         with ZERO paths, not a failure — seen only for the short input form,
-        which the engine answers without tracing; a trace that finds paths
-        carries ``path-info-list[] {path, path-info {source, destination,
+        which the engine answers without tracing) or "Path trace Successful"
+        with ``path-info-list[] {path, path-info {source, destination,
         next-hop, out-interface, device-uuids[], path-details, path-status}}``
-        per the document), 5 = failed (the ``status-message`` is the reason: the gNMI
+        (verified live 2026-09-14 on an L3VPN: 2 ECMP paths, ``source`` the
+        head-end's TE router-id, ``destination`` the 127/8 MPLS-OAM LSP-ping
+        target, ``device-uuids`` the transit device then the tail-end),
+        5 = failed (the ``status-message`` is the reason: the gNMI
         list when the devices have no gNMI connectivity type, XR's "'mpls
         oam' ... 'mpls-lspv' detected the 'resource not available'" when the
         head-end lacks ``mpls oam``), 6 = unknown query-id (answered as HTTP
@@ -1217,21 +1359,34 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``service-type``; ``head-end-*`` / ``tail-end-*`` node name, uuid and
         TE router-id (the echoed inputs — empty for whatever the registering
         client did not send); ``create-time`` / ``update-time`` (epoch-ms
-        strings, rendered ISO-8601); ``available-path-count``. This is the
-        reliable read: the list RPC does not show fresh queries. For a running
-        query prefer cnc_wait_for_oam_trace_route.
+        strings, rendered ISO-8601); ``available-path-count``. When paths
+        are present the tool lists the inventory ONCE (``POST /crosswork/
+        inventory/v1/nodes/query``, unfiltered) and renders every per-path
+        uuid as ``<host_name> (<uuid>)`` (verified live 2026-09-14 on the
+        L3VPN trace: the two legs read "devices P2 (...), PE2 (...)" and
+        "devices P1 (...), PE2 (...)") — a failed or incomplete lookup
+        leaves the uuids as sent and says so on a "device names:" line, it
+        never fails the answer. This is the reliable read: the list RPC does
+        not show fresh queries. For a running query prefer
+        cnc_wait_for_oam_trace_route.
 
         Args:
             query_id: the query id (e.g. 'SPQ-324616899').
-            response_format: markdown or json (the raw RPC ``output``).
+            response_format: markdown or json (the raw RPC ``output`` plus,
+                when paths are present, ``"device-names": {"<uuid>":
+                "<host_name>"}`` from the inventory).
 
         Returns:
             str: Markdown "# OAM trace route <id> — <status word> (<n>)" with
             "- status: ...: <message>", "- service: ...", "- head-end / tail-end:
             <name or uuid> (...)", "- created ...; updated ...",
-            "- available-path-count: N", a "## Paths (N)" section when any,
-            and a next-step hint (for status 4 with no paths: "Completed with
-            ZERO paths — the engine's verdict ..."); or the JSON ``output``.
+            "- available-path-count: N", a "## Paths (N)" section when any
+            ("- path Path 1: 10.0.0.1 -> 127.0.0.0 (MPLS-OAM LSP-ping target,
+            expected — not a router address) via next-hop 10.1.4.1
+            out-interface GigabitEthernet0/0/0/1; path-status found; devices
+            P2 (<uuid>), PE2 (<uuid>)" then one line per hop), and a
+            next-step hint (for status 4 with no paths: "Completed with ZERO
+            paths — the engine's verdict ..."); or the JSON ``output``.
             "Error: no trace-route query '<id>' (Route not found for selected
             ID) ..." for status 6; "Error: get-oam-trace-route-by-query-id failed:
             response-result <x>: ..." for a failure inside 200; "Error: the
@@ -1242,10 +1397,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             route = await fetch_trace_route(query_id)
             if trace_status(route) == TRACE_NOT_FOUND:
                 raise not_found_error(query_id, route)
+            names, names_note = await device_names_for(route)
             if response_format is ResponseFormat.JSON:
-                return finalize(to_json(route), settings)
+                payload = dict(route)
+                if names:
+                    payload["device-names"] = names
+                return finalize(to_json(payload), settings)
             shown_id = text_of(route.get("query-id")) or query_id
-            return finalize(route_markdown(route, shown_id), settings)
+            return finalize(route_markdown(route, shown_id, names, names_note), settings)
         except Exception as e:
             return format_error(e)
 
@@ -1273,10 +1432,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Read-only. Calls ``get-oam-trace-route-by-query-id`` every
         ``interval_seconds`` (the read of cnc_get_oam_trace_route) until
         ``status`` is anything but 3. On the verified build a trace took
-        10-30 s to reach its verdict (status 4 "No path found between the
-        selected devices" with 0 paths, or status 5 with the gNMI /
-        'mpls oam' text). Use it right after cnc_start_oam_trace_route instead
-        of calling cnc_get_oam_trace_route in a loop.
+        ~10-30 s to reach its verdict (status 4 "Path trace Successful" with
+        the ECMP paths once gNMI and ``mpls oam`` are in place, status 4 "No
+        path found between the selected devices" with 0 paths for the short
+        form, or status 5 with the gNMI / 'mpls oam' text). Use it right
+        after cnc_start_oam_trace_route instead of calling
+        cnc_get_oam_trace_route in a loop. Once finished with paths, the
+        inventory is listed ONCE (after the last poll, never per poll) to
+        render each path's device uuids as ``<host_name> (<uuid>)`` and the
+        127/8 destination as the MPLS-OAM LSP-ping target it is.
 
         Args:
             query_id: the query id (e.g. 'SPQ-324616899').
@@ -1286,7 +1450,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: "Trace route <id> finished after <t>s: completed (4): ..."
             followed by the full rendering of cnc_get_oam_trace_route (paths
-            included) when it completed — "... finished after <t>s with 0
+            included, device names resolved) when it completed — "... finished after <t>s with 0
             paths: completed (4): No path found between the selected devices"
             for the verified zero-path verdict (completed, not an error);
             "Trace route <id> FAILED after <t>s: <status-message>" plus the
@@ -1309,7 +1473,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if code == TRACE_NOT_FOUND:
                 raise not_found_error(query_id, route)
             shown_id = text_of(route.get("query-id")) or query_id
-            rendering = route_markdown(route, shown_id)
+            names, names_note = await device_names_for(route)
+            rendering = route_markdown(route, shown_id, names, names_note)
             if not finished:
                 return finalize(
                     f"Trace route {shown_id} not finished yet after {elapsed:.0f}s; current "
@@ -1559,9 +1724,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "status_word": status_word(trace_status(route)),
                 "status_message": text_of(route.get("status-message")) or None,
             }
+            # No inventory call for the verified answer (status 3, no paths yet).
+            names, names_note = await device_names_for(route)
             return finalize(
-                f"{start_summary(route, query_id)}\n\n{route_markdown(route, query_id)}\n\n"
-                f"{to_json(handle)}",
+                f"{start_summary(route, query_id)}\n\n"
+                f"{route_markdown(route, query_id, names, names_note)}\n\n{to_json(handle)}",
                 settings,
             )
         except Exception as e:

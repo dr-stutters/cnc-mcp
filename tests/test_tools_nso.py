@@ -34,6 +34,7 @@ from cnc_mcp.tools.nso import (
     nso_summary,
     parse_after_timestamp,
     parse_targets,
+    sync_verdict,
 )
 from tests.conftest import BASE_URL, call_tool_text
 
@@ -43,6 +44,7 @@ NSO_BASE = f"{INVENTORY}/nso"
 POLICY_QUERY_URL = f"{NSO_BASE}/policy/query"
 SYNC_URL = f"{NSO_BASE}/sync"
 SYNC_TO_URL = f"{NSO_BASE}/sync-to"
+CHECK_SYNC_URL = f"{NSO_BASE}/check-sync"
 IS_NSO_CONFIGURED_URL = f"{BASE_URL}/crosswork/aaa/v1/isNSOConfigured"
 PROXY_DEVICES_URL = f"{BASE_URL}/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device"
 # Verified live request form: the ``fields`` selector with ';' unencoded.
@@ -271,6 +273,7 @@ READ_TOOLS = {
     "cnc_list_nso_devices",
     "cnc_get_nso_device",
     "cnc_check_device_nso_state",
+    "cnc_check_nso_device_sync",  # check-sync changes no configuration: a read
     "cnc_wait_for_device_nso_state",
 }
 WRITE_TOOLS = {"cnc_nso_device_action", "cnc_nso_sync_to_device", "cnc_sync_inventory_with_nso"}
@@ -301,6 +304,21 @@ async def test_annotations(make_settings):
     assert tools["cnc_sync_inventory_with_nso"].input_schema.get("properties", {}) == {}
     # The wait tool exposes the stale-reading guard.
     assert "after_timestamp" in tools["cnc_wait_for_device_nso_state"].input_schema["properties"]
+    # The read-only check-sync says what it does and does not change.
+    check = tools["cnc_check_nso_device_sync"]
+    assert check.annotations.destructive_hint is False
+    assert "changes nothing on the device and nothing in NSO's CDB" in (check.description or "")
+    assert "What it does do on the platform: it creates a job" in (check.description or "")
+    # The failure outcome of a check-sync was never observed (no CHECK_SYNC_FAILED in the
+    # enum) and the tool itself has not been run live: the docstring must say so.
+    assert "this tool itself has NOT been" in (check.description or "")
+    assert "UNVERIFIED: what a check-sync that" in (check.description or "")
+    assert "may equally stay" in (check.description or "")
+    assert check.input_schema["properties"]["wait_seconds"]["default"] == 60
+    # The cached-verdict tool says its verdict is a cache and how to refresh it.
+    cached = tools["cnc_check_device_nso_state"].description or ""
+    assert "THE VERDICT IS A CACHE, NOT A LIVE CHECK" in cached
+    assert "cnc_check_nso_device_sync" in cached
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -355,6 +373,17 @@ def test_is_stale_compares_numerically_and_never_judges_a_missing_stamp():
     assert is_stale({"nso_timestamp": "1757772000"}, None) is False  # no guard requested
     assert is_stale({}, 1757772000) is False and is_stale({"nso_timestamp": ""}, 1) is False
     assert is_stale({"nso_timestamp": "soon"}, 1757772000) is False
+
+
+def test_sync_verdict_reads_settled_states_and_ignores_stale_readings():
+    synced = {**PE1, "nso_timestamp": "1757772010"}
+    assert sync_verdict(synced, 1757772000) == "in-sync"
+    assert sync_verdict(synced, 1757772010) == "pending"  # not newer than the pre-check stamp
+    assert sync_verdict(synced, None) == "in-sync"  # nothing to compare against
+    assert sync_verdict({**synced, "nso_state": "NOT_SYNCED"}, 1757772000) == "out-of-sync"
+    assert sync_verdict({**synced, "nso_state": "CONNECT_FAILED"}, 1757772000) == "failed"
+    assert sync_verdict({**synced, "nso_state": "CHECK_SYNC_STARTED"}, 1757772000) == "pending"
+    assert sync_verdict({**synced, "nso_state": "ASSOCIATED"}, 1757772000) == "pending"
 
 
 def test_state_tables_cover_the_documented_enum():
@@ -647,6 +676,163 @@ async def test_check_device_nso_state_api_error_is_string(make_settings):
         build(make_settings(max_retries=0)), "cnc_check_device_nso_state", {"host_name": "PE1"}
     )
     assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_check_nso_device_sync ------------------------------------------------
+
+
+@respx.mock
+async def test_check_nso_device_sync_is_a_read_that_posts_check_sync_and_waits(
+    settings, fake_clock
+):
+    """Registered without writes; resolves the selector, POSTs exactly that filter to
+    nso/check-sync, then polls until every device's nso_state is newer than the
+    pre-check stamp and settled (SYNCED / NOT_SYNCED)."""
+    pe1_before = {**PE1, "nso_timestamp": "1757772000"}
+    p1_before = {**P1, "nso_state": "SYNCED", "NsoMsg": "", "nso_timestamp": "1757772000"}
+    nodes = mock_nodes(
+        {"data": [pe1_before, p1_before], "result_count": 2},  # the selector resolve
+        {"data": [pe1_before, p1_before], "result_count": 2},  # first poll: still stale
+        {  # second poll: PE1 mid-check, P1 already settled
+            "data": [
+                {**pe1_before, "nso_state": "CHECK_SYNC_STARTED", "nso_timestamp": "1757772003"},
+                {**p1_before, "nso_state": "NOT_SYNCED", "nso_timestamp": "1757772004"},
+            ],
+            "result_count": 2,
+        },
+        {  # third poll: both settled
+            "data": [
+                {**pe1_before, "nso_timestamp": "1757772008"},
+                {**p1_before, "nso_state": "NOT_SYNCED", "nso_timestamp": "1757772004"},
+            ],
+            "result_count": 2,
+        },
+    )
+    action = respx.post(CHECK_SYNC_URL).mock(
+        return_value=httpx.Response(200, json={**JOB_ACCEPTED, "type": "NSO device check-sync"})
+    )
+    text = await call_tool_text(
+        build(settings),  # writes disabled: the tool must still be there
+        "cnc_check_nso_device_sync",
+        {"host_name": "P*", "wait_seconds": 60, "interval_seconds": 5},
+    )
+    assert sent(nodes) == query_of({"host_name": "P*"})
+    assert action.call_count == 1 and sent(action) == {"filter": {"host_name": "P*"}}
+    assert nodes.call_count == 4
+    head, body = text.split("\n", 1)
+    assert head.startswith(
+        "check-sync of 2 device(s): 1 in-sync, 1 out-of-sync, 0 failed, 0 pending (after 10s)."
+    )
+    assert "compare-config" in head  # an out-of-sync device gets the reconcile hint
+    data = json.loads(body)
+    assert data["job_id"] == JOB_ACCEPTED["job_id"] and data["state"] == "JOB_ACCEPTED"
+    assert data["action"] == "check-sync" and data["filter"] == {"host_name": "P*"}
+    assert data["settled"] is True and data["elapsed_seconds"] == 10
+    assert data["matched_total"] == 2 and "next" not in data and "matched_devices" not in data
+    by_name = {d["host_name"]: d for d in data["devices"]}
+    assert by_name["PE1"]["verdict"] == "in-sync" and by_name["PE1"]["nso_state"] == "SYNCED"
+    assert by_name["PE1"]["nso_timestamp"] == "1757772008"
+    assert by_name["PE1"]["nso_timestamp_before"] == "1757772000"
+    assert by_name["PE1"]["nso_state_before"] == "SYNCED"
+    assert by_name["P1"]["verdict"] == "out-of-sync" and by_name["P1"]["nso_state"] == "NOT_SYNCED"
+
+
+@respx.mock
+async def test_check_nso_device_sync_wait_zero_returns_pending_with_a_follow_up(settings):
+    nodes = mock_nodes(ONE_NODE)
+    action = respx.post(CHECK_SYNC_URL).mock(return_value=httpx.Response(200, json=JOB_ACCEPTED))
+    text = await call_tool_text(
+        build(settings), "cnc_check_nso_device_sync", {"uuid": PE1_UUID, "wait_seconds": 0}
+    )
+    assert nodes.call_count == 1 and sent(action) == {"filter": {"uuid": PE1_UUID}}
+    head, body = text.split("\n", 1)
+    assert (
+        head
+        == "check-sync of 1 device(s): 0 in-sync, 0 out-of-sync, 0 failed, 1 pending (after 0s)."
+    )
+    data = json.loads(body)
+    assert data["settled"] is False
+    assert data["devices"][0]["verdict"] == "pending"
+    assert data["devices"][0]["nso_state"] == "SYNCED"  # the pre-check (cached) reading
+    assert data["next"].startswith("Still pending: PE1.")
+    assert "cnc_check_device_nso_state" in data["next"]
+
+
+@respx.mock
+async def test_check_nso_device_sync_timeout_is_not_an_error_and_names_pending(
+    settings, fake_clock
+):
+    # The DLM never moves nso_timestamp past the pre-check stamp within the budget.
+    mock_nodes(ONE_NODE)
+    respx.post(CHECK_SYNC_URL).mock(return_value=httpx.Response(200, json=JOB_ACCEPTED))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_check_nso_device_sync",
+        {"host_name": "PE1", "wait_seconds": 10, "interval_seconds": 5},
+    )
+    assert not text.startswith("Error")
+    head, body = text.split("\n", 1)
+    assert "0 in-sync, 0 out-of-sync, 0 failed, 1 pending" in head
+    data = json.loads(body)
+    assert data["settled"] is False and data["devices"][0]["verdict"] == "pending"
+    assert data["next"].startswith("Still pending: PE1.")
+
+
+@respx.mock
+async def test_check_nso_device_sync_failure_state_is_a_per_device_verdict(settings, fake_clock):
+    # Hypothetical (unverified live — only connect was seen to fail): if a check NSO could
+    # not run lands in a known failure state, it is reported as 'failed', not as Error.
+    before = {**P1, "nso_state": "SYNCED", "NsoMsg": "", "nso_timestamp": "1757772000"}
+    mock_nodes(
+        {"data": [before], "result_count": 1},
+        {"data": [{**P1, "nso_timestamp": "1757772005"}], "result_count": 1},
+    )
+    respx.post(CHECK_SYNC_URL).mock(return_value=httpx.Response(200, json=JOB_ACCEPTED))
+    text = await call_tool_text(
+        build(settings), "cnc_check_nso_device_sync", {"host_name": "P1", "wait_seconds": 30}
+    )
+    assert not text.startswith("Error")
+    head, body = text.split("\n", 1)
+    assert "0 in-sync, 0 out-of-sync, 1 failed, 0 pending" in head
+    data = json.loads(body)
+    assert data["devices"][0]["verdict"] == "failed"
+    assert data["devices"][0]["nso_state"] == "CONNECT_FAILED"
+    assert data["devices"][0]["NsoMsg"] == CONNECT_FAILED_MSG
+
+
+@respx.mock
+async def test_check_nso_device_sync_zero_match_never_posts(settings):
+    nodes = mock_nodes(NO_NODES)
+    action = respx.post(CHECK_SYNC_URL).mock(return_value=httpx.Response(200, json=JOB_ACCEPTED))
+    text = await call_tool_text(build(settings), "cnc_check_nso_device_sync", {"host_name": "PE9"})
+    assert text.startswith("Error: no device matches host_name 'PE9'; nothing was sent to NSO.")
+    assert nodes.call_count == 1 and action.call_count == 0
+
+
+@respx.mock
+async def test_check_nso_device_sync_requires_one_selector_and_reports_job_failures(settings):
+    route = respx.post(CHECK_SYNC_URL).mock(return_value=httpx.Response(200, json=JOB_FAILED))
+    nodes = mock_nodes(ONE_NODE)
+    mcp = build(settings)
+    text = await call_tool_text(mcp, "cnc_check_nso_device_sync", {})
+    assert text == "Error: Pass exactly one of 'uuid' or 'host_name' to select the device(s)."
+    assert nodes.call_count == 0 and route.call_count == 0
+    text = await call_tool_text(mcp, "cnc_check_nso_device_sync", {"host_name": "PE1"})
+    assert text.startswith("Error: NSO check-sync failed (job ")
+    assert "NSO provider is not reachable" in text
+
+
+@respx.mock
+async def test_check_nso_device_sync_post_is_not_retried_on_503(make_settings):
+    mock_nodes(ONE_NODE)
+    route = respx.post(CHECK_SYNC_URL).mock(
+        return_value=httpx.Response(503, text="Service Unavailable")
+    )
+    text = await call_tool_text(
+        build(make_settings(max_retries=3)), "cnc_check_nso_device_sync", {"host_name": "PE1"}
+    )
+    assert route.call_count == 1
+    assert text.startswith("Error:") and "503" in text
 
 
 # --- cnc_nso_device_action ---------------------------------------------------

@@ -38,6 +38,7 @@ from cnc_mcp.tools.service_provisioning import (
     normalize_yang_path,
     parse_endpoints,
     parse_labels,
+    plan_layer_note,
     plan_line,
     plan_path_of,
     resolve_type_path,
@@ -756,6 +757,26 @@ def test_summarize_plan_plan_level_failed_and_error_info():
     assert plan_line(None, "nothing there") == "Plan: nothing there."
 
 
+def test_plan_line_names_the_cat_status_of_the_nano_plan_word():
+    """The 'Plan:' line is NSO nano-plan vocabulary; each one names the CAT plan status the
+    services tools use for the same service (verified: 'ready' there is 'completed' here)."""
+    ready = summarize_plan(POLICY_PLAN_READY, "cisco-sr-te-cfp-sr-policies", "policy")
+    line = plan_line(ready)
+    assert line.startswith(
+        "Plan: ready — self: init=reached, ready=reached; head-end PE1: init=reached, "
+        "config-apply=reached, ready=reached. (NSO nano-plan states; CAT plan status: "
+        "'completed'"
+    )
+    assert "'ready' accepted as its alias" in line
+    failed = summarize_plan(POLICY_PLAN_FAILED, "cisco-sr-te-cfp-sr-policies", "policy")
+    assert "CAT plan status: 'failed'" in plan_line(failed)
+    assert plan_layer_note("in-progress").startswith(
+        "(NSO nano-plan states; CAT plan status: 'in-progress'"
+    )
+    # A note-only line (no plan) carries no vocabulary note.
+    assert plan_line(None) == "Plan: not available."
+
+
 def test_dry_run_devices():
     assert dry_run_devices(DRY_RUN_CREATE)[0].device == "PE1"
     assert dry_run_devices(DRY_RUN_CREATE)[0].cli == POLICY_CLI.rstrip()
@@ -797,7 +818,10 @@ async def test_create_odn_template_created_with_plan(writes):
         "Plan: ready — self: init=reached, ready=reached; head-end PE1: init=reached, "
         "config-apply=reached, ready=reached." in text
     )
-    assert "cnc_wait_for_service_plan" not in text
+    # The line names its CAT equivalent (the two plan vocabularies), but a ready plan gets
+    # no "wait for it" hint.
+    assert "(NSO nano-plan states; CAT plan status: 'completed'" in text
+    assert "Wait for it with cnc_wait_for_service_plan" not in text
     assert "Next: " in text and "cnc_delete_odn_template" in text
     assert "cnc_list_services / cnc_get_service show the template" in text
 

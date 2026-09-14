@@ -91,6 +91,7 @@ ALARM = {
     "AlarmId": "a-1",
     "AlarmCategory": "Reachability",
     "Description": "Device PE1 unreachable",
+    "State": "Major",
     "Created": "1789212325000",
     "Updated": "1789212325000",
     "Acknowledge": False,
@@ -353,10 +354,38 @@ async def test_list_alarms_criteria_string_and_markdown(settings):
         "openAlarmsOnly": False,
         "criteria": "select * from alarm limit 5 page 2",
     }
-    assert "[Reachability] Device PE1 unreachable — created 1789212325000, id a-1" in text
+    # the shared alarm rendering: [State] object — description (id, ack, events, ISO times, age)
+    assert (
+        "- [Major] n-1 — Device PE1 unreachable (a-1, ack=False, events=2, "
+        "created=2026-09-12T11:25:25Z, updated=2026-09-12T11:25:25Z, age="
+    ) in text
     assert "SNMP timeout" not in text  # Events detail dropped from markdown
-    assert "open and cleared" in text
+    assert "open and cleared, sorted updated_desc" in text
     assert "page=" not in text  # 1 of 5: no more pages
+    assert "Sorting is per page" in text
+
+
+@respx.mock
+async def test_list_alarms_sorts_per_page_and_refuses_unknown_sort(settings):
+    older = {**ALARM, "AlarmId": "a-old", "Created": "1789212000000", "Updated": "1789212000000"}
+    newer = {**ALARM, "AlarmId": "a-new", "Created": "1789213000000", "Updated": "1789212500000"}
+    route = respx.post(ALARMS_URL).mock(
+        return_value=httpx.Response(200, json={"state": "Success", "alarms": [older, newer]})
+    )
+    text = await call_tool_text(
+        make_server(settings), "cnc_list_alarms", {"response_format": "json"}
+    )
+    assert [a["AlarmId"] for a in json.loads(text)["items"]] == ["a-new", "a-old"]
+    assert json.loads(text)["sort"] == "updated_desc"
+    text = await call_tool_text(
+        make_server(settings), "cnc_list_alarms", {"sort": "platform", "response_format": "json"}
+    )
+    assert [a["AlarmId"] for a in json.loads(text)["items"]] == ["a-old", "a-new"]
+    text = await call_tool_text(make_server(settings), "cnc_list_alarms", {"sort": "platform"})
+    assert "platform order (NOT newest-first)" in text and "Sorting is per page" not in text
+    text = await call_tool_text(make_server(settings), "cnc_list_alarms", {"sort": "oldest"})
+    assert text.startswith("Error: Unknown sort 'oldest'")
+    assert route.call_count == 3
 
 
 @respx.mock

@@ -76,6 +76,9 @@ def build_instructions(settings: Settings) -> str:
         "- Filters are exact-match, case-insensitive, and accept '*' as a wildcard "
         "(host_name='PE*'). There is no substring match without '*'.",
         "- response_format='markdown' (default) is a curated summary; 'json' is complete data.",
+        "- Arguments are flat and named exactly as each tool's input schema lists them; an "
+        "unknown argument name is rejected by name with a closest-match hint (host_names -> "
+        "'did you mean host_name?'), never silently ignored.",
         "- Enum inputs accept friendly values (admin_state='up', family='sr_pce', "
         "protocol='ssh') or the platform's wire values (ROBOT_ADMIN_STATE_UP).",
         "- Writes return the platform's job envelope (job_id, state, impacted_objects). "
@@ -91,11 +94,15 @@ def build_instructions(settings: Settings) -> str:
         "- Topology and TE state (cnc_*_topology_*, cnc_list_sr_policies, ...) come from the "
         "RESTCONF topology NBI: nodes are keyed by node-id (= host_name), links by the "
         "verbatim link-id '<src> : <srcIf> : <dst> : <dstIf> : <ISIS_IPV4_L2|ETHERNET>' "
-        "(listed once per direction), SR policies by (headend, endpoint, color) where "
-        "headend/endpoint are TE router-ids (loopbacks), not hostnames. Pass ids exactly as "
-        "the list tools print them; the tools handle URL encoding. Performance metrics "
-        "exist for IGP links and policies only (keyed reads, no listing). An all-ETHERNET "
-        "topology means the SR-PCE gRPC feed is not up.",
+        "(listed once per direction), SR policies by (headend, endpoint, color) — on the "
+        "wire those are TE router-ids (loopbacks); the SR policy read tools accept a host "
+        "name or a router-id for headend/endpoint, the RSVP-TE tunnel tools router-ids only. "
+        "Pass ids exactly as the list tools print them; the tools handle URL encoding. "
+        "Performance metrics exist for IGP links and policies only (keyed reads, no "
+        "listing), and the policy PM delay is the PCE's modelled figure unless SR-PM "
+        "telemetry is configured. An all-ETHERNET topology means the SR-PCE gRPC feed is "
+        "not up. pce-controlled = delegated to the PCE; pcep-flag-c 1 = PCE-initiated, 0 = "
+        "configured on the router (PCC-initiated).",
         "- SR-TE operations (cnc_create_sr_policy, cnc_dryrun_sr_policy, ...) go through the "
         "Optimization Engine and the SR-PCE: policies created here are PCE-initiated "
         "(pcep-flag-c 1) and appear on the headend within seconds; PCC-initiated policies "
@@ -111,9 +118,14 @@ def build_instructions(settings: Settings) -> str:
         "out on exit.",
         "- Alarms: system alarms (Crosswork's own) come from alarms/v1 (cnc_list_alarms, "
         "cnc_search_alarms, cnc_get_alarm, ack/note/clear); the platform ignores server-side "
-        "filters, so searches are client-side; device/network alarms from the EMF fault manager "
-        "are a separate list (cnc_list_device_alarms). Tags are assigned by PATCHing the device "
-        "(cnc_assign_tags), which briefly flips it to ROBOT_OPER_STATE_CHECKING; a device lock "
+        "filters and does not page newest-first, so searches and sorting are client-side "
+        "(cnc_search_alarms sees every alarm; cnc_list_alarms sorts one page). Crosswork "
+        "does not auto-clear old pod-health alarms — an old open alarm with 0 events is "
+        "possibly stale: confirm with cnc_get_cluster_health / cnc_list_microservices before "
+        "reporting an outage. Acknowledge/annotate notes are permanent; device/network "
+        "alarms from the EMF fault manager are a separate list (cnc_list_device_alarms). "
+        "Tags are assigned by PATCHing the device (cnc_assign_tags), which briefly flips it "
+        "to ROBOT_OPER_STATE_CHECKING; a device lock "
         "(cnc_lock_device) needs the device in ROBOT_OPER_STATE_OK.",
         "- Device configuration (cnc_*_device_backup*, cnc_*_config_template*, "
         "cnc_deploy_config_template): backups and template deployments are asynchronous "

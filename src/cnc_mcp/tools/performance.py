@@ -58,10 +58,33 @@ Object model (performance):
 - **Time windows**: ``dashboards/statistics`` takes either ``timeInterval``
   (hours back from now) or ``from`` + ``to``; ``topn`` and ``summary`` need
   ``from`` + ``to``. Times are ISO-8601 UTC ``YYYY-MM-DDTHH:mm:ss.SSSZ`` on
-  the wire; the tools accept ``2026-09-13T12:00:00Z`` (milliseconds optional)
-  and normalise. Retention (``GET dataretention/all|default``): raw 24 h,
-  hourly 168 h, daily 744 h, weekly 9072 h by default — a window older than
-  the raw retention only has aggregated data.
+  the performance wire and ``YYYY-MM-DDTHH:mm:ssZ`` on the NPM wire; every
+  tool here takes its ``from_time`` / ``to_time`` through ONE parser
+  (:func:`parse_iso_time`) that accepts ISO-8601 with or without
+  milliseconds, with ``Z`` or a UTC offset, and epoch milliseconds (13
+  digits) or seconds (10 digits) — any other bare integer, a year or a
+  dashless date, is refused rather than read as 1970 — and normalises to
+  the form each service was verified with — so
+  ``2026-09-13T12:00:00Z``, ``2026-09-13T12:00:00.000Z``,
+  ``2026-09-13T14:00:00+02:00`` and ``1789300800000`` are all the same
+  instant to every tool. The NPM tools also take ``hours`` (default 24) like
+  the statistics dashboard, so a "last N hours" question needs no explicit
+  window. Retention (``GET dataretention/all|default``): raw 24 h, hourly
+  168 h, daily 744 h, weekly 9072 h by default — a window older than the
+  raw retention only has aggregated data. How long NPM keeps its samples is
+  not documented and was not verified.
+- **SRPOLICY rows** (``dashboards/statistics?schema=SRPOLICY``, verified live
+  2026-09-14): the platform leaves ``color`` at 0 and ``endpoint`` at ``""``
+  in every row's keys; the ``name`` (``srte_c_100_ep_10.0.0.3`` — the
+  IOS-XR policy name the CFP renders as ``srte_c_<color>_ep_<tail-end>``)
+  is what carries them, so the tool fills both from the name
+  (:func:`sr_policy_name_parts`). With ``units=true`` the same rows report
+  ``unit "NUMBER"`` for outBitRate and outPktsRate, whereas the template
+  catalogue says BITS_PER_SECOND / PACKETS_PER_SECOND (and CEPMINTERFACE
+  rows do carry their real units). NUMBER is also a genuine template unit
+  (OTUCONTROLLERSINFO uc is a count; 27 metrics have no unitType at all),
+  so the tool annotates a NUMBER unit with the catalogue's unit only where
+  the catalogue says otherwise (:func:`unit_unresolved`).
 
 Object model (NPM): an **LSP** is keyed by TE router-ids — ``peerAddress``
 the head-end router-id (the loopback the PCE knows the node by, e.g.
@@ -92,9 +115,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import re
 import uuid as uuid_lib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Any
 
 import httpx
@@ -105,6 +129,8 @@ from cnc_mcp.crosswork import REACHABILITY_STATES
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, pagination_envelope, to_json
 from cnc_mcp.safety import AppContext, register_tool
+
+logger = logging.getLogger(__name__)
 
 PERFORMANCE = "/crosswork/performance/v1"
 NPM = "/crosswork/optima-analytics/api/v1"
@@ -173,8 +199,21 @@ CODE_MISSING_TIME_DETAILS = "MISSING_TIME_DETAILS"
 # retention (9072 h); anything older is gone whatever the request says.
 MAX_HOURS = 9072
 
-_ISO_TIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$")
+_ISO_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:?\d{2})$"
+)
+# A bare epoch is exactly 10 digits (seconds) or 13 (milliseconds): a bare year ('2026'),
+# a dashless date ('20260913') or datetime ('202609131200') must NOT be read as an epoch
+# near 1970 / 1976 — they fall through to the ISO error instead.
+_EPOCH_RE = re.compile(r"^(?:\d{10}|\d{13})$")
+# The IOS-XR name of a CFP-rendered SR policy: srte_c_<color>_ep_<tail-end router-id>.
+_SR_POLICY_NAME_RE = re.compile(r"^srte_c_(\d+)_ep_(.+)$")
 _ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+# The unit the statistics dashboard reports when it did not resolve one (SRPOLICY rows on
+# 7.2, verified live 2026-09-14: the template says BITS_PER_SECOND / PACKETS_PER_SECOND).
+# NUMBER is ALSO a genuine template unit (OTUCONTROLLERSINFO uc is a count), so a NUMBER
+# row counts as unresolved only where the template catalogue says otherwise.
+UNRESOLVED_UNIT = "NUMBER"
 
 NPM_EMPTY_CAVEAT = (
     "NPM never validates its input: an unknown key answers the same empty list as a known "
@@ -194,6 +233,23 @@ _COLOR_DESC = (
     "(0, the default, is refused: no SR policy has color 0); ignored when tunnel_id is given."
 )
 _SCHEMA_HELP = "cnc_list_performance_policy_templates lists every schema with its metrics."
+# One wording for every from_time / to_time in the module: either form is accepted.
+_TIME_FORMS = (
+    "ISO-8601 with or without milliseconds, 'Z' or a UTC offset (e.g. "
+    "'2026-09-13T00:00:00Z', '2026-09-13T00:00:00.000Z', '2026-09-13T02:00:00+02:00'), or "
+    "epoch milliseconds (e.g. '1789257600000') — either form is accepted and normalised"
+)
+_FROM_DESC = f"Window start — {_TIME_FORMS}."
+_TO_DESC = f"Window end — {_TIME_FORMS}."
+_HOURS_DESC = (
+    "Window: the last N hours back from now (e.g. 24); ignored when from_time and to_time "
+    "are given."
+)
+_FROM_OPTIONAL_DESC = (
+    f"Explicit window start — {_TIME_FORMS}; pass with to_time, or neither (then the last "
+    "`hours` hours are used)."
+)
+_TO_OPTIONAL_DESC = f"Explicit window end — {_TIME_FORMS}."
 _TOP_N_HELP = (
     "the token is <SCHEMA>_<exact metric name> and top-N covers only the schemas of "
     f"cnc_list_performance_top_n_columns ({', '.join(TOP_N_SCHEMAS)})"
@@ -203,22 +259,51 @@ _TOP_N_HELP = (
 # --- pure helpers ------------------------------------------------------------
 
 
+def utcnow() -> datetime:
+    """Current UTC time (a function so tests can pin it)."""
+    return datetime.now(tz=UTC)
+
+
 def parse_iso_time(text: str | None, what: str) -> datetime:
-    """An ISO-8601 UTC timestamp (``2026-09-13T12:00:00Z``, milliseconds optional) ->
-    an aware datetime; anything else is a PlatformError naming the parameter."""
+    """The ONE time parser of the PM family -> an aware UTC datetime. Accepts ISO-8601 with
+    or without fractional seconds (``2026-09-13T12:00:00Z``, ``2026-09-13T12:00:00.000Z``),
+    with ``Z`` or a UTC offset (``2026-09-13T14:00:00+02:00`` -> 12:00 UTC), and an epoch
+    in milliseconds (``1789300800000``, 13 digits) or seconds (``1789300800``, 10 digits).
+    Any other bare integer — a year (``2026``), a dashless date (``20260913``) or datetime
+    (``202609131200``), ``0`` — is refused rather than silently read as an epoch in 1970
+    (the window would be sent and answer empty, and the agent would conclude "no data"). A
+    timestamp without any zone is refused (it would be ambiguous), as is anything else — a
+    PlatformError naming the parameter."""
     value = (text or "").strip()
+    if _EPOCH_RE.match(value):
+        n = int(value)
+        seconds = n / 1000 if len(value) == 13 else float(n)
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            raise PlatformError(f"{what} '{value}' is not a valid epoch time.") from None
     match = _ISO_TIME_RE.match(value)
     if not match:
         raise PlatformError(
-            f"{what} must be an ISO-8601 UTC timestamp such as 2026-09-13T12:00:00Z "
-            f"(milliseconds optional: 2026-09-13T12:00:00.000Z), got '{text}'."
+            f"{what} must be an ISO-8601 timestamp with a zone — 2026-09-13T12:00:00Z, "
+            f"2026-09-13T12:00:00.000Z or 2026-09-13T14:00:00+02:00 — or epoch milliseconds "
+            f"(1789300800000); got '{text}'."
         )
-    micros = int((match.group(3) or "0").ljust(6, "0"))
+    micros = int((match.group(3) or "0")[:6].ljust(6, "0"))
     try:
         base = datetime.strptime(f"{match.group(1)}T{match.group(2)}", "%Y-%m-%dT%H:%M:%S")
     except ValueError:
         raise PlatformError(f"{what} '{value}' is not a real date/time.") from None
-    return base.replace(microsecond=micros, tzinfo=UTC)
+    zone = match.group(4)
+    if zone in ("Z", "z"):
+        return base.replace(microsecond=micros, tzinfo=UTC)
+    sign = 1 if zone[0] == "+" else -1
+    digits = zone[1:].replace(":", "")
+    offset = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+    if offset >= timedelta(hours=24):
+        raise PlatformError(f"{what} '{value}' has an impossible UTC offset.")
+    aware = base.replace(microsecond=micros, tzinfo=timezone(sign * offset))
+    return aware.astimezone(UTC)
 
 
 def time_window(from_time: str | None, to_time: str | None) -> tuple[datetime, datetime]:
@@ -231,6 +316,26 @@ def time_window(from_time: str | None, to_time: str | None) -> tuple[datetime, d
             f"{to_time!s})."
         )
     return start, end
+
+
+def hours_or_window(
+    hours: int, from_time: str | None, to_time: str | None
+) -> tuple[datetime, datetime, bool]:
+    """The window of a tool that takes ``hours`` OR ``from_time`` + ``to_time`` (the
+    statistics-dashboard convention): both bounds -> that window (explicit=True); neither
+    -> the last ``hours`` hours ending now, whole seconds (explicit=False); one without the
+    other is refused before anything is sent."""
+    has_from, has_to = bool((from_time or "").strip()), bool((to_time or "").strip())
+    if has_from != has_to:
+        raise PlatformError(
+            "pass both from_time and to_time for an explicit window, or neither (then the "
+            "last `hours` hours are used). Nothing was sent."
+        )
+    if has_from:
+        start, end = time_window(from_time, to_time)
+        return start, end, True
+    end = utcnow().replace(microsecond=0)
+    return end - timedelta(hours=hours), end, False
 
 
 def performance_time(value: datetime) -> str:
@@ -409,14 +514,31 @@ def intervals_text(schemas_interval: dict[str, Any]) -> str:
     return ", ".join(parts) or "(no schemas)"
 
 
+def is_uuid(text: Any) -> bool:
+    try:
+        uuid_lib.UUID(str(text).strip())
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
+def group_list_text(label: str, values: list[str]) -> str:
+    """'device groups All Locations' when the platform sent names (deployment history),
+    'device group uuids 7913c888-... (names: cnc_get_group_details)' when it sent uuids (the
+    policies themselves carry the target group as a raw uuid on 7.2)."""
+    if values and all(is_uuid(v) for v in values):
+        return f"{label} uuids {', '.join(values)} (names: cnc_get_group_details)"
+    return f"{label}s {', '.join(values)}"
+
+
 def scope_text(view: dict[str, Any]) -> str:
     parts = []
     if view.get("devices"):
         parts.append("devices " + ", ".join(view["devices"]))
     if view.get("device_groups"):
-        parts.append("device groups " + ", ".join(view["device_groups"]))
+        parts.append(group_list_text("device group", view["device_groups"]))
     if view.get("port_groups"):
-        parts.append("port groups " + ", ".join(view["port_groups"]))
+        parts.append(group_list_text("port group", view["port_groups"]))
     return "; ".join(parts) or "no devices or groups selected"
 
 
@@ -651,10 +773,38 @@ def health_settings_markdown(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def sr_policy_name_parts(name: Any) -> tuple[int, str] | None:
+    """``srte_c_100_ep_10.0.0.3`` -> ``(100, "10.0.0.3")`` — the color and tail-end
+    router-id an IOS-XR / CFP policy name encodes; None for any other name."""
+    match = _SR_POLICY_NAME_RE.match(str(name or "").strip())
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2)
+
+
+def fill_sr_policy_keys(keys: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a statistics row's keys with ``color`` / ``endpoint`` filled from the
+    ``srte_c_<color>_ep_<ip>`` name when the platform left them at 0 / "" (every SRPOLICY
+    row on 7.2, verified live 2026-09-14); populated values are never overwritten."""
+    parts = sr_policy_name_parts(keys.get("name"))
+    if parts is None:
+        return dict(keys)
+    color, endpoint = parts
+    out = dict(keys)
+    if out.get("color") in (None, "", 0, "0"):
+        out["color"] = color
+    if out.get("endpoint") in (None, ""):
+        out["endpoint"] = endpoint
+    return out
+
+
 def keys_label(keys: dict[str, Any]) -> str:
-    """'PE1 GigabitEthernet0/0/0/0' / 'PE1 srte_c_100_ep_10.0.0.3 color=0' — hostname, then
-    the interface/object name, then any other non-empty key as key=value; the device uuid is
-    left to the JSON form."""
+    """'PE1 GigabitEthernet0/0/0/0' / 'PE1 srte_c_100_ep_10.0.0.3 color=100
+    endpoint=10.0.0.3' — hostname, then the interface/object name, then any other
+    populated key as key=value (an SRPOLICY row's color / endpoint come from its name when
+    the platform sends 0 / ""; a color of 0 is never printed, no SR policy has it); the
+    device uuid is left to the JSON form."""
+    keys = fill_sr_policy_keys(keys)
     parts: list[str] = []
     host = keys.get("hostname")
     if host not in (None, ""):
@@ -663,26 +813,100 @@ def keys_label(keys: dict[str, Any]) -> str:
         value = keys.get(key)
         if value not in (None, ""):
             parts.append(str(value))
-    for key, value in keys.items():
+    # color then endpoint in a fixed order (the platform's key order varies), then the rest.
+    ordered = ["color", "endpoint"] + [k for k in keys if k not in ("color", "endpoint")]
+    for key in ordered:
+        value = keys.get(key)
         if key in ("hostname", "interfaceName", "name", "device") or value in (None, ""):
+            continue
+        if key == "color" and value in (0, "0"):
             continue
         parts.append(f"{key}={value}")
     return " ".join(parts) or "?"
 
 
-def metric_text(value: Any) -> str:
-    """A statistics metric value: a plain number, or ``{unit, value}`` with units=true."""
+def unit_unresolved(value: Any, template_unit: str | None) -> bool:
+    """True when a ``{unit, value}`` statistics metric reports NUMBER while the template
+    catalogue says otherwise — the platform did not resolve the unit (SRPOLICY rows,
+    verified live 2026-09-14). NUMBER with a NUMBER template (OTUCONTROLLERSINFO uc, a
+    count) or with no template unit at all is NOT unresolved."""
+    return (
+        isinstance(value, dict)
+        and value.get("unit") == UNRESOLVED_UNIT
+        and bool(template_unit)
+        and template_unit != UNRESOLVED_UNIT
+    )
+
+
+def metric_text(value: Any, template_unit: str | None = None) -> str:
+    """A statistics metric value: a plain number, or ``{unit, value}`` with units=true —
+    '12.5 KBITS_PER_SECOND'; an unresolved unit (NUMBER where the template says otherwise,
+    see unit_unresolved) is annotated with the template catalogue's unit: '0 NUMBER
+    (template unit BITS_PER_SECOND)'. A genuine NUMBER (template NUMBER) prints as
+    '5 NUMBER'."""
     if isinstance(value, dict):
         unit = value.get("unit")
         text = num_text(value.get("value"))
-        return f"{text} {unit}" if unit else text
+        if not unit:
+            return text
+        if unit_unresolved(value, template_unit):
+            return f"{text} {unit} (template unit {template_unit})"
+        return f"{text} {unit}"
     return num_text(value)
 
 
-def statistics_line(entry: dict[str, Any]) -> str:
+def metric_number(value: Any) -> float | None:
+    """The numeric value of a statistics metric (bare, or ``{unit, value}``); None when it
+    is not a number."""
+    raw = value.get("value") if isinstance(value, dict) else value
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    return float(raw)
+
+
+def entry_is_all_zero(entry: dict[str, Any]) -> bool:
+    """True when every metric of a statistics row is 0 (or the row has no numeric metric) —
+    the rows ``only_nonzero`` drops."""
+    numbers = [metric_number(v) for v in _dict(entry.get("metrics")).values()]
+    return all(n is None or n == 0 for n in numbers)
+
+
+def statistics_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """A statistics row as returned, with its keys passed through fill_sr_policy_keys."""
+    return {**entry, "keys": fill_sr_policy_keys(_dict(entry.get("keys")))}
+
+
+def statistics_line(entry: dict[str, Any], template_units: dict[str, str] | None = None) -> str:
     metrics = _dict(entry.get("metrics"))
-    values = ", ".join(f"{m}={metric_text(v)}" for m, v in metrics.items()) or "(no metrics)"
+    units = template_units or {}
+    values = (
+        ", ".join(f"{m}={metric_text(v, units.get(str(m)))}" for m, v in metrics.items())
+        or "(no metrics)"
+    )
     return f"- {keys_label(_dict(entry.get('keys')))}: {values}"
+
+
+def entry_has_unresolved_unit(entry: dict[str, Any], template_units: dict[str, str]) -> bool:
+    """True when statistics_line annotated at least one metric of this row with
+    "(template unit ...)" — drives the footer explaining the annotation."""
+    return any(
+        unit_unresolved(v, template_units.get(str(m)))
+        for m, v in _dict(entry.get("metrics")).items()
+    )
+
+
+def template_units_of(templates: Any, schema: str) -> dict[str, str]:
+    """``{metric: unitType}`` of one schema from the ``policies/policy-templates`` answer
+    (searched across every template); {} when the schema is not there."""
+    for template in _dict(templates).values():
+        fields = _dict(_dict(_dict(template).get("schemasFieldMetadata")).get(schema))
+        if fields:
+            return {
+                str(metric): str(_dict(meta).get("unitType"))
+                for metric, meta in fields.items()
+                if _dict(meta).get("unitType")
+            }
+    return {}
 
 
 def topn_line(entry: dict[str, Any]) -> str:
@@ -943,8 +1167,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         "PARTIAL"}``. A fresh 7.2 install has two built-in active policies: id
         1 "Default interface health" (INTERFACE: CEPMINTERFACE every 300 s,
         CEPMCRC off) and id 2 "Default LSP traffic" (SRPOLICY every 300 s). An
-        interval of 0 means the schema is not polled. Use this first to learn
-        the policy ids for cnc_get_performance_policy /
+        interval of 0 means the schema is not polled. The target
+        ``deviceGroups`` / ``portGroups`` are RAW GROUP UUIDS on 7.2 (verified
+        live: the built-in policies target one device-group uuid, which is
+        the "All Locations" location group) — the tool labels them "device
+        group uuids ... (names: cnc_get_group_details)"; resolve a uuid with
+        cnc_get_group_details(group_uuid=...), or read the group NAME the
+        policy was activated with from cnc_get_performance_policy_history
+        (its deployment-history entries carry "All Locations"). Use this
+        first to learn the policy ids for cnc_get_performance_policy /
         cnc_list_performance_policy_devices and to see which schemas produce
         data at all (a schema no active policy polls answers empty
         statistics). Creating or changing policies is not exposed.
@@ -952,13 +1183,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: Markdown "# N performance monitoring policies" and one
             "- **name** (id, template): active|inactive, collection OK;
-            <schema> every N s, ...; device groups ...; changed <ISO>" line per
-            policy, or JSON {"count": int, "policies": [{"id", "name",
-            "description", "template", "active", "collection_status",
-            "schemas_interval": {schema: seconds}, "devices": [str],
-            "device_groups": [str], "port_groups": [str], "tag", "thresholds",
-            "created_at", "last_changed_at"}]}. "No performance monitoring
-            policies." when the list is empty; "Error: ..." on an API failure.
+            <schema> every N s, ...; device group uuids <uuid> (names:
+            cnc_get_group_details); changed <ISO>" line per policy, or JSON
+            {"count": int, "policies": [{"id", "name", "description",
+            "template", "active", "collection_status", "schemas_interval":
+            {schema: seconds}, "devices": [str], "device_groups": [uuid str],
+            "port_groups": [uuid str], "tag", "thresholds", "created_at",
+            "last_changed_at"}]}. "No performance monitoring policies." when
+            the list is empty; "Error: ..." on an API failure.
         """
         try:
             data = await perf_get(POLICIES_URL)
@@ -970,7 +1202,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             lines = [f"# {len(views)} performance monitoring policies", ""]
             lines.extend(policy_line(v) for v in views)
             lines.append(
-                "\nDetails and the template's metrics: cnc_get_performance_policy(policy_id)."
+                "\nDetails and the template's metrics: cnc_get_performance_policy(policy_id). "
+                "Group uuids: cnc_get_group_details(group_uuid) names one; "
+                "cnc_get_performance_policy_history(policy_id) shows the group name the "
+                "policy was activated with."
             )
             return finalize("\n".join(lines), settings)
         except Exception as e:
@@ -1467,38 +1702,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=100,
             ),
         ] = "",
-        hours: Annotated[
-            int,
-            Field(
-                description=(
-                    "Window: the last N hours (e.g. 24); ignored when from_time and to_time "
-                    "are given."
-                ),
-                ge=1,
-                le=MAX_HOURS,
-            ),
-        ] = 24,
-        from_time: Annotated[
-            str,
-            Field(
-                description=(
-                    "Explicit window start, ISO-8601 UTC (e.g. '2026-09-13T00:00:00Z'); pass "
-                    "with to_time, or neither."
-                ),
-                max_length=40,
-            ),
-        ] = "",
-        to_time: Annotated[
-            str,
-            Field(
-                description="Explicit window end, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ] = "",
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         with_units: Annotated[
             bool,
             Field(
                 description="true to return each value as {unit, value} instead of a bare number."
+            ),
+        ] = False,
+        only_nonzero: Annotated[
+            bool,
+            Field(
+                description=(
+                    "true to drop the rows whose every returned metric is 0 on the fetched page "
+                    "— e.g. with metrics='ifInErrorsRate,ifOutErrorsRate,ifInDiscardsRate,"
+                    "ifOutDiscardsRate' and a large page_size: 'which interfaces had any "
+                    "errors or discards?' in one call."
+                )
             ),
         ] = False,
         page_size: Annotated[
@@ -1515,57 +1736,88 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         (the Performance dashboard's table).
 
         Read-only; ``GET /crosswork/performance/v1/dashboards/statistics?
-        schema=<SCHEMA>&timeInterval=<hours>`` or ``&from=&to=`` (ISO
+        schema=<SCHEMA>&timeInterval=<hours>`` or ``&from=&to=`` (sent as ISO
         ``YYYY-MM-DDTHH:mm:ss.SSSZ``; neither answers 400 MISSING_TIME_DETAILS)
         ``[&metrics=a,b][&device=<uuid>]&units=true|false&pageSize=&page=``
         (verified; ``page`` 1-based) -> ``{"schema", "page", "records" (rows on
         this page), "entries": [{"keys": {hostname, interfaceName | name +
-        color + endpoint (SRPOLICY: name "srte_c_100_ep_10.0.0.3") | cpuName |
-        ..., device (uuid)}, "metrics": {<metric>: <average> | {unit, value}}}]}``.
-        Past the last page: ``records 0, entries []``. Values are the window's
-        averages per object. A schema no active policy polls answers empty
-        (CPU / MEMORY / DVAVAILABILITY on a fresh install: no deviceHealth
-        policy); an unknown schema answers 400 INVALID_SCHEMA. Schemas and
-        metric names: cnc_list_performance_policy_templates (INTERFACE ->
-        CEPMINTERFACE / CEPMCRC, SRPOLICY, deviceHealth -> CPU / MEMORY /
-        DVAVAILABILITY / ENVTEMP, ...). For a ranked list use
-        cnc_get_performance_top_n; for a time series of one metric across
-        the network use cnc_get_performance_summary.
+        color + endpoint (SRPOLICY) | cpuName | ..., device (uuid)},
+        "metrics": {<metric>: <average> | {unit, value}}}]}``. Past the last
+        page: ``records 0, entries []``. Values are the window's averages per
+        object (a brief spike shows as a small non-zero average). A schema no
+        active policy polls answers empty (CPU / MEMORY / DVAVAILABILITY on a
+        fresh install: no deviceHealth policy); an unknown schema answers 400
+        INVALID_SCHEMA. Schemas and metric names:
+        cnc_list_performance_policy_templates (INTERFACE -> CEPMINTERFACE /
+        CEPMCRC, SRPOLICY, deviceHealth -> CPU / MEMORY / DVAVAILABILITY /
+        ENVTEMP, ...). For a ranked list use cnc_get_performance_top_n; for a
+        time series of one metric across the network use
+        cnc_get_performance_summary.
+
+        SRPOLICY rows (verified live 2026-09-14): the platform sends ``color
+        0`` and ``endpoint ""`` in every row and only the ``name``
+        (``srte_c_100_ep_10.0.0.3`` = color 100, endpoint 10.0.0.3) carries
+        them, so the tool fills color / endpoint from the name in both output
+        forms and never prints "color=0". With with_units=true the same rows
+        report ``unit "NUMBER"`` (the platform did not resolve the unit; the
+        template catalogue says outBitRate BITS_PER_SECOND, outPktsRate
+        PACKETS_PER_SECOND, and CEPMINTERFACE rows do carry BITS_PER_SECOND /
+        PERCENTAGE / PACKETS_PER_SECOND). NUMBER is also a genuine template
+        unit (OTUCONTROLLERSINFO uc is a count; 27 other metrics have no
+        unitType at all), so a NUMBER row is unresolved only where the
+        template says otherwise: those metrics are annotated "(template unit
+        ...)" from one extra ``GET policies/policy-templates`` (issued
+        whenever a row reports NUMBER) and the JSON carries the schema's
+        template units as ``template_units``; a NUMBER row whose template
+        unit is NUMBER (or unknown) prints plainly, with no footer.
+
+        Time window: ``hours`` (default 24, sent as ``timeInterval``) or both
+        ``from_time`` and ``to_time`` — ISO-8601 with or without milliseconds,
+        'Z' or a UTC offset, or epoch milliseconds; either form is accepted
+        and normalised. Retention: cnc_get_performance_retention (raw 24 h,
+        then hourly / daily / weekly roll-ups by default).
 
         Args:
             schema: the schema name (upper-cased before sending).
             metrics: optional comma list of metric names.
             device_uuid: optional inventory uuid filter.
             hours: window length when from_time / to_time are not given.
-            from_time / to_time: explicit window (both or neither).
+            from_time / to_time: explicit window (both or neither; either
+                time form accepted).
             with_units: wrap every value as {unit, value}.
+            only_nonzero: drop the all-zero rows of the fetched page
+                (client-side; ``records`` still counts the platform's rows,
+                so paging is unaffected).
             page_size / page: 1-based paging.
             response_format: markdown or json.
 
         Returns:
             str: Markdown "# <SCHEMA> statistics — last N h | <from> to <to>,
-            page P (R rows)" and one "- <hostname> <interface|name ...>:
-            metric=value[ UNIT], ..." line per row plus a "(more ...)" note
-            when the page is full; or JSON {"schema", "window": {"hours" |
-            "from", "to"}, "page", "page_size", "records", "has_more",
-            "next_page", "entries": [...] (as the platform returns them)}.
-            "No <SCHEMA> statistics ..." (non-error) when records is 0;
-            "Error: unknown performance schema '<x>' (INVALID_SCHEMA). ..."
-            listing the known schemas; "Error: from_time must be ..." (nothing
-            sent) for a bad time; "Error: ..." on an API failure.
+            page P (R rows[, N shown after dropping all-zero rows])" and one
+            "- <hostname> <interface|name color=C endpoint=E>: metric=value[
+            UNIT[ (template unit U)]], ..." line per row, a "(unit NUMBER
+            where the template says otherwise = ...)" footer only when a row
+            was annotated, plus a "(more ...)" note when the page is full; or
+            JSON {"schema", "window": {"hours" | "from", "to"}, "metrics",
+            "device", "only_nonzero", "page", "page_size", "records"
+            (platform rows on the page), "count" (rows returned), "has_more",
+            "next_page", "template_units": {metric: unit} (the schema's
+            template units, looked up only when a row reports NUMBER) | null,
+            "entries": [...] (as the platform returns them,
+            except that SRPOLICY color / endpoint are filled from the name
+            when the platform left them 0 / "")}. "No <SCHEMA> statistics
+            ..." (non-error) when records is 0, and "All R rows of ... are
+            zero" (non-error) when only_nonzero drops every row; "Error:
+            unknown performance schema '<x>' (INVALID_SCHEMA). ..." listing
+            the known schemas; "Error: from_time must be ..." (nothing sent)
+            for a bad time; "Error: ..." on an API failure.
         """
         try:
             schema_name = parse_schema(schema)
             params: dict[str, Any] = {"schema": schema_name}
             window: dict[str, Any]
-            has_from, has_to = bool(from_time.strip()), bool(to_time.strip())
-            if has_from != has_to:
-                raise PlatformError(
-                    "pass both from_time and to_time for an explicit window, or neither "
-                    "(then the last `hours` hours are used). Nothing was sent."
-                )
-            if has_from:
-                start, end = time_window(from_time, to_time)
+            start, end, explicit = hours_or_window(hours, from_time, to_time)
+            if explicit:
                 params["from"] = performance_time(start)
                 params["to"] = performance_time(end)
                 window = {"from": params["from"], "to": params["to"]}
@@ -1591,7 +1843,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 ),
             }
             data = _dict(await perf_get(STATISTICS_URL, params=params, hints=hints))
-            entries = _list_of_dicts(data.get("entries"))
+            entries = [statistics_entry(e) for e in _list_of_dicts(data.get("entries"))]
             records = data.get("records")
             records = (
                 records
@@ -1599,6 +1851,23 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 else len(entries)
             )
             has_more = records >= page_size and records > 0
+            shown = [e for e in entries if not entry_is_all_zero(e)] if only_nonzero else entries
+            template_units: dict[str, str] | None = None
+            if with_units and any(
+                _dict(v).get("unit") == UNRESOLVED_UNIT
+                for e in shown
+                for v in _dict(e.get("metrics")).values()
+            ):
+                # Best effort: the annotation must never sink the statistics themselves.
+                try:
+                    template_units = template_units_of(
+                        await perf_get(POLICY_TEMPLATES_URL), schema_name
+                    )
+                except Exception as lookup_error:
+                    logger.warning(
+                        "policy-templates lookup for %s units failed: %s", schema_name, lookup_error
+                    )
+                    template_units = None
             window_text = (
                 f"last {hours} h" if "hours" in window else f"{window['from']} to {window['to']}"
             )
@@ -1608,12 +1877,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "window": window,
                     "metrics": metric_names,
                     "device": device_uuid.strip() or None,
+                    "only_nonzero": only_nonzero,
                     "page": data.get("page") if data.get("page") is not None else page,
                     "page_size": page_size,
                     "records": records,
+                    "count": len(shown),
                     "has_more": has_more,
                     "next_page": page + 1 if has_more else None,
-                    "entries": entries,
+                    "template_units": template_units,
+                    "entries": shown,
                 }
                 return finalize(to_json(payload), settings)
             if not entries:
@@ -1628,15 +1900,37 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 filters.append(f"metrics {', '.join(metric_names)}")
             if device_uuid.strip():
                 filters.append(f"device {device_uuid.strip()}")
+            more = f"\n(page full: more may exist, call again with page={page + 1})"
+            if not shown:
+                return finalize(
+                    f"All {records} rows of {schema_name} statistics for {window_text} (page "
+                    f"{page}{'; ' + '; '.join(filters) if filters else ''}) are zero: no "
+                    "non-zero value on this page." + (more if has_more else ""),
+                    settings,
+                )
+            dropped = (
+                f", {len(shown)} shown after dropping {len(entries) - len(shown)} all-zero"
+                if only_nonzero
+                else ""
+            )
             lines = [
-                f"# {schema_name} statistics — {window_text}, page {page} ({records} rows"
+                f"# {schema_name} statistics — {window_text}, page {page} ({records} rows{dropped}"
                 + (f"; {'; '.join(filters)}" if filters else "")
                 + ")",
                 "",
             ]
-            lines.extend(statistics_line(e) for e in entries)
+            lines.extend(statistics_line(e, template_units) for e in shown)
+            # The footer explains the "(template unit ...)" annotation, so it appears only
+            # when a row actually carries one — a genuine NUMBER unit (template NUMBER, e.g.
+            # OTUCONTROLLERSINFO uc) is not "unresolved" and gets no footer.
+            if template_units and any(entry_has_unresolved_unit(e, template_units) for e in shown):
+                lines.append(
+                    "\n(unit NUMBER where the template says otherwise = the platform did not "
+                    "resolve the unit; the template unit in brackets is from "
+                    "cnc_list_performance_policy_templates)"
+                )
             if has_more:
-                lines.append(f"\n(page full: more may exist, call again with page={page + 1})")
+                lines.append(more)
             return finalize("\n".join(lines), settings)
         except Exception as e:
             return format_error(e)
@@ -1661,20 +1955,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=120,
             ),
         ],
-        from_time: Annotated[
-            str,
-            Field(
-                description="Window start, ISO-8601 UTC (e.g. '2026-09-13T00:00:00Z').",
-                max_length=40,
-            ),
-        ],
-        to_time: Annotated[
-            str,
-            Field(
-                description="Window end, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ],
+        from_time: Annotated[str, Field(description=_FROM_DESC, max_length=40)],
+        to_time: Annotated[str, Field(description=_TO_DESC, max_length=40)],
         page_size: Annotated[
             int, Field(description="Entries per page — the N (e.g. 10).", ge=1, le=500)
         ] = 10,
@@ -1739,7 +2021,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Args:
             metric: the <SCHEMA>_<metric> token (schema upper-cased before sending).
-            from_time / to_time: the window (both required).
+            from_time / to_time: the window (both required) — ISO-8601 with
+                or without milliseconds, 'Z' or a UTC offset, or epoch
+                milliseconds; either form is accepted and normalised to the
+                ``.SSSZ`` form the dashboard takes.
             page_size / page: the N and the 1-based page.
             sort / severity / device_groups: optional, passed as given
                 (``sort`` upper/lower-case as documented: average | minimum |
@@ -1897,20 +2182,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=120,
             ),
         ],
-        from_time: Annotated[
-            str,
-            Field(
-                description="Window start, ISO-8601 UTC (e.g. '2026-09-13T00:00:00Z').",
-                max_length=40,
-            ),
-        ],
-        to_time: Annotated[
-            str,
-            Field(
-                description="Window end, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ],
+        from_time: Annotated[str, Field(description=_FROM_DESC, max_length=40)],
+        to_time: Annotated[str, Field(description=_TO_DESC, max_length=40)],
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
@@ -1932,7 +2205,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Args:
             metric: the <SCHEMA>_<metric> token (schema upper-cased before sending).
-            from_time / to_time: the window (both required).
+            from_time / to_time: the window (both required) — ISO-8601 with
+                or without milliseconds, 'Z' or a UTC offset, or epoch
+                milliseconds; either form is accepted and normalised to the
+                ``.SSSZ`` form the dashboard takes.
             response_format: markdown or json.
 
         Returns:
@@ -2011,20 +2287,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def cnc_get_lsp_utilization(
         headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=64)],
         endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=64)],
-        from_time: Annotated[
-            str,
-            Field(
-                description="Window start, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ],
-        to_time: Annotated[
-            str,
-            Field(
-                description="Window end, ISO-8601 UTC (e.g. '2026-09-13T18:00:00Z').",
-                max_length=40,
-            ),
-        ],
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         color: Annotated[int, Field(description=_COLOR_DESC, ge=0, le=4294967295)] = 0,
         tunnel_id: Annotated[
             str,
@@ -2049,7 +2314,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         the LSP key ``{"lspType": "SR", "peerAddress": <head-end router-id>,
         "destAddress": <tail-end router-id>, "color": "<color as a STRING>",
         "from", "to"}`` (or ``{"lspType": "RSVP", ..., "tunnelId"}`` when
-        tunnel_id is given; times as ``2026-09-13T12:00:00Z``). Answers:
+        tunnel_id is given; times sent as ``2026-09-13T12:00:00Z``). Answers:
         ``[{"tst": "<ISO>", "util": <number>}, ...]`` (5-minute samples) and
         ``{"maxUtilization", "success", "message"}``. Keys are TE router-ids
         (IP addresses — a host name is refused here because NPM would
@@ -2062,10 +2327,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         cnc_get_performance_statistics(schema='SRPOLICY') for the PM
         policy's outBitRate.
 
+        Time window: ``hours`` (default 24, the last N hours ending now) or
+        both ``from_time`` and ``to_time`` — ISO-8601 with or without
+        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
+        is accepted and normalised (the same convention as
+        cnc_get_performance_statistics). How long NPM keeps samples is not
+        documented and was not verified; the performance service's retention
+        (cnc_get_performance_retention) does not govern NPM.
+
         Args:
             headend / endpoint: TE router-ids (the same names and values as
                 cnc_list_sr_policies / cnc_get_sr_policy_performance_metrics).
-            from_time / to_time: the window (both required).
+            hours: window length when from_time / to_time are not given.
+            from_time / to_time: explicit window (both or neither; either
+                time form accepted).
             color: the SR policy color (required for SR; 0 is refused).
             tunnel_id: an RSVP-TE tunnel id (switches to lspType RSVP).
             response_format: markdown or json.
@@ -2079,12 +2354,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             {"count", "first_at", "last_at", "average", "minimum", "maximum",
             "last"}, "samples": [{"tst", "util"}]}. "No LSP utilization samples
             for ..." (non-error, with the unknown-key caveat) for an empty
-            list; "Error: headend must be a TE router-id ..." or "Error: color
-            is required for an SR policy ..." (nothing sent); "Error: ..." on
-            an API failure.
+            list; "Error: headend must be a TE router-id ...", "Error: color
+            is required for an SR policy ..." or "Error: pass both from_time
+            and to_time ..." (nothing sent); "Error: ..." on an API failure.
         """
         try:
-            start, end = time_window(from_time, to_time)
+            start, end, _ = hours_or_window(hours, from_time, to_time)
             key = lsp_key(headend, endpoint, color, tunnel_id, start, end)
             label = lsp_label(key)
             samples_data, max_data = await asyncio.gather(
@@ -2126,20 +2401,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def cnc_get_lsp_delay(
         headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=64)],
         endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=64)],
-        from_time: Annotated[
-            str,
-            Field(
-                description="Window start, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ],
-        to_time: Annotated[
-            str,
-            Field(
-                description="Window end, ISO-8601 UTC (e.g. '2026-09-13T18:00:00Z').",
-                max_length=40,
-            ),
-        ],
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         color: Annotated[int, Field(description=_COLOR_DESC, ge=0, le=4294967295)] = 0,
         tunnel_id: Annotated[
             str,
@@ -2169,12 +2433,25 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         RSVP + ``tunnelId``; TE router-ids, not host names). Delay data needs
         SR-PM / performance-measurement probes on the head-end: a lab without
         them answers ``[]`` on every series, and NPM answers the same ``[]``
-        for an unknown key — every empty section says so.
+        for an unknown key — every empty section says so. (The ``delay-us``
+        of cnc_get_sr_policy_performance_metrics is a PCE-side figure that is
+        present even when this tool has no samples — seen live: delay-us 20
+        with no NPM delay series and no SR-PM probes — so treat THIS tool as
+        the measured series and that one as computed.)
+
+        Time window: ``hours`` (default 24, the last N hours ending now) or
+        both ``from_time`` and ``to_time`` — ISO-8601 with or without
+        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
+        is accepted and normalised (the same convention as
+        cnc_get_performance_statistics). How long NPM keeps samples is not
+        documented and was not verified.
 
         Args:
             headend / endpoint: TE router-ids (the same names and values as
                 cnc_list_sr_policies / cnc_get_sr_policy_performance_metrics).
-            from_time / to_time: the window (both required).
+            hours: window length when from_time / to_time are not given.
+            from_time / to_time: explicit window (both or neither; either
+                time form accepted).
             color / tunnel_id: SR color (required for SR; 0 is refused), or an
                 RSVP-TE tunnel id.
             response_format: markdown or json.
@@ -2187,12 +2464,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             <the key>, "max_delay": {...}, "delay": [...], "delay_variance":
             [...], "loss": [...]}. "No LSP delay, delay-variance or loss
             samples for ..." (non-error, with the caveat) when every series is
-            empty; "Error: headend must be ..." or "Error: color is required
-            for an SR policy ..." (nothing sent);
-            "Error: ..." on an API failure.
+            empty; "Error: headend must be ...", "Error: color is required
+            for an SR policy ..." or "Error: pass both from_time and to_time
+            ..." (nothing sent); "Error: ..." on an API failure.
         """
         try:
-            start, end = time_window(from_time, to_time)
+            start, end, _ = hours_or_window(hours, from_time, to_time)
             key = lsp_key(headend, endpoint, color, tunnel_id, start, end)
             label = lsp_label(key)
             delay_data, max_data, variance_data, loss_data = await asyncio.gather(
@@ -2262,20 +2539,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=200,
             ),
         ],
-        from_time: Annotated[
-            str,
-            Field(
-                description="Window start, ISO-8601 UTC (e.g. '2026-09-13T12:00:00Z').",
-                max_length=40,
-            ),
-        ],
-        to_time: Annotated[
-            str,
-            Field(
-                description="Window end, ISO-8601 UTC (e.g. '2026-09-13T18:00:00Z').",
-                max_length=40,
-            ),
-        ],
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
@@ -2300,10 +2566,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         refused before sending — cnc_get_device(host_name=...) shows the
         uuid. Interface names: cnc_list_node_interfaces.
 
+        Time window: ``hours`` (default 24, the last N hours ending now) or
+        both ``from_time`` and ``to_time`` — ISO-8601 with or without
+        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
+        is accepted and normalised (the same convention as
+        cnc_get_performance_statistics). How long NPM keeps samples is not
+        documented and was not verified.
+
         Args:
             device_uuid: the inventory uuid (any spelling; sent canonical).
             interface: the interface name.
-            from_time / to_time: the window (both required).
+            hours: window length when from_time / to_time are not given.
+            from_time / to_time: explicit window (both or neither; either
+                time form accepted).
             response_format: markdown or json.
 
         Returns:
@@ -2314,11 +2589,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             "max_delay": {...}, "delay": [...], "loss": [...]}. "No delay or
             loss samples for ..." (non-error, with the caveat) when both series
             are empty; "Error: device_uuid ... and interface ... are both
-            required" or "Error: device_uuid must be the device's inventory
-            uuid ..." (nothing sent); "Error: ..." on an API failure.
+            required", "Error: device_uuid must be the device's inventory
+            uuid ..." or "Error: pass both from_time and to_time ..." (nothing
+            sent); "Error: ..." on an API failure.
         """
         try:
-            start, end = time_window(from_time, to_time)
+            start, end, _ = hours_or_window(hours, from_time, to_time)
             key = interface_key(device_uuid, interface, start, end)
             label = f"{key['int_name']} on {key['device_uuid']}"
             delay_data, max_data, loss_data = await asyncio.gather(

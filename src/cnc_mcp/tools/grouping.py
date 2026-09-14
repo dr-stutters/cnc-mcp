@@ -3,22 +3,24 @@ the rule vocabulary that classifies members into groups.
 
 What grouping is. Crosswork's grouping service (``/crosswork/grouping/v1/
 grouping``, plain JSON, Bearer) organises devices and ports into **groups**:
-a tree per *classifier* (the port classifiers ``PortType`` and
-``UserDefinedPorts`` are verified live; the OpenAPI document also lists the
-device classifiers ``DeviceAccess``, ``LocationDevices`` and
-``TopologyTypeDevices``). A group is ``Static`` (members added by hand) or
-``Dynamic`` (members selected by a **rule** — a set of ``<attribute>
-<operator> <value>`` conditions over the device / port attributes the
-``rule/conditions`` endpoints enumerate). Device groups are what the alarm
-suppression policies (:mod:`cnc_mcp.tools.fault`) and the UI's group views
-scope on.
+a tree per *classifier*. The device classifiers are ``DeviceAccess`` (the
+RBAC device-access groups — root ``ALL-ACCESS``), ``LocationDevices`` (root
+``Location`` > ``All Locations`` > ``Unassigned Devices`` until locations are
+assigned) and ``TopologyTypeDevices`` (root ``Topology Type`` > ``AS`` >
+``<asn>`` > ``IGP Domain`` > ``<id>``, derived from the topology); the port
+classifiers are ``PortType`` and ``UserDefinedPorts``. All five are verified
+live (2026-09-14). A group is ``StaticSystem`` (system-managed), ``Static``
+(members added by hand) or ``Dynamic`` (members selected by a **rule** — a set
+of ``<attribute> <operator> <value>`` conditions over the device / port
+attributes the ``rule/conditions`` endpoints enumerate). Device groups are
+what the alarm suppression policies (:mod:`cnc_mcp.tools.fault`), the PM
+monitoring policies (``deviceGroups`` uuid) and the UI's group views scope on.
 
 Only reads are exposed. The create / update / delete group and rule bodies
 (``POST group``, ``POST rule``, ``PUT group/<uuid>``, ``member/move|copy``,
-port add/remove) are unverified on this build and **no device groups exist on
-the lab**, so nothing here writes.
+port add/remove) are unverified on this build, so nothing here writes.
 
-Wire facts (verified live on Crosswork 7.2, 2026-09-13, base
+Wire facts (verified live on Crosswork 7.2, 2026-09-13 and 2026-09-14, base
 :data:`GROUPING`):
 
 - ``GET device/rule/conditions`` -> ``{"conditions": [{"attributeName":
@@ -29,30 +31,44 @@ Wire facts (verified live on Crosswork 7.2, 2026-09-13, base
   ``GET ports/rule/conditions`` answers the same shape with the port
   attributes.
 - ``GET group/root/<classifiers>/uuid`` -> a JSON **list of root-group
-  uuids**: ``PortType,UserDefinedPorts`` -> 2 uuids on the lab;
-  ``DeviceGroup,Device,Devices`` -> ``[]`` (no device groups on this build,
-  and those device classifier names are guesses — the documented ones above
-  were not exercised). An unknown classifier answers ``[]``, not an error.
-- ``GET groups/<uuids>?brief=<bool>&direct=<bool>`` -> hierarchies
-  ``[{uuid, name, classifier, ...}]`` — the document's shape (``GroupDTO``:
-  ``description``, ``discoveryType``, ``nodeType``, ``parentUuid``,
-  ``parentName``, ``childrenCount`` and a nested ``children[]``); NOT yet
-  exercised with real uuids, so the tree rendering follows the document.
-  ``GET group/<uuids>`` is the deprecated spelling of the same call.
-- ``GET group/<uuid>/details`` -> ``{"status": "Success", "group": {...}}``
-  and ``GET device/<uuid>`` -> ``{"status": "Success", "devices": [{"uuid",
-  "attributes": {"hostname", "node_ip", "product_type", "software_type",
-  "software_version", "product_family", "product_series", "reachability",
-  "discoveryType", "last_update" (epoch s), ...}}], "total": N}`` — both
-  are document shapes (``ResultDTO`` / ``DeviceResultDTO``, ``status``
-  ``Success`` | ``Partial`` | ``Error`` with an ``error`` text), unverified
-  live because the lab has no device groups. The document says it is
-  "essential" to send ``?start=<i>&end=<j>`` index paging on the device
-  listing, so the tool always sends a window (default ``0-100``); whether
-  ``end`` is inclusive, and what ``total`` counts (the document says "total
-  number of devices included in the result" — this answer, or the whole
-  group?), is unverified, so ``total`` never turns ``has_more`` off on a
-  window that came back full.
+  uuids**, NOT in the order the classifiers were given (the lab answered
+  Location, ALL-ACCESS, Topology Type for ``DeviceAccess,LocationDevices,
+  TopologyTypeDevices``) — expand them with the hierarchy call to learn which
+  is which. ``DeviceAccess,LocationDevices,TopologyTypeDevices`` -> 3 uuids,
+  ``PortType,UserDefinedPorts`` -> 2 uuids on the lab. An unknown classifier
+  (e.g. the guesses ``DeviceGroup,Device,Devices``) answers ``[]``, not an
+  error.
+- ``GET groups/<uuids>?brief=<bool>&direct=<bool>`` -> a list of ``GroupDTO``
+  trees ``[{uuid, name, children[]?, childrenCount?, operations?}]``. The
+  **brief** view carries ONLY ``uuid``, ``name``, ``children``,
+  ``childrenCount`` and ``operations`` — no ``classifier``; the **full** view
+  (``brief=false``) adds ``discoveryType``, ``nodeType`` and ``classifier``.
+  Neither view carried ``description``, ``parentUuid`` or ``parentName`` on
+  the lab (those come from ``group/<uuid>/details``). ``childrenCount`` in
+  this call is the number of DEVICES that are direct members of the group,
+  not its sub-groups: the lab's three device groups that hold members
+  directly (the leaves Unassigned Devices and IGP Domain 0, and the root
+  ALL-ACCESS, which has no sub-groups) each showed 5 = the whole inventory,
+  while ``All Locations`` (one sub-group, no direct members) showed 0. It
+  is absent on the ``Location`` and ``Topology Type`` roots (and on nothing
+  else seen) — present on the ``ALL-ACCESS`` root, so "root" alone does not
+  predict it. ``GET group/<uuids>`` is the deprecated spelling.
+- ``GET group/<uuid>/details`` -> ``{"status": "Success", "group": {uuid,
+  name, discoveryType, nodeType, classifier, parentUuid?, parentName?,
+  childrenCount?, operations{...}}}``. Here ``childrenCount`` is NOT the
+  member count: it read 0 on ``Unassigned Devices`` (5 members) and was
+  absent on the root ``ALL-ACCESS`` (5 members) — count members with the
+  device listing instead.
+- ``GET device/<uuid>?start=<i>&end=<j>`` -> ``{"status": "Success",
+  "devices": [{"uuid", "attributes": {"hostname", "node_ip", "product_type",
+  "product_family", "product_series", "software_type", "software_version",
+  "description", "contact", "location", "reachability", "discoveryType",
+  "last_update" (epoch s), "delete"}}], "total": N}``. ``start``/``end`` is a
+  0-based index window with ``end`` EXCLUSIVE (``0-2`` answered indexes 0 and
+  1), and ``total`` is the member count of the WHOLE group (5 on every window
+  of a 5-member group), so it is trusted for paging. The device uuids are the
+  inventory node uuids. A group whose members live in its sub-groups (``All
+  Locations``) answers ``devices: [], total: 0``.
 - ``GET groups/<uuids>`` defaults on the platform to ``brief=false&direct=
   true``; :func:`cnc_get_group_hierarchy` defaults to the opposite
   (``brief=true&direct=false``, the whole subtree in the small view) and
@@ -91,21 +107,20 @@ GROUP_PATH = f"{GROUPING}/group"  # + /<uuid>/details
 GROUP_DEVICES_PATH = f"{GROUPING}/device"  # + /<uuid>
 
 CONDITION_KINDS: dict[str, str] = {"device": DEVICE_CONDITIONS_PATH, "port": PORT_CONDITIONS_PATH}
-# Verified live: these two answer two root uuids on the lab.
-VERIFIED_CLASSIFIERS = ("PortType", "UserDefinedPorts")
-# The OpenAPI document's classifier enum; the three device ones are unverified live.
-DOCUMENTED_CLASSIFIERS = (
-    "DeviceAccess",
-    "LocationDevices",
-    "TopologyTypeDevices",
-    "UserDefinedPorts",
-    "PortType",
-)
-DEFAULT_CLASSIFIERS = ",".join(VERIFIED_CLASSIFIERS)
+# All five classifiers of the 7.2 OpenAPI enum are verified live (2026-09-14): the device
+# ones answer 3 root uuids on the lab, the port ones 2.
+DEVICE_CLASSIFIERS = ("DeviceAccess", "LocationDevices", "TopologyTypeDevices")
+PORT_CLASSIFIERS = ("PortType", "UserDefinedPorts")
+VERIFIED_CLASSIFIERS = DEVICE_CLASSIFIERS + PORT_CLASSIFIERS
+# The device classifiers are the entry point agents want by default (device groups are
+# what alarm suppression and PM policies scope on); the port ones are the alternative.
+DEFAULT_CLASSIFIERS = ",".join(DEVICE_CLASSIFIERS)
+PORT_CLASSIFIERS_CSV = ",".join(PORT_CLASSIFIERS)
 RESULT_ERROR = "Error"
 RESULT_PARTIAL = "Partial"
 # The OpenAPI document's own example window for GET device/<uuid> is ?start=0&end=30;
-# the default here is wider so a small group lists in one call.
+# the default here is wider so a small group lists in one call. ``end`` is exclusive
+# (verified live 2026-09-14).
 DEFAULT_DEVICE_START = 0
 DEFAULT_DEVICE_END = 100
 MAX_DEVICE_END = 10000
@@ -332,9 +347,16 @@ _GROUP_KEYS = (
 
 
 def group_line(group: dict[str, Any]) -> str:
-    """``**name** (uuid) classifier=X`` plus the optional GroupDTO leaves that are present."""
+    """``**name** (uuid)`` plus the GroupDTO leaves that are present.
+
+    ``classifier`` is rendered only when the answer carries it — the brief
+    hierarchy view does not (verified live), so the line never shows a
+    meaningless ``classifier=-``. ``childrenCount`` keeps its wire name; the
+    hierarchy footer says what it counts (member devices, not sub-groups).
+    """
     text = f"**{group.get('name') or '?'}** ({group.get('uuid') or '?'})"
-    text += f" classifier={group.get('classifier') or '-'}"
+    if group.get("classifier"):
+        text += f" classifier={group['classifier']}"
     for key in ("discoveryType", "nodeType"):
         if group.get(key):
             text += f" {key}={group[key]}"
@@ -436,24 +458,19 @@ def device_line(device: dict[str, Any]) -> str:
 def device_page(
     devices: list[dict[str, Any]], total: int | None, start: int, end: int
 ) -> dict[str, Any]:
-    """The pagination envelope of one ``device/<uuid>`` window, with ``total`` distrusted.
+    """The pagination envelope of one ``device/<uuid>`` window.
 
-    What the platform's ``total`` counts is unverified on this build (the
-    document says "total number of devices included in the result" — which
-    may be this answer rather than the whole group), so it is never allowed
-    to turn ``has_more`` off: a full window (``count >= end - start``) is
-    always ``has_more``; a short window is ``has_more`` only when ``total``
-    claims members beyond ``start + count`` (reported to the caller as
-    unverified, never as a confident "more available"). ``window_full``
-    tells the caller which case applies. ``next_offset`` is ``start +
-    count`` — the continuation that skips nothing under either reading.
+    ``total`` is the member count of the whole group and ``end`` is exclusive
+    (both verified live 2026-09-14: a 5-member group answered ``total: 5`` on
+    every window and ``0-2`` returned indexes 0 and 1), so ``has_more`` is
+    ``start + count < total`` whenever the platform reports a total, and
+    falls back to "the window came back full" only when it does not.
+    ``window_full`` (``count >= end - start``) is reported alongside;
+    ``next_offset`` is ``start + count`` — the continuation that skips
+    nothing.
     """
     envelope = pagination_envelope(devices, total=total, offset=start, limit=end - start)
-    window_full = len(devices) >= end - start
-    if window_full and not envelope["has_more"]:
-        envelope["has_more"] = True
-        envelope["next_offset"] = start + len(devices)
-    envelope["window_full"] = window_full
+    envelope["window_full"] = len(devices) >= end - start
     return envelope
 
 
@@ -549,10 +566,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description=(
-                    "Comma-separated classifier names whose root groups to list. Verified live: "
-                    "'PortType,UserDefinedPorts' (the default). The document also lists the "
-                    "device classifiers DeviceAccess, LocationDevices and TopologyTypeDevices, "
-                    "unverified on the lab (it has no device groups). E.g. 'PortType'."
+                    "Comma-separated classifier names whose root groups to list. Device "
+                    "classifiers (the default): 'DeviceAccess,LocationDevices,"
+                    "TopologyTypeDevices'; port classifiers (the alternative): "
+                    "'PortType,UserDefinedPorts'. All five verified live. E.g. 'LocationDevices'."
                 ),
                 min_length=1,
                 max_length=500,
@@ -566,17 +583,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         into the group trees (feed them to cnc_get_group_hierarchy).
 
         Read-only. ``GET /crosswork/grouping/v1/grouping/group/root/<classifiers>/uuid``
-        (verified live) answers a bare JSON list of uuids: 2 for
-        ``PortType,UserDefinedPorts`` on the lab, ``[]`` for the device
-        classifier guesses ``DeviceGroup,Device,Devices``. The only classifier
-        names verified live are the port ones; the documented device
-        classifiers (DeviceAccess, LocationDevices, TopologyTypeDevices) are
-        passed through as given. An unknown classifier — or a classifier with
-        no groups — answers an empty list, which is reported as a normal
-        result, not an error.
+        answers a bare JSON list of uuids. Verified live (2026-09-14): the
+        default device classifiers ``DeviceAccess,LocationDevices,
+        TopologyTypeDevices`` answer 3 roots (ALL-ACCESS, Location, Topology
+        Type — system groups every Crosswork has, even with no user-defined
+        groups); the port classifiers ``PortType,UserDefinedPorts`` answer 2.
+        The uuids come back in the PLATFORM's order, not the order the
+        classifiers were given, and carry no name — expand them with
+        cnc_get_group_hierarchy to see which root is which. An unknown
+        classifier name (e.g. ``DeviceGroup``) — or a classifier with no
+        groups — answers an empty list, reported as a normal result, not an
+        error. Device groups are what alarm suppression policies and PM
+        monitoring policies scope on (their ``deviceGroups`` uuid is one of
+        these trees' groups, e.g. ``All Locations``).
 
         Args:
-            classifiers: comma-separated classifier names.
+            classifiers: comma-separated classifier names (default: the three
+                device classifiers; pass 'PortType,UserDefinedPorts' for the
+                port trees).
             response_format: markdown or json.
 
         Returns:
@@ -608,8 +632,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             lines.extend(
                 [
                     "",
-                    "cnc_get_group_hierarchy expands these uuids (names, classifiers, "
-                    "sub-groups); cnc_get_group_details shows one group.",
+                    "The platform lists root uuids in its own order (not the classifiers' "
+                    "order) and without names: cnc_get_group_hierarchy expands them (names, "
+                    "sub-groups; brief=False adds the classifier); cnc_get_group_details "
+                    "shows one group.",
                 ]
             )
             return finalize("\n".join(lines), settings)
@@ -640,8 +666,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             bool,
             Field(
                 description="True (this tool's default) for the brief view (uuid, name, "
-                "classifier); False for the full GroupDTO leaves. The platform's own default "
-                "is the opposite (brief=false), so the UI / a bare curl shows the full leaves."
+                "children, childrenCount — NO classifier); False for the full leaves (adds "
+                "classifier, discoveryType, nodeType). The platform's own default is the "
+                "opposite (brief=false), so the UI / a bare curl shows the full leaves."
             ),
         ] = True,
         direct: Annotated[
@@ -660,15 +687,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         """Get the hierarchy (sub-group tree) of one or more groups by uuid.
 
         Read-only. ``GET /crosswork/grouping/v1/grouping/groups/<uuids>?brief=
-        <bool>&direct=<bool>`` — the documented shape is a list of ``GroupDTO``
-        ``{uuid, name, classifier, description?, discoveryType?, nodeType?,
-        parentUuid?, parentName?, childrenCount?, children: [...]}``; the
-        endpoint answered on the lab but has NOT been exercised with real uuids,
-        so the rendering follows the document. Start from cnc_list_root_groups
-        for the root uuids. An empty list is a normal "no groups" result; a
-        ``{"status": "Error", "error": ...}`` document (the envelope the rest
-        of this service uses), an empty body or an unrecognised shape is an
-        error, never an empty result.
+        <bool>&direct=<bool>`` answers a list of ``GroupDTO`` trees (verified
+        live 2026-09-14 on the lab's 9 system device groups). The BRIEF view
+        carries only ``uuid``, ``name``, ``children``, ``childrenCount`` and
+        ``operations`` — no ``classifier`` — so a brief line shows no
+        classifier; pass ``brief=False`` for ``classifier``, ``discoveryType``
+        (StaticSystem / Static / Dynamic) and ``nodeType``. Neither view
+        carries ``description``, ``parentUuid`` or ``parentName`` (those are
+        in cnc_get_group_details). ``childrenCount`` here is the number of
+        DEVICES that are direct members of the group, NOT its sub-groups: the
+        lab's groups with direct members — the leaves Unassigned Devices and
+        IGP Domain 0, and the root ALL-ACCESS (no sub-groups) — each showed 5
+        (the whole inventory), ``All Locations`` — one sub-group, no direct
+        members — showed 0, and it is absent on the Location and Topology
+        Type roots (present on the ALL-ACCESS root). Start from
+        cnc_list_root_groups for the root uuids. An empty list is a normal
+        "no groups" result; a ``{"status": "Error", "error": ...}`` document
+        (the envelope the rest of this service uses), an empty body or an
+        unrecognised shape is an error, never an empty result.
 
         Defaults: this tool sends ``brief=true&direct=false`` (the whole
         subtree in the small view) unless told otherwise. The platform's own
@@ -680,23 +716,27 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Args:
             group_uuids: comma-separated uuids.
             brief: brief view (tool default True; platform default false) or
-                full leaves.
+                full leaves (classifier, discoveryType, nodeType).
             direct: direct children only (platform default true), or the
                 whole subtree (tool default False).
             response_format: markdown (an indented tree when ``children`` are
                 present, else a flat list; each line ``**name** (uuid)
-                classifier=... [discoveryType, nodeType, childrenCount,
-                parent, description]``) or json (the raw list).
+                [classifier=... discoveryType=... nodeType=...]
+                [childrenCount=N]`` — only the leaves the view carries) or
+                json (the raw list).
 
         Returns:
             str: Markdown, or JSON {"count": int (groups incl. children),
             "requested": [str], "brief": bool, "direct": bool, "items":
-            [<GroupDTO>]}. "No groups were returned for uuids ..." when the
-            answer is an empty list; "Error: group_uuids must name at least
-            one value" when blank (nothing sent); "Error: Group hierarchy read
-            failed: <platform text>" on a ``status: Error`` document; "Error:
-            Group hierarchy read: ..." on an empty body or an unrecognised
-            shape; "Error: ..." on an HTTP failure.
+            [{"uuid", "name", "children"?: [...], "childrenCount"? (member
+            devices), "operations"?: {...}, and with brief=False
+            "classifier", "discoveryType", "nodeType"}]}. "No groups were
+            returned for uuids ..." when the answer is an empty list; "Error:
+            group_uuids must name at least one value" when blank (nothing
+            sent); "Error: Group hierarchy read failed: <platform text>" on a
+            ``status: Error`` document; "Error: Group hierarchy read: ..." on
+            an empty body or an unrecognised shape; "Error: ..." on an HTTP
+            failure.
         """
         try:
             uuids = split_csv(group_uuids, "group_uuids")
@@ -727,13 +767,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             shape = "tree" if has_children(groups) else "no sub-groups returned"
             lines = [f"# Group hierarchy ({total} group(s), {scope}, {view} view, {shape})", ""]
             lines.extend(group_tree_lines(groups))
-            lines.extend(
-                [
-                    "",
-                    "cnc_get_group_details shows one group; cnc_list_group_devices lists the "
-                    "devices of a device group.",
-                ]
+            notes = [
+                "",
+                "childrenCount = devices that are direct members of the group (not its "
+                "sub-groups; absent on some roots, e.g. Location and Topology Type).",
+            ]
+            if brief:
+                notes.append(
+                    "The brief view carries no classifier: pass brief=False for classifier, "
+                    "discoveryType and nodeType."
+                )
+            notes.append(
+                "cnc_get_group_details shows one group (parent, operations); "
+                "cnc_list_group_devices lists the devices of a device group."
             )
+            lines.extend(notes)
             return finalize("\n".join(lines), settings)
         except Exception as e:
             return format_error(e)
@@ -754,16 +802,23 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ResponseFormat, Field(description=_RESPONSE_FORMAT_DESC)
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
-        """Get one group's details: name, classifier, discovery type (Static /
-        Dynamic), parent, member count and the operations the UI allows on it.
+        """Get one group's details: name, classifier, discovery type
+        (StaticSystem / Static / Dynamic), parent and the operations the UI
+        allows on it.
 
         Read-only. ``GET /crosswork/grouping/v1/grouping/group/<uuid>/details``
-        -> ``{"status": "Success", "group": {uuid, name, description,
-        discoveryType, nodeType, classifier, parentUuid, parentName,
-        childrenCount, operations: {showMem, addMem, upd, cpf, mv, del,
-        subGrp}}}`` — the OpenAPI document's shape, unverified live (the lab
-        has no device groups). A ``status`` of ``Error`` is reported as an
-        error with the platform's text; ``Partial`` is shown in the result.
+        -> ``{"status": "Success", "group": {uuid, name, discoveryType,
+        nodeType, classifier, parentUuid?, parentName?, childrenCount?,
+        operations: {showMem, addMem, upd, cpf, mv, del, subGrp}}}``
+        (verified live 2026-09-14 on the lab's system device groups; a root
+        has no parent keys). This is the call that names a group's PARENT and
+        its CLASSIFIER regardless of view — use it to resolve a group uuid
+        seen elsewhere (e.g. the ``deviceGroups`` uuid of a PM monitoring
+        policy). ``childrenCount`` here is NOT a member count: it read 0 on
+        ``Unassigned Devices`` (5 members) and was absent on ``ALL-ACCESS``
+        (5 members) — count members with cnc_list_group_devices, or read the
+        hierarchy's childrenCount. A ``status`` of ``Error`` is reported as
+        an error with the platform's text; ``Partial`` is shown in the result.
 
         Args:
             group_uuid: the group uuid.
@@ -772,8 +827,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: Markdown (the group line, its operations and any nested
             children), or the raw JSON document. "Error: Group details read
-            failed: ..." when the platform answers status Error; "Error: ..."
-            on an HTTP failure (a 404/500 is passed through with its hint).
+            failed: ..." when the platform answers status Error (e.g. "Group
+            not found"); "Error: ..." on an HTTP failure (a 404/500 is passed
+            through with its hint).
         """
         try:
             uuid = group_uuid.strip()
@@ -815,8 +871,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             int,
             Field(
                 description=(
-                    "End index of the window (e.g. 100); must be greater than start. Always "
-                    "sent. The document's own example is start=0, end=30."
+                    "End index of the window, EXCLUSIVE (e.g. 100 -> indexes start..99); must "
+                    "be greater than start. Always sent. The document's own example is "
+                    "start=0, end=30."
                 ),
                 ge=1,
                 le=MAX_DEVICE_END,
@@ -832,46 +889,43 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         <i>&end=<j>`` -> ``{"status": "Success", "devices": [{"uuid",
         "attributes": {"hostname", "node_ip", "product_type", "software_type",
         "software_version", "product_family", "product_series",
-        "reachability", "discoveryType", "description", "location",
-        "last_update" (epoch seconds), ...}}], "total": N}`` — the OpenAPI
-        document's shape, unverified live (the lab has no device groups). The
+        "reachability", "discoveryType", "description", "contact",
+        "location", "last_update" (epoch seconds), "delete"}}], "total": N}``
+        — verified live 2026-09-14 on the lab's system device groups. The
         document calls it "essential" to send both ``start`` and ``end``, so
-        a window is always sent (default ``0-100``; the document's own
-        example is ``0-30``) — there is no bare call. Whether ``end`` is
-        inclusive and what ``total`` counts are unverified (the document
-        says "total number of devices included in the result", which may be
-        this answer rather than the whole group), so ``total`` is shown but
-        never trusted to turn ``has_more`` off: a window that came back full
-        (count >= end - start) is always "more may be available"; a short
-        window is has_more only when ``total`` claims members beyond
-        ``start + count``, and that is reported as an unverified note, not
-        as a "repeat with" hint. The device uuids are the inventory node
-        uuids (cnc_get_device).
+        a window is always sent (default ``0-100``). ``end`` is EXCLUSIVE
+        (``0-2`` answered indexes 0 and 1) and ``total`` is the member count
+        of the WHOLE group (5 on every window of a 5-member group), so paging
+        is driven by it: ``has_more`` = ``start + count < total``. A group
+        whose members sit in its sub-groups (``All Locations``) answers no
+        devices and ``total: 0`` — list its sub-groups with
+        cnc_get_group_hierarchy and query the leaf (``Unassigned Devices``).
+        The device uuids are the inventory node uuids (cnc_get_device).
 
         Args:
             group_uuid: the device group uuid (a port group answers no devices).
-            start / end: the index window (end > start), always sent.
+            start / end: the index window (end > start, end exclusive), always
+                sent.
             response_format: markdown (one line per device) or json.
 
         Returns:
             str: Markdown "**hostname** (uuid) ip=... type=... sw=...
             reachability=... updated=..." lines, headed "(<count> of <total>)"
-            when the platform reports a different total, plus "More available:
-            repeat with start=<n>, end=<m>." when the window came back full
-            ("Window full: more may be available — ..." when ``total`` claims
-            otherwise), or "Note: the platform reports total=N but the window
-            ... was not full ..." when only ``total`` suggests more; or JSON
+            when the group holds more than this window, plus "More available:
+            repeat with start=<n>, end=<m>." when ``total`` says so; or JSON
             {"group_uuid": str, "status": str, "start": int, "end": int,
             "total": int|null, "count": int, "offset": int, "items":
             [<device>], "has_more": bool, "next_offset": int|null (start +
-            count — skips nothing), "window_full": bool}. "No devices are
-            members of group <uuid> ..." when the window is empty (not an
-            error). "Error: end must be greater than start" (nothing sent);
-            "Error: Group devices read failed: <platform text>" on a
-            ``status: Error`` document; "Error: Group devices read: ..." on an
-            empty body or a non-object answer; "Error: ..." on an HTTP failure
-            (a 400 here means the platform rejected the uuid or the window —
-            try the document's ``start=0, end=30``).
+            count — skips nothing), "window_full": bool}. When the platform
+            omits ``total``, ``has_more`` falls back to "the window came back
+            full". "No devices are members of group <uuid> ..." when the
+            window is empty (not an error). "Error: end must be greater than
+            start" (nothing sent); "Error: Group devices read failed:
+            <platform text>" on a ``status: Error`` document; "Error: Group
+            devices read: ..." on an empty body or a non-object answer;
+            "Error: ..." on an HTTP failure (a 400 here means the platform
+            rejected the uuid or the window — try the document's ``start=0,
+            end=30``).
         """
         try:
             uuid = group_uuid.strip()
@@ -898,11 +952,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if not devices:
                 text = f"No devices are members of group {uuid} in the index window {start}-{end}"
                 if total and start > 0:
-                    text += f" (the platform reports a total of {total}; try an earlier window)"
+                    text += f" (the group has {total} members; try an earlier window)"
                 elif total:
+                    text += f" (the platform reports {total} members yet answered none here)"
+                else:
                     text += (
-                        f" (the platform reports a total of {total} yet answered none — what "
-                        "total counts is unverified on this build)"
+                        " (a group whose members sit in its sub-groups answers none here — "
+                        "expand it with cnc_get_group_hierarchy and query a leaf group)"
                     )
                 return finalize(f"{text}.", settings)
             head = f"# Devices in group {uuid} ({count}"
@@ -913,33 +969,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             lines.extend(device_line(d) for d in devices)
             if str(result.get("status") or "") == RESULT_PARTIAL:
                 lines.extend(["", f"Status Partial: {result.get('error') or 'no detail given'}"])
-            if envelope["window_full"]:
+            if envelope["has_more"]:
                 next_start = envelope["next_offset"]
                 if next_start >= MAX_DEVICE_END:
                     hint = f"beyond index {MAX_DEVICE_END} (the cap this tool can request)"
                 else:
                     next_end = min(next_start + (end - start), MAX_DEVICE_END)
                     hint = f"repeat with start={next_start}, end={next_end}"
-                if total is not None and start + count >= total:
-                    lines.extend(
-                        [
-                            "",
-                            f"Window full: more may be available — {hint} (the platform reports "
-                            f"total={total}, which would mean none, but what total counts is "
-                            "unverified on this build).",
-                        ]
-                    )
-                else:
-                    lines.extend(["", f"More available: {hint}."])
-            elif envelope["has_more"]:
-                lines.extend(
-                    [
-                        "",
-                        f"Note: the platform reports total={total} but the window {start}-{end} "
-                        f"was not full ({count} device(s) answered) — what total counts is "
-                        "unverified on this build, so whether more members exist is unknown.",
-                    ]
-                )
+                lines.extend(["", f"More available: {hint}."])
             lines.extend(["", "The uuids are inventory node uuids (cnc_get_device shows one)."])
             return finalize("\n".join(lines), settings)
         except Exception as e:

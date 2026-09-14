@@ -100,6 +100,21 @@ GNMI_POLL_INTERVAL = 10
 GNMI_SETTLE_AFTER_DOWN = 5
 GNMI_SETTLE_AFTER_ADD = 3
 
+# The node's ``state_map`` (read live 2026-09-14) is keyed by the NUMERIC value of the DLM's
+# RobotNodeStateElement enum; each entry is {"value": "UP"|..., "last_updated_time",
+# "next_check_time" (epoch s), "info"?}. The spec's ``robotapiCurrentState`` carries an
+# ``element`` leaf naming the check, but the live record omits it — cnc_get_device fills it
+# in from this table so the keys are readable. PE2 showed keys 1, 2, 3 = reachability /
+# discovery / clock-drift, all UP; 4 and 5 were not present on the lab's devices.
+STATE_MAP_ELEMENTS = {
+    "0": "UNSUPPORTED",
+    "1": "REACHABILITY",
+    "2": "DISCOVERY",
+    "3": "CLOCK_DRIFT",
+    "4": "LOCK",
+    "5": "SYNC",
+}
+
 _TRANSPORT_NAMES = {wire: name for name, wire in TRANSPORTS.items()}
 # For rendering only: the secure gNMI variant gets a friendly name like every other
 # transport without becoming an accepted ``protocols`` value for cnc_create_device.
@@ -238,6 +253,27 @@ def _devices_markdown(nodes: list[dict], envelope: dict) -> str:
         lines.append("")
         lines.append(f"More available: page={envelope['next_page']}.")
     return "\n".join(lines)
+
+
+def label_state_map(node: dict) -> dict:
+    """A copy of ``node`` whose ``state_map`` entries carry the spec's ``element`` name.
+
+    Each entry keyed ``"1"`` .. ``"5"`` gains ``"element": "REACHABILITY"`` etc.
+    (:data:`STATE_MAP_ELEMENTS`) unless the platform already sent one; the
+    epoch fields are left exactly as read. A key outside the enum, or a
+    non-dict entry, is passed through untouched. The input is not mutated.
+    """
+    state_map = node.get("state_map")
+    if not isinstance(state_map, dict):
+        return node
+    labelled: dict[str, Any] = {}
+    for key, entry in state_map.items():
+        element = STATE_MAP_ELEMENTS.get(str(key))
+        if isinstance(entry, dict) and element and "element" not in entry:
+            labelled[key] = {"element": element, **entry}
+        else:
+            labelled[key] = entry
+    return {**node, "state_map": labelled}
 
 
 def _node_summary(node: dict) -> dict[str, Any]:
@@ -517,20 +553,48 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         holds for the node: uuid, host_name, node_ip, admin_state,
         reachability_state, operational_state, reachability_check, profile,
         connectivity_info, product_info, routing_info, tag_names, dg_name/dg_uuid,
-        nso_state, errors, creation_time, last_upd_time, ...
+        nso_state, nso_timestamp, state_map, uptime, errors, creation_time,
+        last_upd_time, ...
 
         Note the read/write asymmetry: node_ip.inet_af reads as a string
         ('ROBOT_INET_ADDR_TYPE_v4') but is the integer 0 in write bodies, so do
         not feed this object straight back into a write.
 
+        ``state_map`` (verified live 2026-09-14) is the DLM's per-check state,
+        keyed by the numeric RobotNodeStateElement enum: 1 = REACHABILITY,
+        2 = DISCOVERY (inventory collection), 3 = CLOCK_DRIFT, 4 = LOCK,
+        5 = SYNC (0 = UNSUPPORTED). This tool adds the spec's ``element`` name
+        to each entry because the live record omits it. ``uptime`` (e.g.
+        "0w1d14h4m30s") is NOT live and is NOT tied to ``last_upd_time``
+        (verified live 2026-09-14, PE2 polled over 25 min): it is refreshed by
+        the DLM reachability check, so its as-of time is
+        ``state_map["1"].last_updated_time`` (a 1200 s cadence on the lab —
+        ``uptime`` advanced 20 min per check while ``last_upd_time``, the
+        record's last modification, stayed ~30 h old). It can therefore lag a
+        reboot by up to one reachability interval. For the reboot instant use
+        cnc_get_ems_node(name=<host_name>) ``nd.last-boot-time``; its
+        ``nd.sys-up-time`` is itself a snapshot as of ``nd.collection-time``
+        (the last EMS inventory collection — ~4 h stale on the lab, i.e.
+        STALER than this ``uptime``), not a live reading. The two sources need
+        not agree: on the lab PE2's ``uptime`` implied a boot ~27 h before
+        its ``nd.last-boot-time``.
+
         Returns:
-            str: JSON object of the node, or "Error: ..." (not found -> no device
+            str: JSON object of the node as Crosswork returns it, plus the
+            ``element`` label in each ``state_map`` entry:
+            "state_map": {"1": {"element": "REACHABILITY", "value": "UP",
+                                "last_updated_time": "<epoch s>",
+                                "next_check_time": "<epoch s>", "info"?: str},
+                          "2": {"element": "DISCOVERY", ...},
+                          "3": {"element": "CLOCK_DRIFT", ...}, ...}
+            (only the checks the DLM runs for the device are present — PE2 on
+            the lab showed 1, 2 and 3). "Error: ..." (not found -> no device
             matched the selector; ambiguous -> a wildcard host_name matched
             several devices, use the uuid).
         """
         try:
             node = await find_device(_selector(uuid, host_name))
-            return finalize(to_json(node), settings)
+            return finalize(to_json(label_state_map(node)), settings)
         except Exception as e:
             return format_error(e)
 

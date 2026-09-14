@@ -35,6 +35,7 @@ from cnc_mcp.tools.device_config import (
     configlet_references,
     default_backup_job_name,
     deploy_body,
+    is_delete_backup_confirmation,
     job_of,
     parse_deploy_variables,
     parse_statuses,
@@ -194,6 +195,12 @@ JOB_DETAIL_RUNNING = {
     "config_backup_restore_job": {"job": JOB_RUNNING, "device_count": 1},
     "job_runs": {"backup_job_run": [{**RUN, "run_status": "IN_PROGRESS", "duration": 0}]},
 }
+# Seen live 2026-09-14: the platform's run_count counter lags the runs list — 0 in the
+# very answer that already listed the run as SUCCESS.
+JOB_DETAIL_LAGGING_COUNT = {
+    "config_backup_restore_job": {"job": {**JOB, "run_count": 0}, "device_count": 1},
+    "job_runs": {"backup_job_run": [RUN]},
+}
 JOB_DETAIL_FAILED = {
     "config_backup_restore_job": {
         "job": {**JOB, "status": "FAILED", "last_run_status": "RUN_FAILED"},
@@ -214,6 +221,7 @@ BACKUP_DUPLICATE = {
     "job_id": "",
     "message": f"Job already exists with name {JOB_NAME}",
 }
+# Verified: the platform's 200 text runs the name and "for" together (no space).
 DELETE_BACKUP_OK = f"Deleted backup {BACKUP_NAME}for device: {PE1_UUID}"
 DELETE_BACKUP_NOT_FOUND = f"Backup with name ghost not found for device: {PE1_UUID}"
 
@@ -693,6 +701,13 @@ def test_sort_backups_newest_first_and_job_helpers():
     assert result_tail(None) == ""
 
 
+def test_is_delete_backup_confirmation():
+    assert is_delete_backup_confirmation(DELETE_BACKUP_OK)
+    assert is_delete_backup_confirmation("  deleted backup x for device: y ")
+    assert not is_delete_backup_confirmation("")
+    assert not is_delete_backup_confirmation("Backup is pinned")
+
+
 # --- cnc_get_device_config_preferences ---------------------------------------
 
 
@@ -956,10 +971,26 @@ async def test_get_backup_job_json_and_url_encoding(settings):
     assert route.call_count == 1
     data = json.loads(text)
     assert data["job"]["name"] == JOB_NAME and data["job"]["device_count"] == 1
+    assert data["job"]["run_count"] == 1 and data["job"]["run_count_reported"] == 1
     assert data["runs"] == [
         {"run_id": RUN_ID, "run_status": "SUCCESS", "start_at": "2026-09-13T12:00:05.001Z",
          "duration_ms": 6007}
     ]  # fmt: skip
+
+
+@respx.mock
+async def test_get_backup_job_run_count_is_the_runs_listed_not_the_lagging_counter(settings):
+    respx.post(f"{JOB_URL}/{JOB_NAME}").mock(
+        return_value=httpx.Response(200, json=JOB_DETAIL_LAGGING_COUNT)
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_config_backup_job",
+        {"name": JOB_NAME, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["job"]["run_count"] == 1 and data["job"]["run_count_reported"] == 0
+    assert len(data["runs"]) == 1
 
 
 @respx.mock
@@ -1320,7 +1351,7 @@ async def test_backup_device_config_too_many_matches_is_refused(writes):
 @respx.mock
 async def test_wait_for_backup_job_polls_until_success(settings, fake_clock):
     route = mock_sequence(
-        "POST", f"{JOB_URL}/{JOB_NAME}", UNKNOWN_JOB, JOB_DETAIL_RUNNING, JOB_DETAIL
+        "POST", f"{JOB_URL}/{JOB_NAME}", UNKNOWN_JOB, JOB_DETAIL_RUNNING, JOB_DETAIL_LAGGING_COUNT
     )
     text = await call_tool_text(
         build(settings),
@@ -1332,6 +1363,8 @@ async def test_wait_for_backup_job_polls_until_success(settings, fake_clock):
     data = json.loads(text[text.index("{") :])
     assert data["job"]["last_run_status"] == "SUCCESS" and data["elapsed_seconds"] == 10
     assert data["runs"][0]["run_id"] == RUN_ID
+    # The platform's counter (0) lags the listed run; the JSON must not contradict itself.
+    assert data["job"]["run_count"] == 1 and data["job"]["run_count_reported"] == 0
 
 
 @respx.mock
@@ -1443,13 +1476,31 @@ async def test_delete_device_backup_ok_text(writes):
         build(writes), "cnc_delete_device_backup", {"host_name": "PE1", "name": BACKUP_NAME}
     )
     assert sent(nodes) == query_of({"host_name": "PE1"}) and route.call_count == 1
-    assert text.startswith(f"Deleted backup '{BACKUP_NAME}' of PE1 ({PE1_UUID}).")
-    data = json.loads(text[text.index("{") :])
-    assert data == {
+    head, _, body = text.partition("\n")
+    assert head == f"Deleted backup '{BACKUP_NAME}' of PE1 ({PE1_UUID}) (HTTP 200)."
+    # The platform's space-less "<name>for device" text is not echoed anywhere.
+    assert "for device:" not in text
+    assert json.loads(body) == {
         "device": {"host_name": "PE1", "uuid": PE1_UUID},
         "backup": BACKUP_NAME,
-        "message": DELETE_BACKUP_OK,
+        "status_code": 200,
     }
+
+
+@respx.mock
+async def test_delete_device_backup_unexpected_2xx_text_is_flagged_not_hidden(writes):
+    mock_nodes(ONE_NODE)
+    respx.delete(f"{CONFIG_BACKUP_URL}/{PE1_UUID}/{BACKUP_NAME}").mock(
+        return_value=httpx.Response(200, text="Backup is pinned")
+    )
+    text = await call_tool_text(
+        build(writes), "cnc_delete_device_backup", {"host_name": "PE1", "name": BACKUP_NAME}
+    )
+    assert not text.startswith("Error:") and not text.startswith("Deleted backup")
+    head, _, body = text.partition("\n")
+    assert head.startswith(f"Backup '{BACKUP_NAME}' of PE1 ({PE1_UUID}): HTTP 200 but")
+    assert "Backup is pinned" in head and "cnc_list_device_backups" in head
+    assert json.loads(body)["status_code"] == 200
 
 
 @respx.mock

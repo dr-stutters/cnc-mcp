@@ -25,6 +25,8 @@ import os
 import sys
 from pathlib import Path
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 
 async def run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -73,8 +75,13 @@ async def _run_plan(mcp, plan: dict, args) -> int:
             continue
         name = step["tool"]
         call_args = _substitute(step.get("args", {}), captured)
-        result = await mcp.call_tool(name, call_args)
-        text = "".join(getattr(block, "text", "") for block in result.content)
+        try:
+            result = await mcp.call_tool(name, call_args)
+            text = "".join(getattr(block, "text", "") for block in result.content)
+        except ToolError as e:
+            # an input-validation rejection (unknown argument, schema violation) reaches an MCP
+            # client as an error result — treat it like an "Error:" answer
+            text = f"Error: {e}"
         ok = not text.startswith("Error:")
         if step.get("expect_error"):
             ok = not ok

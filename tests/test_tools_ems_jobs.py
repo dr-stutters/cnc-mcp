@@ -29,6 +29,7 @@ from cnc_mcp.tools.ems_jobs import (
     job_key,
     jobs_of,
     verdict_of,
+    wait_call,
 )
 from tests.conftest import BASE_URL, call_tool_text
 
@@ -171,6 +172,20 @@ def test_jobs_of_total_and_find_job():
     assert find_job(rows, " Failed Feature Sync ", "") is not None
 
 
+def test_wait_call_is_ready_to_paste():
+    assert (
+        wait_call("Failed Feature Sync", "Inventory", "449580")
+        == "cnc_wait_for_inventory_scheduler_job(job_name='Failed Feature Sync', "
+        "previous_run_job_id='449580')"
+    )
+    assert wait_call(" Switch Inventory ", "", None) == (
+        "cnc_wait_for_inventory_scheduler_job(job_name='Switch Inventory')"
+    )
+    assert wait_call("x", "Other", "") == (
+        "cnc_wait_for_inventory_scheduler_job(job_name='x', job_type='Other')"
+    )
+
+
 def test_verdict_of_accepts_only_true_or_false():
     assert verdict_of("true") is True
     assert verdict_of(" False\n") is False
@@ -309,7 +324,75 @@ def writes(make_settings) -> MCPServer:
 
 
 @respx.mock
-async def test_run_job_sends_the_raw_key_and_reads_the_state_back(writes):
+async def test_run_job_captures_the_previous_id_sends_the_raw_key_and_reads_back(writes):
+    run = respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
+    in_progress = job("Failed Feature Sync", "In-Progress", "Running", lastRunJobId="449551")
+    listing_route = respx.get(LIST).mock(
+        side_effect=[
+            # the pre-read: Scheduled, the previous run's id
+            httpx.Response(200, json=listing(job("Failed Feature Sync", lastRunJobId="449550"))),
+            # the read-back: the scheduler has already picked the run up
+            httpx.Response(200, json=listing(in_progress)),
+        ]
+    )
+    text = await call_tool_text(
+        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Failed Feature Sync"}
+    )
+    assert listing_route.call_count == 2 and run.call_count == 1
+    request = run.calls.last.request
+    assert request.content == b"Failed Feature Sync:Inventory"
+    assert request.headers["Content-Type"] == "application/json"
+    assert text.startswith(
+        "Started scheduler job 'Failed Feature Sync:Inventory': the scheduler answered true; "
+        "now In-Progress.\nNext: cnc_wait_for_inventory_scheduler_job(job_name='Failed Feature "
+        "Sync', previous_run_job_id='449550') waits for the run to finish"
+    )
+    payload = payload_of(text)
+    assert payload == {
+        "job": "Failed Feature Sync:Inventory",
+        "verdict": True,
+        "previous_run_job_id": "449550",
+        "state": in_progress,
+        "state_error": None,
+        "next": (
+            "cnc_wait_for_inventory_scheduler_job(job_name='Failed Feature Sync', "
+            "previous_run_job_id='449550') waits for the run to finish (previous_run_job_id "
+            "449550 is the job's lastRunJobId from before the run)."
+        ),
+    }
+
+
+@respx.mock
+async def test_run_job_read_back_still_scheduled_is_reported_as_lag(writes):
+    # Verified live 2026-09-14: the read-back right after runJob still showed Scheduled
+    # with the OLD lastRunJobId; the wait then finished on the next id.
+    respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
+    respx.get(LIST).mock(return_value=httpx.Response(200, json=listing(job("Switch Inventory"))))
+    text = await call_tool_text(
+        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Switch Inventory"}
+    )
+    assert not text.startswith("Error:")
+    assert "now Scheduled (expected In-Progress — the scheduler picks the run up" in text
+    assert (
+        "Next: cnc_wait_for_inventory_scheduler_job(job_name='Switch Inventory', "
+        "previous_run_job_id='449550')" in text
+    )
+    payload = payload_of(text)
+    assert payload["previous_run_job_id"] == "449550"
+    assert payload["state"]["lastRunJobId"] == "449550" and payload["state_error"] is None
+
+
+@respx.mock
+async def test_run_job_unknown_name_is_refused_before_the_write(writes):
+    run = respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
+    respx.get(LIST).mock(return_value=httpx.Response(200, json=FIVE))
+    text = await call_tool_text(writes, "cnc_run_inventory_scheduler_job", {"job_name": "nope"})
+    assert text.startswith("Error: no scheduler job 'nope:Inventory' (names are case-sensitive")
+    assert text.endswith("Nothing was sent.") and run.call_count == 0
+
+
+@respx.mock
+async def test_run_job_already_in_progress_is_refused_before_the_write(writes):
     run = respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
     respx.get(LIST).mock(
         return_value=httpx.Response(
@@ -319,35 +402,47 @@ async def test_run_job_sends_the_raw_key_and_reads_the_state_back(writes):
     text = await call_tool_text(
         writes, "cnc_run_inventory_scheduler_job", {"job_name": "Failed Feature Sync"}
     )
-    assert run.call_count == 1
-    request = run.calls.last.request
-    assert request.content == b"Failed Feature Sync:Inventory"
-    assert request.headers["Content-Type"] == "application/json"
     assert text.startswith(
-        "Started scheduler job 'Failed Feature Sync:Inventory': the scheduler answered true; "
-        "now In-Progress."
+        "Error: scheduler job 'Failed Feature Sync:Inventory' is already In-Progress "
+        "(lastRunJobId 449550); running a job that is already In-Progress was not exercised "
+        "live, so nothing was sent. Wait for it with "
+        "cnc_wait_for_inventory_scheduler_job(job_name='Failed Feature Sync')"
     )
-    payload = json.loads(text[text.index("{") :])
-    assert payload == {
-        "job": "Failed Feature Sync:Inventory",
-        "verdict": True,
-        "state": listing(job("Failed Feature Sync", "In-Progress", "Running"))["items"][0],
-        "state_error": None,
-    }
+    assert run.call_count == 0
 
 
 @respx.mock
-async def test_run_job_read_back_still_scheduled_is_reported_as_lag(writes):
-    respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
-    respx.get(LIST).mock(return_value=httpx.Response(200, json=listing(job("Switch Inventory"))))
-    text = await call_tool_text(
-        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Switch Inventory"}
+async def test_run_job_pre_read_failure_still_runs_and_falls_back_to_the_read_back(writes):
+    run = respx.post(RUN).mock(return_value=httpx.Response(200, text="true"))
+    listing_route = respx.get(LIST).mock(
+        side_effect=[
+            httpx.Response(500, text="boom"),  # the pre-read
+            httpx.Response(200, json=listing(job("Failed Feature Sync"))),  # the read-back
+        ]
     )
-    assert not text.startswith("Error:")
-    assert "now Scheduled (expected In-Progress — the scheduler picks the run up" in text
-    assert "cnc_wait_for_inventory_scheduler_job" in text
+    text = await call_tool_text(
+        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Failed Feature Sync"}
+    )
+    assert run.call_count == 1 and listing_route.call_count == 2
+    assert text.startswith("Started scheduler job 'Failed Feature Sync:Inventory'")
     payload = payload_of(text)
-    assert payload["state"]["lastRunJobId"] == "449550" and payload["state_error"] is None
+    # The read-back still showed Scheduled, so its lastRunJobId is the previous run's.
+    assert payload["previous_run_job_id"] == "449550" and payload["state_error"] is None
+    assert "previous_run_job_id='449550'" in payload["next"]
+    # Neither read works: the run is still reported as applied, and the next line says why
+    # no id could be captured.
+    respx.get(LIST).mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Failed Feature Sync"}
+    )
+    assert not text.startswith("Error:") and run.call_count == 2
+    payload = payload_of(text)
+    assert payload["previous_run_job_id"] is None and payload["state"] is None
+    assert payload["state_error"].startswith("Error:")
+    assert payload["next"].startswith(
+        "cnc_wait_for_inventory_scheduler_job(job_name='Failed Feature Sync') waits for the "
+        "run to finish; the job's lastRunJobId could not be captured before the run (Error:"
+    )
 
 
 @respx.mock
@@ -385,11 +480,15 @@ async def test_write_false_is_not_found_and_no_retry_on_5xx(make_settings):
     assert "case-sensitive" in text
     assert listing_route.call_count == 1  # the read-back that proved the row is missing
     run = respx.post(RUN).mock(return_value=httpx.Response(503, text="busy"))
-    text = await call_tool_text(writes, "cnc_run_inventory_scheduler_job", {"job_name": "nope"})
+    text = await call_tool_text(
+        writes, "cnc_run_inventory_scheduler_job", {"job_name": "Failed Feature Sync"}
+    )
     assert text.startswith("Error:") and "503" in text
     assert run.call_count == 1  # a run is never re-sent
     assert suspend.call_count == 1
-    assert listing_route.call_count == 1  # no read-back after a failed write
+    assert (
+        listing_route.call_count == 2
+    )  # the run's pre-read only; no read-back after a failed write
 
 
 @respx.mock

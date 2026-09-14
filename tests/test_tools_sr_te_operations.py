@@ -38,8 +38,11 @@ from cnc_mcp.tools.sr_te_operations import (
     coe_url,
     explicit_hops,
     find_node,
+    group_route_by_node,
+    grouped_route_lines,
     node_prefix_sid,
     normalize_relation,
+    normalize_wait_target,
     parse_names,
     pcep_flag_c,
     policy_key,
@@ -48,6 +51,7 @@ from cnc_mcp.tools.sr_te_operations import (
     resolve_node,
     select_router_id,
     srp_url,
+    timeout_hint,
     write_outcome,
 )
 from tests.conftest import BASE_URL, call_tool_text
@@ -483,6 +487,72 @@ def test_normalize_relation(value, expected):
 def test_normalize_relation_unknown_is_error():
     with pytest.raises(PlatformError, match="Unknown relation 'via'"):
         normalize_relation("via")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("UP", "UP"), ("down", "DOWN"), (" Absent ", "ABSENT"), ("absent", "ABSENT")],
+)
+def test_normalize_wait_target(value, expected):
+    assert normalize_wait_target(value) == expected
+
+
+def test_normalize_wait_target_rejects_non_targets():
+    with pytest.raises(PlatformError) as info:
+        normalize_wait_target("ACTIVE")
+    assert str(info.value).startswith("target must be one of UP, DOWN, ABSENT")
+    assert "ABSENT means the topology NBI no longer reports the policy" in str(info.value)
+    with pytest.raises(PlatformError, match="target is empty"):
+        normalize_wait_target("  ")
+
+
+def test_timeout_hint_depends_on_the_target_and_on_what_was_seen():
+    # Scenario 10: target DOWN after a delete got the create-oriented PCEP-initiate hint.
+    never = timeout_hint("UP", None, seen=False)
+    assert "did not accept the PCEP initiate" in never and "never reported" in never
+    assert never == timeout_hint("DOWN", None, seen=False)
+    assert "cnc_get_sr_policy for the candidate paths" in timeout_hint("UP", PCE_INITIATED, True)
+    assert "cnc_get_sr_policy for the candidate paths" in timeout_hint("DOWN", PCE_INITIATED, True)
+    still_there = timeout_hint("ABSENT", PCE_INITIATED, True)
+    assert "withdrawn within seconds of cnc_delete_sr_policy" in still_there
+    assert "PCEP initiate" not in still_there
+    pcc = timeout_hint("ABSENT", PCC_INITIATED, True)
+    assert "PCC-initiated (pcep-flag-c 0)" in pcc and "remove it from the router" in pcc
+
+
+def test_timeout_hint_for_a_policy_that_vanished_steers_to_absent():
+    # Scenario 10, second half: reported on the first poll, 409 afterwards (the converged
+    # state after a delete) — the LAST poll is None but the policy was seen, so the
+    # create-oriented "never reported / PCEP initiate" hint would be wrong.
+    for target in ("UP", "DOWN"):
+        vanished = timeout_hint(target, None, seen=True)
+        assert "It was reported, then disappeared" in vanished
+        assert "target='ABSENT'" in vanished and "cnc_list_sr_policies" in vanished
+        assert "never reported" not in vanished and "PCEP initiate" not in vanished
+
+
+def test_group_route_by_node_leads_with_the_head_end_and_keeps_first_appearance_order():
+    # The verified dry-run route (unordered, no interface-use) for a PE2 -> PE1 dynamic path.
+    route = [
+        {"node": "P2", "interface": GI1},
+        {"node": "PE2", "interface": GI1},
+        {"node": "P1", "interface": GI0},
+        {"node": "PE2", "interface": GI0},
+    ]
+    assert group_route_by_node(route, "PE2") == [
+        ("PE2", [GI1, GI0]),
+        ("P2", [GI1]),
+        ("P1", [GI0]),
+    ]
+    assert group_route_by_node(route) == [("P2", [GI1]), ("PE2", [GI1, GI0]), ("P1", [GI0])]
+    assert group_route_by_node(route, "PE9")[0] == ("P2", [GI1])  # head-end not on the route
+    assert group_route_by_node([]) == [] and group_route_by_node(None) == []
+    assert grouped_route_lines(route, "PE2") == [
+        f"- PE2: {GI1}, {GI0} (2 ECMP alternatives)",
+        f"- P2: {GI1}",
+        f"- P1: {GI0}",
+    ]
+    assert grouped_route_lines([]) == ["- (no interfaces reported)"]
 
 
 def test_find_node_by_id_case_insensitive_and_by_router_id():
@@ -1208,11 +1278,50 @@ async def test_dryrun_explicit_markdown_and_body(reads):
     assert text.startswith("# SR policy dry run PE1 (10.0.0.1) -> PE2 (10.0.0.3): success")
     assert "- path: explicit hops P2 (10.0.0.4/16004) > PE2 (10.0.0.3/16003)" in text
     assert (
-        "Segment list (2 hops):\n- step 0: node-ipv4 10.0.0.4 sid 16004\n"
+        "Segment list (2 hops, in path order):\n- step 0: node-ipv4 10.0.0.4 sid 16004\n"
         "- step 1: node-ipv4 10.0.0.3 sid 16003"
     ) in text
-    assert f"IGP route (2 interfaces):\n- PE1:{GI1}\n- P2:{GI0}" in text
+    assert (
+        "IGP route (2 interfaces on 2 nodes, grouped by node — unordered; interfaces on one "
+        f"node are ECMP alternatives):\n- PE1: {GI1}\n- P2: {GI0}"
+    ) in text
+    assert "per-interface ECMP shares come from cnc_get_sr_policy_routes" in text
     assert "Nothing was created" in text
+
+
+@respx.mock
+async def test_dryrun_groups_the_unordered_route_by_node_head_end_first(reads):
+    # Verified live 2026-09-14 (scenario 10): a PE2 -> PE1 dynamic path answers the route
+    # 'P2:Gi0/0/0/1, PE2:Gi0/0/0/1, P1:Gi0/0/0/0, PE2:Gi0/0/0/0' — unordered, share-less,
+    # really a two-way ECMP split. Flat, it read like a four-hop serial path.
+    mock_networks()
+    respx.post(srp("sr-policy-dryrun")).mock(
+        return_value=ok(
+            srp_out(
+                state="success",
+                **{
+                    "segment-list-hops": [
+                        {"step": 0, "sid": 16001, "ip-address": "10.0.0.1", "type": "node-ipv4"}
+                    ],
+                    "igp-route": [
+                        {"node": "P2", "interface": GI1},
+                        {"node": "PE2", "interface": GI1},
+                        {"node": "P1", "interface": GI0},
+                        {"node": "PE2", "interface": GI0},
+                    ],
+                },
+            )
+        )
+    )
+    text = await call_tool_text(
+        reads, "cnc_dryrun_sr_policy", {"headend": "PE2", "endpoint": "PE1", "objective": "delay"}
+    )
+    assert (
+        "IGP route (4 interfaces on 3 nodes, grouped by node — unordered; interfaces on one "
+        f"node are ECMP alternatives):\n- PE2: {GI1}, {GI0} (2 ECMP alternatives)\n"
+        f"- P2: {GI1}\n- P1: {GI0}"
+    ) in text
+    assert "not a hop sequence (the segment list is the ordered path)" in text
 
 
 @respx.mock
@@ -1282,7 +1391,8 @@ async def test_dryrun_degraded_is_success_with_message(reads):
     assert not text.startswith("Error:")
     assert text.startswith("# SR policy dry run PE1 (10.0.0.1) -> PE2 (10.0.0.3): degraded")
     assert "- message: Path computed with relaxed constraints" in text
-    assert "Segment list (0 hops):\n- (none reported)" in text
+    assert "Segment list (0 hops, in path order):\n- (none reported)" in text
+    assert "IGP route (0 interfaces on 0 nodes" in text and "- (no interfaces reported)" in text
 
 
 @respx.mock
@@ -1609,6 +1719,13 @@ async def test_delete_pce_initiated_reads_then_deletes(writes):
     assert data["reported"] is True
     assert data["headend_node"] == "PE1" and data["endpoint"] == "10.0.0.3"
     assert "cnc_get_sr_policy" in data["next"] and "note" not in data
+    # Scenario 10: the next step names the convergence target that actually works after a
+    # delete (ABSENT), ready to paste, and warns off target=DOWN.
+    assert (
+        "cnc_wait_for_sr_policy_oper_state(headend='PE1', endpoint='PE2', color=200, "
+        "target='ABSENT')"
+    ) in data["next"]
+    assert "Not target='DOWN'" in data["next"]
 
 
 @respx.mock
@@ -1866,7 +1983,9 @@ async def test_wait_reaches_up_after_polling_through_a_409(reads, fake_clock):
     assert route.calls[0].request.headers["Accept"] == YANG_JSON
     assert text.startswith("SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 is UP after 10s.")
     data = json.loads(text.split("\n", 1)[1])
-    assert data["reported"] is True and data["oper_state"] == "UP" and data["pcep_flag_c"] == 1
+    assert list(data)[:2] == ["reported", "seen_during_wait"]
+    assert data["reported"] is True and data["seen_during_wait"] is True
+    assert data["oper_state"] == "UP" and data["pcep_flag_c"] == 1
     assert data["paths"] == [
         {
             "path_name": "mcp-dyn-200",
@@ -1890,10 +2009,34 @@ async def test_wait_times_out_non_error_while_never_reported(reads, fake_clock):
     assert not text.startswith("Error:")
     assert text.startswith(
         "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 not UP after 10s; current: not "
-        "reported."
+        "reported. Call again to keep waiting. A policy that is never reported"
     )
     assert "PCEP initiate" in text
-    assert json.loads(text.split("\n", 1)[1]) == {"reported": False}
+    assert json.loads(text.split("\n", 1)[1]) == {"reported": False, "seen_during_wait": False}
+
+
+@respx.mock
+async def test_wait_for_down_after_delete_steers_to_absent(reads, fake_clock):
+    """Scenario 10 exactly: target DOWN after cnc_delete_sr_policy — reported UP on the first
+    poll, 409 afterwards. The policy is gone (the converged state), NOT "never reported", so
+    the hint must steer to target='ABSENT' instead of the create-oriented PCEP-initiate one."""
+    mock_networks()
+    route = mock_policy(ok(keyed(PCE_INITIATED)), DATA_MISSING_409)
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_sr_policy_oper_state",
+        {**WAIT_ARGS, "target": "DOWN", "timeout_seconds": 10, "interval_seconds": 5},
+    )
+    assert route.call_count == 3
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 not DOWN after 10s; current: not "
+        "reported. It was reported, then disappeared — after cnc_delete_sr_policy that IS the "
+        "converged state"
+    )
+    assert "target='ABSENT'" in text and "cnc_list_sr_policies" in text
+    assert "never reported" not in text and "PCEP initiate" not in text
+    assert json.loads(text.split("\n", 1)[1]) == {"reported": False, "seen_during_wait": True}
 
 
 @respx.mock
@@ -1906,9 +2049,11 @@ async def test_wait_times_out_non_error_with_the_current_state(reads, fake_clock
         {**WAIT_ARGS, "timeout_seconds": 5, "interval_seconds": 5},
     )
     assert text.startswith(
-        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 not UP after 5s; current: DOWN."
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 not UP after 5s; current: DOWN. "
+        "Call again to keep waiting, or read cnc_get_sr_policy for the candidate paths"
     )
-    assert '"oper_state": "DOWN"' in text
+    assert "PCEP initiate" not in text
+    assert '"oper_state": "DOWN"' in text and '"origin": "PCE-initiated"' in text
 
 
 @respx.mock
@@ -1923,12 +2068,96 @@ async def test_wait_for_down_target(reads, fake_clock):
 
 
 @respx.mock
+async def test_wait_for_absent_succeeds_once_the_policy_is_no_longer_reported(reads, fake_clock):
+    """Scenario 10: after cnc_delete_sr_policy the only convergence signal is the 409."""
+    mock_networks()
+    route = mock_policy(ok(keyed(PCE_INITIATED)), ok(keyed(PCE_INITIATED)), DATA_MISSING_409)
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_sr_policy_oper_state",
+        {**WAIT_ARGS, "target": "absent", "timeout_seconds": 30, "interval_seconds": 5},
+    )
+    assert route.call_count == 3
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 was reported, then withdrawn "
+        "(ABSENT) after 10s."
+    )
+    assert "not reported at any poll" not in text
+    assert json.loads(text.split("\n", 1)[1]) == {"reported": False, "seen_during_wait": True}
+
+
+@respx.mock
+async def test_wait_for_absent_on_a_never_reported_key_does_not_read_as_a_converged_delete(
+    reads, fake_clock
+):
+    """Verified live on a color that never existed: the NBI answers the same 409 as after a
+    delete, so an ABSENT wait finishes at once — the wording must not claim a withdrawal."""
+    mock_networks()
+    route = respx.get(policy_url("10.0.0.1", "10.0.0.3", 300)).mock(return_value=DATA_MISSING_409)
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_sr_policy_oper_state",
+        {**WAIT_ARGS, "color": 300, "target": "ABSENT"},
+    )
+    assert route.call_count == 1
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 300 was not reported at any poll "
+        "(ABSENT) — if you expected it to exist, check the key with cnc_list_sr_policies."
+    )
+    assert "withdrawn" not in text
+    assert json.loads(text.split("\n", 1)[1]) == {"reported": False, "seen_during_wait": False}
+
+
+@respx.mock
+async def test_wait_for_absent_times_out_with_a_delete_oriented_hint(reads, fake_clock):
+    mock_networks()
+    mock_policy(ok(keyed(PCE_INITIATED)))
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_sr_policy_oper_state",
+        {**WAIT_ARGS, "target": "ABSENT", "timeout_seconds": 5, "interval_seconds": 5},
+    )
+    assert not text.startswith("Error:")
+    assert text.startswith(
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 200 not ABSENT after 5s; current: UP. "
+        "The head-end still reports it: a PCE-initiated policy is withdrawn within seconds of "
+        "cnc_delete_sr_policy"
+    )
+    assert "PCEP initiate" not in text
+    assert '"reported": true' in text and '"pcep_flag_c": 1' in text
+
+
+@respx.mock
+async def test_wait_for_absent_on_a_pcc_initiated_policy_says_the_pce_cannot_remove_it(
+    reads, fake_clock
+):
+    mock_networks()
+    respx.get(policy_url("10.0.0.1", "10.0.0.3", 100)).mock(return_value=ok(keyed(PCC_INITIATED)))
+    text = await call_tool_text(
+        reads,
+        "cnc_wait_for_sr_policy_oper_state",
+        {
+            **WAIT_ARGS,
+            "color": 100,
+            "target": "ABSENT",
+            "timeout_seconds": 5,
+            "interval_seconds": 5,
+        },
+    )
+    assert "not ABSENT after 5s; current: UP." in text
+    assert "PCC-initiated (pcep-flag-c 0)" in text and "remove it from the router" in text
+    assert '"origin": "PCC-initiated"' in text
+
+
+@respx.mock
 async def test_wait_bad_target_is_error_before_any_call(reads):
     networks = mock_networks()
     text = await call_tool_text(
         reads, "cnc_wait_for_sr_policy_oper_state", {**WAIT_ARGS, "target": "ACTIVE"}
     )
-    assert text.startswith("Error: oper_state must be one of UP, DOWN")
+    assert text.startswith("Error: target must be one of UP, DOWN, ABSENT")
     assert networks.call_count == 0
 
 

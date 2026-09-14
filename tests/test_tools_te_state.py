@@ -32,16 +32,23 @@ from cnc_mcp.tools.te_state import (
     active_path,
     active_tunnel_path,
     as_bool,
+    end_label,
     entries_matching,
+    has_pm_telemetry,
     hop_text,
     hops_text,
     igp_link_pm_url,
     is_invalid_key,
+    is_ip_address,
     key_matches,
     matches_policy_filter,
+    node_router_id,
     normalize_oper_state,
     p2mp_policy_url,
     path_hops,
+    pcep_flag_c,
+    policy_origin,
+    policy_origin_line,
     rsvp_pm_url,
     rsvp_tunnel_url,
     sr_policy_pm_url,
@@ -51,6 +58,7 @@ from cnc_mcp.tools.te_state import (
 from tests.conftest import BASE_URL, call_tool_text
 
 TE_DATA = f"{BASE_URL}/crosswork/nbi/topology/v3/restconf/data"
+NETWORKS_URL = f"{TE_DATA}/ietf-network-state:networks"
 SR_POLICIES_URL = f"{TE_DATA}/cisco-crosswork-segment-routing-policy:sr-policies"
 P2MP_POLICIES_URL = f"{TE_DATA}/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies"
 RSVP_TUNNELS_URL = f"{TE_DATA}/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels"
@@ -141,6 +149,39 @@ SR_POLICY_PM = {
     ]
 }
 EMPTY: dict = {}  # verified: p2mp-policies and rsvp-te-tunnels answer {} when empty
+
+# The topology ``networks`` collection the host-name resolver reads (the verified
+# member names, reduced to what name -> router-id resolution needs): PE1 / P1 / PE2
+# with their router-ids, plus an LLDP-only node the SR-PCE feed does not know as SR.
+L3_NODE = "ietf-l3-unicast-topology-state:l3-node-attributes"
+
+
+def topo_node(node_id: str, router_id: str) -> dict:
+    return {"node-id": node_id, L3_NODE: {"name": node_id, "router-id": [router_id]}}
+
+
+TOPO_NODES = [
+    topo_node("PE1", "10.0.0.1"),
+    topo_node("P1", "10.0.0.2"),
+    topo_node("PE2", "10.0.0.3"),
+    {"node-id": "SW1"},
+]
+NETWORKS = {
+    "ietf-network-state:networks": {
+        "network": [{"network-id": "Default-network", "node": TOPO_NODES}]
+    }
+}
+# The PM entry with NAPM telemetry present (7.2 document shape — no SR-PM probe was
+# available live): delay is then measured and the modelled caveat must not appear.
+SR_POLICY_PM_TELEMETRY = {
+    "cisco-crosswork-performance-metrics:sr-policy-pm": [
+        {
+            **SR_POLICY_PM["cisco-crosswork-performance-metrics:sr-policy-pm"][0],
+            "delay-telemetry": 1234,
+            "jitter-telemetry": 12,
+        }
+    ]
+}
 
 # Verified: every missing keyed entry (and the unkeyed PM containers) answers this.
 DATA_MISSING_409 = httpx.Response(
@@ -334,6 +375,10 @@ def mock_lists(
     )
 
 
+def mock_networks(body: dict = NETWORKS) -> respx.Route:
+    return respx.get(NETWORKS_URL).mock(return_value=ok(body))
+
+
 TOOLS = {
     "cnc_list_sr_policies",
     "cnc_get_sr_policy",
@@ -361,11 +406,21 @@ async def test_all_tools_are_read_only_and_registered_without_writes(make_settin
     # Flat parameters, never a wrapped model.
     props = tools["cnc_list_sr_policies"].input_schema["properties"]
     assert set(props) == {
-        "headend", "endpoint", "color", "oper_state", "pce_controlled", "response_format"
+        "headend", "endpoint", "color", "oper_state", "pce_controlled", "network",
+        "response_format",
     }  # fmt: skip
     assert set(tools["cnc_get_sr_policy"].input_schema["required"]) == {
         "headend", "endpoint", "color"
     }  # fmt: skip
+    # The SR policy tools take a host name or a router-id; RSVP tools router-ids only.
+    for name in ("cnc_get_sr_policy", "cnc_get_sr_policy_performance_metrics"):
+        description = tools[name].input_schema["properties"]["headend"]["description"]
+        assert "host name" in description and "router-id" in description, name
+        assert "network" in tools[name].input_schema["properties"], name
+    assert (
+        "NOT the host name"
+        in (tools["cnc_get_rsvp_te_tunnel"].input_schema["properties"]["headend"]["description"])
+    )
     assert tools["cnc_get_te_summary"].input_schema.get("properties", {}) == {}
     # The PM tools take the key and nothing else (the containers cannot be listed).
     assert set(tools["cnc_get_link_performance_metrics"].input_schema["required"]) == {"link_id"}
@@ -528,6 +583,61 @@ def test_sr_policy_summary_counts():
     assert sr_policy_summary([])["total"] == 0 and sr_policy_summary([])["by_type"] == {}
 
 
+def test_is_ip_address_is_the_no_lookup_fast_path():
+    assert (
+        is_ip_address("10.0.0.1") and is_ip_address(" 10.0.0.3 ") and is_ip_address("2001:db8::1")
+    )
+    assert not is_ip_address("PE1") and not is_ip_address("10.0.0.1x") and not is_ip_address("")
+
+
+def test_node_router_id_resolves_names_case_insensitively_and_passes_router_ids():
+    assert node_router_id(TOPO_NODES, "PE2") == "10.0.0.3"
+    assert node_router_id(TOPO_NODES, "pe1") == "10.0.0.1"
+    assert node_router_id(TOPO_NODES, "10.0.0.2") == "10.0.0.2"
+    with pytest.raises(PlatformError, match="no node 'PE9' in the topology"):
+        node_router_id(TOPO_NODES, "PE9")
+    # An LLDP-only node (no l3-node-attributes) cannot key an SR policy.
+    with pytest.raises(PlatformError, match="node 'SW1' has no TE router-id in the topology"):
+        node_router_id(TOPO_NODES, "SW1")
+
+
+def test_end_label_shows_both_spellings_only_when_a_name_was_resolved():
+    assert end_label("PE2", "10.0.0.3") == "PE2 (10.0.0.3)"
+    assert end_label("10.0.0.3", "10.0.0.3") == "10.0.0.3"
+    assert end_label(" 10.0.0.3 ", "10.0.0.3") == "10.0.0.3"
+
+
+def test_policy_origin_from_pcep_flag_c_independent_of_pce_controlled():
+    # Verified live: the lab's router-configured policies are pcep-flag-c 0 + pce-controlled
+    # true (delegated); a policy created through the PCE carries pcep-flag-c 1.
+    assert pcep_flag_c(PE1_POLICY) == 0 and policy_origin(PE1_POLICY) == "PCC-initiated"
+    pce_made = {**PE1_POLICY, "policy-details": {**PE1_POLICY["policy-details"]}}
+    pce_made["policy-details"]["pcep-info"] = {"pcep-flag-c": "1"}
+    assert pcep_flag_c(pce_made) == 1 and policy_origin(pce_made) == "PCE-initiated"
+    bare = {k: v for k, v in PE1_POLICY.items() if k != "policy-details"}
+    assert pcep_flag_c(bare) is None and policy_origin(bare) == "unknown"
+    assert policy_origin_line(PE1_POLICY) == (
+        "- origin: PCC-initiated (pcep-flag-c 0: configured on the head-end router); delegated "
+        "to the PCE for (re)optimisation (pce-controlled true) — a router-configured policy "
+        "the PCE may re-optimise"
+    )
+    assert policy_origin_line(pce_made).startswith(
+        "- origin: PCE-initiated (pcep-flag-c 1: instantiated by the SR-PCE over PCEP); "
+        "delegated to the PCE"
+    )
+    assert policy_origin_line(bare) == (
+        "- origin: unknown (no pcep-flag-c reported); delegation unknown (no pce-controlled "
+        "reported)"
+    )
+
+
+def test_has_pm_telemetry_only_for_a_present_napm_key():
+    assert not has_pm_telemetry({"delay": 20, "bandwidth-utilization-kbps": "0"})
+    assert not has_pm_telemetry({"delay": 20, "delay-telemetry": ""})
+    assert has_pm_telemetry({"delay": 20, "delay-telemetry": 1234})
+    assert has_pm_telemetry({"liveness-telemetry": "UP"})
+
+
 # --- cnc_list_sr_policies ----------------------------------------------------
 
 
@@ -541,15 +651,47 @@ async def test_list_sr_policies_markdown_url_accept_and_lines(settings):
     assert "# SR policies (2 of 2, no filter)" in text
     assert (
         "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP oper=UP type=REGULAR bsid=24005 "
-        "pce-controlled=True pcc=10.0.0.1 | active path: CNC-DYN-100 pref=100 PT-DYNAMIC "
-        "metric=IGP-METRIC:20 hops=16003(IPV4-NODE-SID/10.0.0.3) updated=2026-09-13T"
+        "origin=PCC-initiated pce-controlled=True pcc=10.0.0.1 | active path: CNC-DYN-100 "
+        "pref=100 PT-DYNAMIC metric=IGP-METRIC:20 hops=16003(IPV4-NODE-SID/10.0.0.3) "
+        "updated=2026-09-13T"
     ) in text
     assert (
         "- **10.0.0.3 -> 10.0.0.1 color 100** admin=UP oper=UP type=REGULAR bsid=24005 "
-        "pce-controlled=True pcc=10.0.0.3 | active path: CNC-DYN-100 pref=100 PT-DYNAMIC "
-        "metric=IGP-METRIC:20 hops=16001(IPV4-NODE-SID/10.0.0.1) updated="
+        "origin=PCC-initiated pce-controlled=True pcc=10.0.0.3 | active path: CNC-DYN-100 "
+        "pref=100 PT-DYNAMIC metric=IGP-METRIC:20 hops=16001(IPV4-NODE-SID/10.0.0.1) updated="
     ) in text
     assert "TE router-ids" in text and "cnc_get_sr_policy" in text
+    # The origin/delegation legend, so an agent does not have to infer it (scenario 3).
+    assert "1 = PCE-initiated" in text and "0 = PCC-initiated" in text
+    assert "router-configured policy delegated to the PCE" in text
+
+
+@respx.mock
+async def test_list_sr_policies_filters_by_host_name_through_the_topology(settings):
+    networks = mock_networks()
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"headend": "pe2", "endpoint": "PE1"}
+    )
+    assert networks.call_count == 1
+    assert "# SR policies (1 of 2, headend=10.0.0.3, endpoint=10.0.0.1)" in text
+    assert "- **10.0.0.3 -> 10.0.0.1 color 100**" in text
+    assert "- **10.0.0.1 -> 10.0.0.3 color 100**" not in text
+    # A router-id filter never reads the topology (the fast path every earlier caller took).
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"headend": "10.0.0.3", "response_format": "json"}
+    )
+    assert networks.call_count == 1
+    assert json.loads(text)["filter"]["headend"] == "10.0.0.3"
+
+
+@respx.mock
+async def test_list_sr_policies_unknown_host_name_is_error_before_the_policy_read(settings):
+    mock_networks()
+    policies = respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"headend": "PE9"})
+    assert text.startswith("Error: no node 'PE9' in the topology")
+    assert policies.call_count == 0
 
 
 @respx.mock
@@ -653,11 +795,11 @@ async def test_list_sr_policies_policy_without_details_says_no_path_reported(set
     assert not text.startswith("Error:") and "# SR policies (2 of 2, no filter)" in text
     assert (
         "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP oper=UP type=REGULAR bsid=- "
-        "pce-controlled=None pcc=- | no path reported updated=-"
+        "origin=unknown pce-controlled=None pcc=- | no path reported updated=-"
     ) in text
     assert (
         "- **10.0.0.3 -> 10.0.0.1 color 100** admin=UP oper=UP type=REGULAR bsid=- "
-        "pce-controlled=True pcc=- | no path reported updated=-"
+        "origin=unknown pce-controlled=True pcc=- | no path reported updated=-"
     ) in text
 
 
@@ -684,10 +826,99 @@ async def test_get_sr_policy_markdown_url_and_paths(settings):
         "updated=2026-09-13T"
     ) in text
     assert "- pcep-info: pcep-flag-c=0" in text
+    # Origin vs delegation spelled out (scenario 3: the agent had to infer it).
+    assert (
+        "- origin: PCC-initiated (pcep-flag-c 0: configured on the head-end router); delegated "
+        "to the PCE for (re)optimisation (pce-controlled true) — a router-configured policy "
+        "the PCE may re-optimise"
+    ) in text
     assert "Paths (1):" in text
     assert ("- **CNC-DYN-100** pref=100 PT-DYNAMIC oper=UP metric=IGP-METRIC:20 computed=-") in text
     assert "  constraints: sid-algorithm=0" in text
     assert "  segment-list 1 (weight 1): 16003(IPV4-NODE-SID/10.0.0.3)" in text
+
+
+@respx.mock
+async def test_get_sr_policy_router_id_input_never_reads_the_topology(settings):
+    # The fast path: an IP literal goes on the wire as given — no networks GET at all.
+    networks = mock_networks()
+    respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_KEY}").mock(return_value=ok(SR_POLICY_KEYED))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100},
+    )
+    assert text.startswith("# SR policy 10.0.0.1 -> 10.0.0.3 color 100")
+    assert networks.call_count == 0
+
+
+@respx.mock
+async def test_get_sr_policy_accepts_host_names_and_sends_router_ids(settings):
+    # Scenario 10: every other SR-TE tool took PE2/PE1; this one forced a topology detour.
+    networks = mock_networks()
+    route = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_KEY}").mock(
+        return_value=ok(SR_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "pe1", "endpoint": "PE2", "color": 100, "response_format": "json"},
+    )
+    assert networks.call_count == 1 and route.call_count == 1
+    assert networks.calls[0].request.headers["Accept"] == YANG_JSON
+    assert json.loads(text) == PE1_POLICY
+    # Mixed spellings resolve too; the not-found message shows both spellings of a name.
+    respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.3,10.0.0.1,300").mock(return_value=DATA_MISSING_409)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "PE2", "endpoint": "10.0.0.1", "color": 300},
+    )
+    assert text.startswith("Error: no SR policy PE2 (10.0.0.3) -> 10.0.0.1 color 300")
+    assert "cnc_list_sr_policies" in text
+
+
+@respx.mock
+async def test_get_sr_policy_unknown_host_name_is_error_before_the_policy_read(settings):
+    mock_networks()
+    route = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_KEY}").mock(
+        return_value=ok(SR_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "PE9", "endpoint": "PE2", "color": 100}
+    )
+    assert text.startswith("Error: no node 'PE9' in the topology")
+    assert "cnc_list_topology_nodes" in text
+    assert route.call_count == 0
+    # An LLDP-only node has no router-id to key a policy with.
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "SW1", "endpoint": "PE2", "color": 100}
+    )
+    assert text.startswith("Error: node 'SW1' has no TE router-id in the topology")
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_get_sr_policy_blank_name_is_error_before_any_call(settings):
+    networks = mock_networks()
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": " ", "endpoint": "PE2", "color": 100}
+    )
+    assert text.startswith("Error: headend and endpoint must not be blank")
+    assert networks.call_count == 0
+
+
+@respx.mock
+async def test_get_sr_policy_unknown_network_lists_the_present_ones(settings):
+    mock_networks()
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "PE1", "endpoint": "PE2", "color": 100, "network": "other"},
+    )
+    assert text.startswith(
+        "Error: no network 'other' on the topology NBI. Networks present: Default-network."
+    )
 
 
 @respx.mock
@@ -806,14 +1037,20 @@ async def test_get_sr_policy_without_policy_details_reports_no_path(settings):
 
 
 @respx.mock
-async def test_get_sr_policy_hostname_key_400_explains_router_id_rule(settings):
-    respx.get(f"{SR_POLICIES_URL}/policy=PE1,PE2,100").mock(return_value=INVALID_VALUE_400)
+async def test_get_rsvp_te_tunnel_hostname_key_400_explains_router_id_rule(settings):
+    # The NBI's 400 invalid-value for a host name where a router-id belongs (verified on
+    # policy=PE1,PE2,100). The SR policy tools now resolve host names before the GET, so the
+    # RSVP tunnel tool (router-ids only, nothing was available live to verify names with)
+    # is where a host name still reaches the NBI — the explanation must survive there.
+    respx.get(f"{RSVP_TUNNELS_URL}/rsvp-te-tunnel=PE1,PE2,7").mock(return_value=INVALID_VALUE_400)
     text = await call_tool_text(
-        build(settings), "cnc_get_sr_policy", {"headend": "PE1", "endpoint": "PE2", "color": 100}
+        build(settings),
+        "cnc_get_rsvp_te_tunnel",
+        {"headend": "PE1", "endpoint": "PE2", "tunnel_id": 7},
     )
     assert text.startswith("Error:") and "400" in text and "Invalid value 'PE1'" in text
     assert "must be TE router-ids (IP addresses such as 10.0.0.1), not host names" in text
-    assert "no SR policy" not in text
+    assert "no RSVP-TE tunnel" not in text
 
 
 @respx.mock
@@ -1142,10 +1379,48 @@ async def test_get_sr_policy_performance_metrics_markdown_and_url(settings):
     assert str(request.url) == f"{SR_POLICY_PM_URL}={PE1_PE2_KEY}"
     assert request.headers["Accept"] == YANG_JSON
     assert text.startswith("# Performance metrics for SR policy 10.0.0.1 -> 10.0.0.3 color 100")
+    # Scenario 2: without NAPM/SR-PM telemetry the delay is modelled (verified live: equal to
+    # the COE's sr-policy-metrics delay), and the rendering must say so on the value itself.
+    assert "- delay-us=20 (modelled — no NAPM/SR-PM telemetry present" in text
+    assert "cnc_get_sr_policy_metrics" in text and "cnc_get_lsp_delay" in text
     assert (
-        "- delay-us=20 bandwidth-utilization-kbps=0 delay-telemetry-us=- jitter-telemetry-us=- "
-        "liveness=-"
+        "- bandwidth-utilization-kbps=0 delay-telemetry-us=- jitter-telemetry-us=- liveness=-"
     ) in text
+    assert "while they are absent, delay-us is modelled" in text
+
+
+@respx.mock
+async def test_get_sr_policy_performance_metrics_with_telemetry_has_no_modelled_caveat(settings):
+    respx.get(f"{SR_POLICY_PM_URL}={PE1_PE2_KEY}").mock(return_value=ok(SR_POLICY_PM_TELEMETRY))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100},
+    )
+    assert "- delay-us=20\n" in text and "modelled" not in text.split("\n")[2]
+    assert "delay-telemetry-us=1234 jitter-telemetry-us=12 liveness=-" in text
+
+
+@respx.mock
+async def test_get_sr_policy_performance_metrics_accepts_host_names(settings):
+    networks = mock_networks()
+    route = respx.get(f"{SR_POLICY_PM_URL}={PE1_PE2_KEY}").mock(return_value=ok(SR_POLICY_PM))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": "PE1", "endpoint": "PE2", "color": 100},
+    )
+    assert networks.call_count == 1 and route.call_count == 1
+    assert text.startswith(
+        "# Performance metrics for SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": "PE9", "endpoint": "PE2", "color": 100},
+    )
+    assert text.startswith("Error: no node 'PE9' in the topology")
+    assert route.call_count == 1
 
 
 @respx.mock
@@ -1170,12 +1445,14 @@ async def test_get_sr_policy_performance_metrics_json_and_409(settings):
 
 
 @respx.mock
-async def test_get_sr_policy_performance_metrics_hostname_key_400_explains_rule(settings):
-    respx.get(f"{SR_POLICY_PM_URL}=PE1,PE2,100").mock(return_value=INVALID_VALUE_400)
+async def test_get_rsvp_tunnel_performance_metrics_hostname_key_400_explains_rule(settings):
+    # As for the tunnel get: the SR policy PM tool resolves host names first, so the NBI's 400
+    # invalid-value explanation is exercised through the router-id-only RSVP PM tool.
+    respx.get(f"{RSVP_PM_URL}=PE1,PE2,7").mock(return_value=INVALID_VALUE_400)
     text = await call_tool_text(
         build(settings),
-        "cnc_get_sr_policy_performance_metrics",
-        {"headend": "PE1", "endpoint": "PE2", "color": 100},
+        "cnc_get_rsvp_tunnel_performance_metrics",
+        {"headend": "PE1", "endpoint": "PE2", "tunnel_id": 7},
     )
     assert text.startswith("Error:") and "400" in text
     assert "not host names" in text and "no performance metrics" not in text
@@ -1206,7 +1483,16 @@ async def test_get_rsvp_tunnel_performance_metrics_markdown_json_and_409(setting
     assert text.startswith(
         "# Performance metrics for RSVP-TE tunnel 10.0.0.1 -> 10.0.0.3 tunnel-id 7"
     )
-    assert "- delay-us=30 bandwidth-utilization-kbps=12" in text
+    # The shared renderer, RSVP flavour: no *-telemetry key -> the delay is caveated, but only
+    # as a PRESUMPTION — nothing about RSVP was verified live (no tunnel was available), so the
+    # SR policy's "verified live ... equal to cnc_get_sr_policy_metrics" sentence must not
+    # leak into a tunnel entry; the only cross-reference is cnc_get_lsp_delay (tunnel_id).
+    assert "- delay-us=30 (presumed modelled, as for SR policies — UNVERIFIED" in text
+    assert "no RSVP-TE tunnel was available live" in text
+    assert "cnc_get_lsp_delay (with tunnel_id" in text
+    assert "verified live" not in text and "cnc_get_sr_policy_metrics" not in text
+    assert "delay-us is presumed modelled (see above), not measured." in text
+    assert "- bandwidth-utilization-kbps=12" in text
     text = await call_tool_text(
         build(settings),
         "cnc_get_rsvp_tunnel_performance_metrics",

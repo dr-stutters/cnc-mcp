@@ -37,11 +37,14 @@ from cnc_mcp.tools.services import (
     SERVICE_TYPES,
     cat_rpc_body,
     cat_rpc_response,
+    host_name_query,
     is_plan_path,
     looks_like_ip_address,
+    nodes_with_host_name,
     normalize_plan_status,
     normalize_yang_path,
     nso_node_id_of,
+    per_node_bookkeeping,
     plan_data_lines,
     plan_not_found,
     plan_path_of,
@@ -49,6 +52,7 @@ from cnc_mcp.tools.services import (
     service_path_of,
     service_type_label,
     service_type_qname,
+    te_router_id_of,
     te_router_id_query,
     transport_ref,
     vpn_service_line,
@@ -134,7 +138,8 @@ SERVICE_TYPES_RESPONSE = output(
         ]
     },
 )
-# Verified: count is an int on the wire; a type without services is absent.
+# Verified: count is an int on the wire. Only the populated type here (the renderer must
+# cope with an answer that omits the zero types, although the live RPC lists them).
 COUNTS_ONE = output(
     "get-services-count",
     {
@@ -142,7 +147,34 @@ COUNTS_ONE = output(
         "total-services-count": 1,
     },
 )
+# A tolerated shape: no per-type list at all.
 COUNTS_ZERO = output("get-services-count", {"total-services-count": 0})
+# Verified live 2026-09-14 on the empty lab inventory: EVERY type is listed at count 0.
+COUNTS_ZERO_ALL_TYPES = output(
+    "get-services-count",
+    {
+        "services-count-per-type": [
+            {"service-type": info["service-type"], "count": 0}
+            for info in SERVICE_TYPES_RESPONSE["cat-inventory-rpc:output"][
+                "get-available-service-types-response"
+            ]["service-type-info"]
+        ],
+        "total-services-count": 0,
+    },
+)
+# The same shape with one populated type (the zero rows fold into one line).
+COUNTS_MIXED = output(
+    "get-services-count",
+    {
+        "services-count-per-type": [
+            {"service-type": e["service-type"], "count": 2 if e["service-type"] == ODN_QNAME else 0}
+            for e in COUNTS_ZERO_ALL_TYPES["cat-inventory-rpc:output"][
+                "get-services-count-response"
+            ]["services-count-per-type"]
+        ],
+        "total-services-count": 2,
+    },
+)
 ODN_INFO = {
     "service-name": "mcp-odn-90",
     "service-type": ODN_QNAME,
@@ -491,6 +523,49 @@ L3VPN_SERVICE_WITH_NODES = {
         }
     ]
 }
+# The L3VPN as the NSO proxy holds it (seen live 2026-09-14): NSO's bookkeeping sits on
+# each vpn-node — the vpn-service itself carries none of created / last-modified /
+# last-run / modified / plan-location.
+L3VPN_NSO_OBJECT = {
+    "ietf-l3vpn-ntw:vpn-service": [
+        {
+            "vpn-id": "mcp-l3vpn-91",
+            "vpn-service-topology": "ietf-vpn-common:any-to-any",
+            "vpn-instance-profiles": {
+                "vpn-instance-profile": [{"profile-id": "p1", "rd": "0:65091:91"}]
+            },
+            "vpn-nodes": {
+                "vpn-node": [
+                    {
+                        "vpn-node-id": "PE1",
+                        "modified": {"devices": ["PE1"], "services": []},
+                        "directly-modified": {"devices": ["PE1"], "services": []},
+                        "plan-location": (
+                            "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/"
+                            "cisco-l3vpn-ntw:vpn-service-plan"
+                        ),
+                        "created": "2026-09-14T01:40:11.301+00:00",
+                        "last-modified": "2026-09-14T01:40:11.301+00:00",
+                        "last-run": "2026-09-14T01:40:11.301+00:00",
+                        "local-as": 65000,
+                    },
+                    {
+                        "vpn-node-id": "PE2",
+                        "modified": {"devices": ["PE2"], "services": []},
+                        "plan-location": (
+                            "/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/"
+                            "cisco-l3vpn-ntw:vpn-service-plan"
+                        ),
+                        "created": "2026-09-14T01:40:11.301+00:00",
+                        "last-modified": "2026-09-14T01:40:11.301+00:00",
+                        "last-run": "2026-09-14T01:40:11.301+00:00",
+                        "local-as": 65000,
+                    },
+                ]
+            },
+        }
+    ]
+}
 # Verified 2026-09-14: GET vpn-service=<id>?content=nonconfig answers the node with its
 # status only (the /status/oper-status sub-path answers 409 even for a live service).
 OPER_STATUS = {
@@ -793,6 +868,17 @@ def test_headend_lookup_helpers():
     }
     assert nso_node_id_of(as_list) == "from-list"
     assert nso_node_id_of({}) is None
+    # The endpoint side: host name -> te_router_id (the verified host_name filter + paging).
+    assert host_name_query("PE2") == {
+        "filter": {"host_name": "PE2"},
+        "filterData": {"PageSize": 200, "PageNum": 0, "Criteria": ""},
+    }
+    nodes = [inventory_node("P1", "10.0.0.2"), inventory_node("PE2", "10.0.0.3")]
+    assert nodes_with_host_name(nodes, " pe2 ") == [nodes[1]]  # case-insensitive, trimmed
+    assert nodes_with_host_name(nodes, "PE*") == []  # no wildcard guessing client-side
+    assert te_router_id_of(nodes[1]) == "10.0.0.3"
+    assert te_router_id_of({"host_name": "X", "routing_info": {"te_router_id": ""}}) is None
+    assert te_router_id_of({"host_name": "X"}) is None
 
 
 def test_vpn_service_line_never_invents_config_intent():
@@ -834,8 +920,13 @@ def test_plan_not_found_and_status():
     assert not plan_not_found(done)
     assert normalize_plan_status(" Completed ") == "completed"
     assert normalize_plan_status("in_progress") == "in-progress"
+    # The nano-plan word the create tools print is an alias of the CAT status.
+    assert normalize_plan_status("ready") == "completed"
     with pytest.raises(PlatformError, match="Unknown plan status"):
         normalize_plan_status("done")
+    # A nano-plan component state is refused with both vocabularies spelled out.
+    with pytest.raises(PlatformError, match="nano-plan component states, not CAT plan"):
+        normalize_plan_status("config-apply")
 
 
 def test_transport_ref():
@@ -903,10 +994,38 @@ async def test_get_service_counts_zero_is_not_an_error(settings):
     mock_rpc("get-services-count", COUNTS_ZERO)
     text = await call_tool_text(build(settings), "cnc_get_service_counts", {})
     assert text.startswith("No services are provisioned.")
+    assert text.endswith("The RPC listed no service types.")
     text = await call_tool_text(
         build(settings), "cnc_get_service_counts", {"response_format": "json"}
     )
     assert json.loads(text) == {"total": 0, "per_type": []}
+
+
+@respx.mock
+async def test_get_service_counts_live_zero_case_lists_every_type_at_zero(settings):
+    """Verified live 2026-09-14: an empty inventory answers all seven types at 0 — the
+    markdown stays the documented 'No services are provisioned.' line (naming the types),
+    never a table of zeros; the JSON keeps the rows exactly as the RPC listed them."""
+    mock_rpc("get-services-count", COUNTS_ZERO_ALL_TYPES)
+    text = await call_tool_text(build(settings), "cnc_get_service_counts", {})
+    assert text.startswith("No services are provisioned.")
+    assert "CAT knows 7 service types, all at 0: policy, odn-template, cs-sr-te-policy" in text
+    assert "(0 total)" not in text and "**policy**: 0" not in text
+    text = await call_tool_text(
+        build(settings), "cnc_get_service_counts", {"response_format": "json"}
+    )
+    payload = json.loads(text)
+    assert payload["total"] == 0 and len(payload["per_type"]) == 7
+    assert {e["count"] for e in payload["per_type"]} == {0}
+
+
+@respx.mock
+async def test_get_service_counts_folds_the_zero_types_into_one_line(settings):
+    mock_rpc("get-services-count", COUNTS_MIXED)
+    text = await call_tool_text(build(settings), "cnc_get_service_counts", {})
+    assert "(2 total)" in text and "- **odn-template**: 2 (" in text
+    assert "- types with no services (6): policy, cs-sr-te-policy, ietf-l3vpn" in text
+    assert "**policy**: 0" not in text
 
 
 @respx.mock
@@ -1109,6 +1228,32 @@ async def test_get_service_cs_sr_te_policy_uses_the_documented_plan_list(setting
 
 
 @respx.mock
+async def test_get_service_l3vpn_shows_the_per_node_bookkeeping(settings):
+    """An L3NM service keeps NSO's bookkeeping on each vpn-node: the header shows one line
+    per node instead of 'created=- last-modified=- ...' (agent scenario 2026-09-14)."""
+    respx.get(f"{NSO_DATA}/{L3VPN_PATH}").mock(return_value=ok(L3VPN_NSO_OBJECT))
+    mock_rpc("get-service-plan-data", PLAN_COMPLETED)
+    text = await call_tool_text(build(settings), "cnc_get_service", {"yang_path": L3VPN_PATH})
+    assert text.startswith(f"# Service mcp-l3vpn-91 ({L3VPN_PATH})")
+    assert "created=- last-modified=-" not in text
+    assert "- NSO bookkeeping per vpn-node" in text
+    assert (
+        "- vpn-node PE1: created=2026-09-14T01:40:11.301+00:00 "
+        "last-modified=2026-09-14T01:40:11.301+00:00 last-run=2026-09-14T01:40:11.301+00:00 "
+        "plan-location=/ietf-l3vpn-ntw:l3vpn-ntw/vpn-services/cisco-l3vpn-ntw:vpn-service-plan"
+    ) in text
+    assert "  - modified: devices=PE1 services=(none) directly-modified: devices=PE1" in text
+    assert "- vpn-node PE2: created=2026-09-14T01:40:11.301+00:00" in text
+    assert "  - modified: devices=PE2 services=(none)\n" in text
+    # The body is still the object as NSO holds it (per-node keys untouched).
+    body = text.split("Service body as NSO holds it:")[1]
+    assert '"plan-location"' in body and '"local-as": 65000' in body
+    # Helper contract: nothing is invented for a node without bookkeeping.
+    assert per_node_bookkeeping({"vpn-nodes": {"vpn-node": [{"vpn-node-id": "PE9"}]}}) == []
+    assert per_node_bookkeeping({"name": "x"}) == []
+
+
+@respx.mock
 async def test_get_service_plan_unknown_wording_does_not_deny_the_service(settings):
     """The service was just read from NSO, so 'no plan data' must not claim it does not exist."""
     respx.get(f"{NSO_DATA}/{CS_PATH}").mock(return_value=ok(CS_POLICY))
@@ -1293,8 +1438,23 @@ async def test_wait_for_service_plan_bad_target_sends_nothing(settings):
         "cnc_wait_for_service_plan",
         {"plan_yang_path": ODN_PLAN_PATH, "target": "done"},
     )
-    assert text.startswith("Error: Unknown plan status 'done'")
+    assert text.startswith("Error: Unknown plan status 'done'. Use one of the CAT plan statuses")
+    assert "'ready' is accepted as an alias of 'completed'" in text
     assert not route.called
+
+
+@respx.mock
+async def test_wait_for_service_plan_accepts_ready_as_completed(settings, fake_clock):
+    """The create tools print 'Plan: ready' (NSO nano-plan); CAT calls the same service
+    'completed' — target='ready' must not be rejected (agent scenario 2026-09-14)."""
+    route = mock_rpc("get-service-plan-data", PLAN_COMPLETED)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_wait_for_service_plan",
+        {"plan_yang_path": ODN_PLAN_PATH, "target": "ready"},
+    )
+    assert route.call_count == 1
+    assert text.startswith(f"Service plan {ODN_PLAN_PATH} is completed after 0s.")
 
 
 # --- cnc_list_vpn_services --------------------------------------------------------
@@ -1717,6 +1877,122 @@ async def test_find_services_on_transport_unresolvable_router_id_sends_nothing(s
     )
     assert text.startswith("Error:") and "500" in text
     assert not route.called
+
+
+PE2_NODE = {"data": [inventory_node("PE2", "10.0.0.3")], "total_count": 5, "result_count": 1}
+
+
+@respx.mock
+async def test_find_services_on_transport_resolves_a_host_name_endpoint(settings):
+    """The RPC's endpoint is the policy endpoint IP (the tail-end's TE router-id); a host
+    name is mapped through the inventory's host_name filter first — the router-id goes on
+    the wire, and the label / JSON say where it came from (agent scenario 2026-09-14)."""
+    nodes = respx.post(NODES_QUERY_URL).mock(return_value=ok(PE2_NODE))
+    route = mock_rpc("get-associated-services-for-transport", SERVICES_ON_TRANSPORT)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 91, "endpoint": "PE2"},
+    )
+    assert sent(nodes) == {
+        "filter": {"host_name": "PE2"},
+        "filterData": {"PageSize": 200, "PageNum": 0, "Criteria": ""},
+    }
+    assert sent(route)["cat-inventory-rpc:input"][
+        "cat-inventory-rpc:get-associated-services-for-transport-request"
+    ] == {"sr-policy-ref": {"headend": "PE1", "color": "91", "endpoint": "10.0.0.3"}}
+    assert text.startswith(
+        "# Services on SR policy PE1 color 91 -> 10.0.0.3 (endpoint resolved from host name "
+        "PE2) (1)"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 91, "endpoint": "pe2", "response_format": "json"},
+    )
+    payload = json.loads(text)
+    assert payload["transport"]["sr-policy-ref"]["endpoint"] == "10.0.0.3"
+    assert payload["endpoint_resolved_from"] == "pe2"
+    assert "headend_resolved_from" not in payload
+
+
+@respx.mock
+async def test_find_services_on_transport_resolves_both_ends(settings):
+    """Router-id headend + host-name endpoint: two inventory lookups, both mapped."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return ok(PE2_NODE if "host_name" in body["filter"] else PE1_NODE)
+
+    nodes = respx.post(NODES_QUERY_URL).mock(side_effect=answer)
+    route = mock_rpc("get-associated-services-for-transport", EMPTY_OUTPUT)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "10.0.0.1", "color": 91, "endpoint": "PE2", "response_format": "json"},
+    )
+    assert nodes.call_count == 2
+    payload = json.loads(text)
+    assert payload["transport"] == {
+        "sr-policy-ref": {"headend": "PE1", "color": "91", "endpoint": "10.0.0.3"}
+    }
+    assert payload["headend_resolved_from"] == "10.0.0.1"
+    assert payload["endpoint_resolved_from"] == "PE2"
+    assert payload["count"] == 0 and route.called
+
+
+@respx.mock
+async def test_find_services_on_transport_unknown_endpoint_is_an_error_not_an_empty_match(
+    settings,
+):
+    """A name the inventory does not know must not reach the RPC (where the wrong form
+    silently matches nothing and reads like 'no service uses that transport')."""
+    respx.post(NODES_QUERY_URL).mock(return_value=ok(NO_NODES))
+    route = mock_rpc("get-associated-services-for-transport", EMPTY_OUTPUT)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 100, "endpoint": "PE9"},
+    )
+    assert text.startswith("Error: unknown endpoint 'PE9'")
+    assert "TE router-id" in text and "cnc_list_topology_nodes" in text
+    assert not route.called
+    # The filter was not honoured (unfiltered set): still matched client-side, no match.
+    respx.post(NODES_QUERY_URL).mock(return_value=ok(ALL_NODES))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 100, "endpoint": "PE9"},
+    )
+    assert text.startswith("Error: unknown endpoint 'PE9'") and not route.called
+    # A known device without a te_router_id cannot be mapped either.
+    bare = {"data": [{"uuid": PE1_UUID, "host_name": "PE2"}], "result_count": 1}
+    respx.post(NODES_QUERY_URL).mock(return_value=ok(bare))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 100, "endpoint": "PE2"},
+    )
+    assert text.startswith("Error: endpoint 'PE2' is an inventory device without a te_router_id")
+    assert "cnc_update_device" in text and not route.called
+    # Two devices with the same host name is ambiguous, not a guess.
+    twins = {"data": [inventory_node("PE2", "10.0.0.3"), inventory_node("pe2", "10.0.0.7")]}
+    respx.post(NODES_QUERY_URL).mock(return_value=ok(twins))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 100, "endpoint": "PE2"},
+    )
+    assert text.startswith("Error: endpoint 'PE2' matches 2 inventory devices")
+    assert not route.called
+    # An inventory failure during the lookup is an error too.
+    respx.post(NODES_QUERY_URL).mock(return_value=NATS_500)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_find_services_on_transport",
+        {"headend": "PE1", "color": 100, "endpoint": "PE2"},
+    )
+    assert text.startswith("Error:") and "500" in text and not route.called
 
 
 @respx.mock

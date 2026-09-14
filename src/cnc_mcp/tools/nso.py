@@ -22,9 +22,15 @@ Two routes reach NSO from this server (both verified live 2026-09-13):
    **asynchronous**: the device's ``nso_state`` walks ``*_STARTED`` and settles
    (``SYNCED``, ``CONNECT_FAILED``, ...) a few seconds later, and
    ``nso_timestamp`` moves with it. **These are the calls that update
-   Crosswork's ``nso_state``** — use ``cnc_wait_for_device_nso_state`` after
-   one, passing the ``nso_timestamp_before`` the action tool returned as
-   ``after_timestamp``: the DLM only moves ``nso_state`` off its pre-action
+   Crosswork's ``nso_state``** — what ``cnc_check_device_nso_state`` shows is
+   therefore the DLM's CACHED verdict from the last action, dated by
+   ``nso_timestamp``, never a live check. ``check-sync`` changes no
+   configuration (it only compares CDB and device), so it is exposed as the
+   read-only ``cnc_check_nso_device_sync`` besides the write-gated
+   ``cnc_nso_device_action``; it still creates a job record and refreshes
+   ``nso_state`` / ``nso_timestamp``. Use ``cnc_wait_for_device_nso_state``
+   after an action, passing the ``nso_timestamp_before`` the action tool
+   returned as ``after_timestamp``: the DLM only moves ``nso_state`` off its pre-action
    value a few seconds after ``JOB_ACCEPTED``, so the first poll otherwise
    reads the stale pre-action state (a device already ``SYNCED`` would be
    reported "reached SYNCED after 0s" although nothing ran yet, and a retried
@@ -111,6 +117,7 @@ NSO_BASE = f"{INVENTORY}/nso"
 NSO_POLICY_QUERY_URL = f"{NSO_BASE}/policy/query"
 NSO_SYNC_URL = f"{NSO_BASE}/sync"
 NSO_SYNC_TO_URL = f"{NSO_BASE}/sync-to"
+NSO_CHECK_SYNC_URL = f"{NSO_BASE}/check-sync"
 IS_NSO_CONFIGURED_URL = f"{AAA}/isNSOConfigured"
 # The proxy's device list (verified). The ``fields`` selector is sent verbatim in the
 # path — ``;`` unencoded, as the verified live request had it — rather than through
@@ -180,6 +187,11 @@ NSO_FAILURE_STATES = frozenset(
     }
 )
 DEFAULT_WAIT_TARGET = "SYNCED"
+# What a check-sync settles to: SYNCED (in sync) or NOT_SYNCED (out of sync), or one of the
+# failure states when NSO could not run the check at all.
+CHECK_SYNC_VERDICTS = {"SYNCED": "in-sync", "NOT_SYNCED": "out-of-sync"}
+CHECK_SYNC_SETTLED = frozenset(CHECK_SYNC_VERDICTS) | NSO_FAILURE_STATES
+DEFAULT_CHECK_SYNC_WAIT = 60
 
 NSO_PROVIDER_FAMILY = "ROBOT_PROVIDER_NSO"
 # NSO's device-type choice: exactly one of these containers holds the ned-id.
@@ -251,6 +263,24 @@ def is_stale(node: dict[str, Any], after: int | None) -> bool:
     if not text.isdigit():
         return False
     return int(text) <= after
+
+
+def sync_verdict(node: dict[str, Any], after: int | None) -> str:
+    """One device's check-sync verdict from its (DLM-cached) nso_state.
+
+    ``pending`` while the reading is still the pre-action one (``nso_timestamp``
+    at or before ``after``) or the state is a ``*_SCHEDULED`` / ``*_STARTED``
+    one; ``in-sync`` / ``out-of-sync`` for SYNCED / NOT_SYNCED; ``failed``
+    for a failure state (NSO could not run the check — NsoMsg says why).
+    """
+    if is_stale(node, after):
+        return "pending"
+    state = node.get("nso_state")
+    if state in CHECK_SYNC_VERDICTS:
+        return CHECK_SYNC_VERDICTS[state]
+    if state in NSO_FAILURE_STATES:
+        return "failed"
+    return "pending"
 
 
 def _selector(uuid: str | None, host_name: str | None) -> dict[str, str]:
@@ -824,7 +854,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
-        """Read Crosswork's NSO state of one or more devices (nso_state, NsoMsg, ...).
+        """Read Crosswork's CACHED NSO state of one or more devices (nso_state, NsoMsg, ...).
 
         Read-only. Pass exactly one selector; ``host_name`` may carry ``*`` to
         cover several devices. For each match it reports the DLM's view of the
@@ -837,8 +867,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         with the NSO device name per NSO provider (``nso_providers``,
         ``provider_node_id``) and ``ned_id`` when Crosswork recorded one.
         This is the same ``nodes/query`` read cnc_get_device does, reduced to
-        the NSO fields; the DLM actions (cnc_nso_device_action) are what move
-        ``nso_state``, and cnc_wait_for_device_nso_state polls this view.
+        the NSO fields.
+
+        THE VERDICT IS A CACHE, NOT A LIVE CHECK: ``nso_state`` is whatever the
+        DLM recorded the last time an NSO action ran for the device
+        (automatic onboarding, or a connect / sync-from / check-sync /
+        sync-to), and ``nso_timestamp`` says WHEN. A device showing SYNCED
+        with a timestamp from yesterday was in sync yesterday; an out-of-band
+        change made since is not reflected here until the next check. Nothing
+        in this read contacts NSO or the device. To get a fresh in-sync /
+        out-of-sync verdict run cnc_check_nso_device_sync (read-only: NSO's
+        check-sync compares its CDB copy with the device's running config
+        without changing either, and the result lands here as SYNCED /
+        NOT_SYNCED with a new nso_timestamp). cnc_wait_for_device_nso_state
+        polls this same view after an action.
 
         Args:
             uuid / host_name: exactly one; host_name accepts '*'.
@@ -874,10 +916,217 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 lines.extend(_nso_summary_lines(summary))
             lines.append("")
             lines.append(
-                "nso_state is Crosswork's (DLM) view and only changes through the DLM NSO "
-                "actions; NSO's own oper-state is in cnc_list_nso_devices."
+                "nso_state is the DLM's CACHED verdict from the last NSO action, recorded at "
+                "the 'since' timestamp — not a live check. For a fresh in-sync / out-of-sync "
+                "verdict run cnc_check_nso_device_sync (read-only check-sync); NSO's own "
+                "oper-state is in cnc_list_nso_devices."
             )
             return finalize("\n".join(lines), settings)
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_check_nso_device_sync",
+        title="Check NSO Device Sync (fresh check-sync)",
+        read_only=True,
+        idempotent=True,
+    )
+    async def cnc_check_nso_device_sync(
+        uuid: Annotated[
+            str | None,
+            Field(
+                description="Device uuid to check (e.g. '2a9b7c1e-0f3d-4b8a-9c6e-1d2f3a4b5c6d').",
+                max_length=100,
+            ),
+        ] = None,
+        host_name: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Device host name to check: exact match, case-insensitive, '*' wildcard "
+                    "(e.g. 'PE1', or '*' for every device — each match is checked)."
+                ),
+                max_length=253,
+            ),
+        ] = None,
+        wait_seconds: Annotated[
+            int,
+            Field(
+                description=(
+                    "How long to wait for the verdicts (e.g. 60). 0 returns as soon as "
+                    "Crosswork accepts the check; read the verdicts later with "
+                    "cnc_check_device_nso_state."
+                ),
+                ge=0,
+                le=600,
+            ),
+        ] = DEFAULT_CHECK_SYNC_WAIT,
+        interval_seconds: Annotated[
+            int, Field(description="Seconds between polls while waiting (e.g. 5).", ge=2, le=60)
+        ] = 5,
+    ) -> str:
+        """Run a FRESH NSO check-sync on the selected device(s) and report, per device,
+        whether NSO's copy of its configuration matches the device: in-sync / out-of-sync.
+
+        Read-only, registered without CNC_MCP_ENABLE_WRITES: NSO's check-sync
+        only COMPARES its CDB copy with the device's running configuration — it
+        changes nothing on the device and nothing in NSO's CDB (that is
+        sync-from / sync-to). What it does do on the platform: it creates a job
+        record in Crosswork's job list (``POST /crosswork/inventory/v1/nso/
+        check-sync``, answered ``JOB_ACCEPTED``), and it refreshes each checked
+        device's DLM bookkeeping — ``nso_state`` walks CHECK_SYNC_SCHEDULED ->
+        CHECK_SYNC_STARTED -> SYNCED (in sync) | NOT_SYNCED (out of sync) and
+        ``nso_timestamp`` moves to now. That refreshed value is exactly what
+        cnc_check_device_nso_state then shows, so use this tool whenever the
+        cached verdict there is too old to trust ("is NSO in sync with every
+        device?" -> host_name='*'). Re-running it is safe.
+
+        Verified live (2026-09-13, by raw calls — this tool itself has NOT been
+        run live): the DLM check-sync endpoint, its asynchronous JOB_ACCEPTED
+        answer and the ``*_STARTED`` walk of ``nso_state`` with a moving
+        ``nso_timestamp``; SYNCED as the settled in-sync outcome. NOT_SYNCED
+        is the enum's documented out-of-sync verdict (the lab's devices were
+        in sync, so it was not observed). UNVERIFIED: what a check-sync that
+        NSO cannot run settles to. The enum has no CHECK_SYNC_FAILED value and
+        only ``connect`` was seen to fail (CONNECT_FAILED); if a failed check
+        lands in one of the known failure states (CONNECT_FAILED, ...) it is
+        reported per device as ``failed`` with NsoMsg — the check could not
+        run, which is not the same as out of sync — but it may equally stay
+        CHECK_SYNC_STARTED, which this tool reports as ``pending`` until the
+        wait runs out.
+
+        SAFETY RULE (verified live): the DLM does not validate the filter — a
+        filter matching nothing still answers JOB_ACCEPTED and may act on other
+        devices. The selector is therefore resolved with ``POST nodes/query``
+        first, zero matches is an error (nothing is sent) and exactly the
+        resolved filter is sent. The POST is not auto-retried (a lost answer
+        would only mean a second check; re-run it yourself).
+
+        With ``wait_seconds`` > 0 (default 60) the tool then polls the devices'
+        ``nso_state`` every ``interval_seconds``, ignoring readings whose
+        ``nso_timestamp`` is not newer than the pre-check one (the DLM leaves
+        the old state in place for a few seconds after JOB_ACCEPTED), until
+        every matched device has settled or the time is up. A timeout is NOT an
+        error: the answer says which devices are still pending — call
+        cnc_check_device_nso_state (or this tool again) later.
+
+        Args:
+            uuid / host_name: exactly one selector; host_name may use '*'.
+            wait_seconds: 0 to return at once (verdicts later via
+                cnc_check_device_nso_state), else the polling budget.
+            interval_seconds: seconds between polls.
+
+        Returns:
+            str: A headline "check-sync of N device(s): A in-sync, B
+            out-of-sync, C failed, D pending (after Ns)" followed by JSON
+            {"job_id", "state": "JOB_ACCEPTED", "type": "NSO device
+            check-sync", "action": "check-sync", "filter": {...},
+            "matched_total": int, "settled": bool, "elapsed_seconds": int,
+            "devices": [{"host_name", "uuid", "verdict": "in-sync" |
+            "out-of-sync" | "failed" | "pending", "nso_state",
+            "nso_timestamp", "nso_timestamp_iso", "NsoMsg", "errors": [str],
+            "nso_state_before", "nso_timestamp_before"}], "note"? (more
+            devices matched than are listed), "next"? (what to do about
+            pending devices)}. With wait_seconds=0 every verdict is
+            "pending" and ``next`` names the follow-up read. "Error: ..." when
+            the selector is missing/ambiguous, no device matches (nothing
+            sent), Crosswork rejects the job (JOB_FAILED / JOB_REJECTED with
+            its reason) or on an API failure.
+        """
+        try:
+            selector = _selector(uuid, host_name)
+            nodes, total = await resolve_devices(selector)
+            payload = await run_action(NSO_CHECK_SYNC_URL, "NSO check-sync", selector, nodes, total)
+            payload["action"] = "check-sync"
+            before = {
+                str(n.get("uuid")): parse_after_timestamp(n.get("nso_timestamp"))
+                for n in nodes
+                if str(n.get("nso_timestamp") or "").strip().isdigit()
+            }
+            matched = {str(n.get("uuid")) for n in nodes}
+
+            def verdicts(fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                """One entry per matched device: the re-read record's verdict, or
+                ``pending`` with the pre-check fields when it was not re-read."""
+                by_uuid = {str(n.get("uuid")): n for n in fresh}
+                out: list[dict[str, Any]] = []
+                for original in nodes:
+                    key = str(original.get("uuid"))
+                    node = by_uuid.get(key)
+                    summary = nso_summary(node if node is not None else original)
+                    out.append(
+                        {
+                            "host_name": summary["host_name"],
+                            "uuid": summary["uuid"],
+                            "verdict": (
+                                sync_verdict(node, before.get(key))
+                                if node is not None
+                                else "pending"
+                            ),
+                            "nso_state": summary["nso_state"],
+                            "nso_timestamp": summary["nso_timestamp"],
+                            "nso_timestamp_iso": summary["nso_timestamp_iso"],
+                            "NsoMsg": summary["NsoMsg"],
+                            "errors": summary["errors"],
+                            "nso_state_before": original.get("nso_state"),
+                            "nso_timestamp_before": original.get("nso_timestamp"),
+                        }
+                    )
+                return out
+
+            elapsed = 0.0
+            settled = False
+            if wait_seconds > 0:
+
+                async def fetch() -> list[dict[str, Any]]:
+                    fresh, _ = await resolve_devices(selector)
+                    return [n for n in fresh if str(n.get("uuid")) in matched]
+
+                def done(fresh: list[dict[str, Any]]) -> bool:
+                    seen = {str(n.get("uuid")) for n in fresh}
+                    return matched <= seen and all(
+                        sync_verdict(n, before.get(str(n.get("uuid")))) != "pending" for n in fresh
+                    )
+
+                settled, fresh, elapsed = await wait_until(
+                    fetch, done, timeout_seconds=wait_seconds, interval_seconds=interval_seconds
+                )
+                devices = verdicts(fresh)
+            else:
+                devices = verdicts([])
+            payload.pop("matched_devices", None)
+            payload["settled"] = settled
+            payload["elapsed_seconds"] = int(elapsed)
+            payload["devices"] = devices
+            counts = {k: 0 for k in ("in-sync", "out-of-sync", "failed", "pending")}
+            for d in devices:
+                counts[d["verdict"]] += 1
+            if counts["pending"]:
+                pending = ", ".join(
+                    str(d["host_name"]) for d in devices if d["verdict"] == "pending"
+                )
+                payload["next"] = (
+                    f"Still pending: {pending}. The verdicts land in the device record a few "
+                    "seconds after JOB_ACCEPTED — read them with cnc_check_device_nso_state "
+                    "(nso_state SYNCED = in sync, NOT_SYNCED = out of sync, newer "
+                    "nso_timestamp) or run this tool again."
+                )
+            else:
+                payload.pop("next", None)
+            head = (
+                f"check-sync of {len(devices)} device(s): {counts['in-sync']} in-sync, "
+                f"{counts['out-of-sync']} out-of-sync, {counts['failed']} failed, "
+                f"{counts['pending']} pending (after {int(elapsed)}s)."
+            )
+            if counts["out-of-sync"]:
+                head += (
+                    " NOT_SYNCED devices differ from NSO's CDB: cnc_nso_device_action("
+                    "action='compare-config') shows the diff in the CNC UI; sync-from updates "
+                    "NSO, cnc_nso_sync_to_device overwrites the device."
+                )
+            return finalize(f"{head}\n{to_json(payload)}", settings)
         except Exception as e:
             return format_error(e)
 
@@ -948,7 +1197,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
           changing either. nso_state: CHECK_SYNC_SCHEDULED -> CHECK_SYNC_STARTED
           -> SYNCED (in sync) or NOT_SYNCED (out of sync — the check itself
           succeeded; follow with compare-config to see the diff and sync-from
-          or cnc_nso_sync_to_device to reconcile).
+          or cnc_nso_sync_to_device to reconcile). Because it changes no
+          configuration it is also offered as the read-only
+          cnc_check_nso_device_sync, which waits for and renders the verdicts
+          — prefer that when writes are disabled or when you only want the
+          in-sync answer.
         - ``compare-config``: produce the configuration diff between the CDB
           and the device (visible in the CNC UI's device NSO panel; Crosswork
           does not return the diff through this API). nso_state:
@@ -1045,8 +1298,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         device, which **overwrites any out-of-band change** made on the device
         since NSO last synced from it. Before running it:
 
-        1. cnc_nso_device_action(action="check-sync") — SYNCED means there is
-           nothing to push; NOT_SYNCED means the device drifted;
+        1. cnc_check_nso_device_sync (read-only check-sync) — in-sync means
+           there is nothing to push; out-of-sync means the device drifted;
         2. cnc_nso_device_action(action="compare-config") and read the diff in
            the CNC UI, so you know exactly what sync-to will change;
         3. if the device's version is the one you want to keep, run sync-from
