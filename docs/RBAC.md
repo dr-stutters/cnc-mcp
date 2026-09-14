@@ -31,7 +31,9 @@ The server registers 245 tools (182 read-only, 63 write). Each sends a known set
 
 ## 2. Least-privilege recipe: a read-only account
 
-The 182 read-only tools need the 43 API rows below. In Administration > Users and Roles > Roles, create a role, tick these rows under their feature and give each row the listed methods (if the editor only offers Read / Write / Delete, tick **Write as well as Read** for every row whose methods include POST, PUT or PATCH — those are the query-over-POST reads); leave `ApiAccess` on; assign the role to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend). Or load `docs/rbac/cnc-mcp-readonly.role.json` (section 6), which carries exactly these methods.
+The 182 read-only tools need the 43 API rows below with the listed methods. **The recommended way is to load `docs/rbac/cnc-mcp-readonly.role.json` (section 6)**: it grants each row exactly the request paths the read tools send with each method (anchored URL patterns, one per method), so every path that only the write tools send is refused at the gateway (403) even where it shares a row and a method with a read — `POST /crosswork/inventory/v1/nodes/query` (list devices) is permitted while `POST /crosswork/inventory/v1/nodes`, `POST /crosswork/inventory/v1/tags`, `PUT /crosswork/alarms/v1/ack`, `POST /crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-create` and every DELETE are not. Assign the role to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend).
+
+Building the role in the UI instead (Administration > Users and Roles > Roles: create a role, tick these rows under their feature, leave `ApiAccess` on) cannot reach the same result: the editor's per-row **Read / Write / Delete** checkboxes cannot separate a POST query from a POST create on the same row, so a UI-built role is read-only only if the UI's *Read* maps to what the tools send — which is not verified (section 1). If the editor offers only Read / Write / Delete, tick **Write as well as Read** for every row whose methods include POST, PUT or PATCH (the query-over-POST reads), and accept that the row then permits its writes too (`POST /crosswork/inventory/v1/nodes` next to `POST .../nodes/query`).
 
 | feature | api_id | API name | HTTP methods the read tools use |
 |---|---|---|---|
@@ -81,10 +83,10 @@ The 182 read-only tools need the 43 API rows below. In Administration > Users an
 
 `aaa_cw_role_read` (`/crosswork/aaaread/`) is what cnc_check_permissions reads the account's own role through; `aaa_cwaaa` (`/crosswork/aaa/`) is needed by the RBAC read tools (cnc_list_roles, cnc_get_user, ...) and is cnc_check_permissions' fallback (either of the two rows satisfies that tool).
 
-**Restrict the URL of the two AAA rows.** Both APIs also serve the broader `GET .../v1/api` listing, which returns the gateway's full API definitions — administrative data; do not grant it to a non-administrator. Because the gateway evaluates a row's URL pattern as an unanchored search on the full path (section 1), `/.*` (or any unanchored pattern) includes it. Set the row's URL to the anchored pattern below — exactly the paths the tools send, derived from the map — instead of `/.*`; the generated role bodies (section 6) carry these patterns:
+**The two AAA rows in a UI-built role.** Both APIs also serve the broader `GET .../v1/api` listing, which returns the gateway's full API definitions — administrative data; do not grant it to a non-administrator. A row ticked in the UI grants URL pattern `/.*`, and because the gateway evaluates a row's pattern as an unanchored search on the full path (section 1), `/.*` (or any unanchored pattern) includes that listing. Where the editor lets you set a row's URL pattern, use the anchored patterns below — exactly the paths the read tools send, derived from the map; the generated bodies carry them (and a pattern of the same kind on every other row):
 
-- `aaa_cw_role_read`: `^/crosswork/aaaread/v1/(role|roleAccess)(/|$)`
-- `aaa_cwaaa`: `^/crosswork/aaa/v1/(role|roleAccess|user|userpermission|usertask)(/|$)|^/crosswork/aaa/v1/(activeSessions|getSessionMgmtPermissions|isNSOConfigured|passwordPolicyConfig|sessionconfig)$|^/crosswork/aaa/v2/api$`
+- `aaa_cw_role_read` (GET): `^/crosswork/aaaread/(v1/role/.+|v1/roleAccess/.+)$`
+- `aaa_cwaaa` (GET): `^/crosswork/aaa/(v1/activeSessions|v1/getSessionMgmtPermissions|v1/isNSOConfigured|v1/passwordPolicyConfig|v1/role|v1/role/.+|v1/roleAccess/.+|v1/sessionconfig|v1/user|v1/user/.+|v1/userpermission|v1/userpermission/.+|v1/usertask/.+|v2/api)$`
 
 ## 3. Write areas: what each adds
 
@@ -179,6 +181,8 @@ Nothing beyond section 2 (the writes use rows and methods the reads already need
 ### sr_te_operations (4 write tools: `cnc_create_sr_policy`, `cnc_delete_sr_policy`, `cnc_set_sr_policy_path_notifications`, `cnc_update_sr_policy`)
 
 Nothing beyond section 2 (the writes use rows and methods the reads already need).
+
+`cnc-mcp-operator.role.json` widens the URL patterns accordingly: per row, the methods the writes add get their own anchored entries covering exactly the write paths, and a method the reads already use gains the write paths it sends (section 6). The AAA rows of section 2 are unchanged (the write tools add no path on them).
 
 ## 4. Per-tool requirements
 
@@ -467,7 +471,11 @@ Caveats the tool repeats in its own output:
 
 ### Ready-made role bodies
 
-`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape the AAA API document gives for `POST /crosswork/aaa/v1/role` — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers — with `rate`/`per`/`quota_max`/`active`/`partitions`/`key_expires_in` copied from the lab's admin role, one `access_rights` entry per api_id with `allowed_urls [{"url": "/.*", "methods": [exactly the methods needed]}]` (the two AAA rows carry the anchored URL patterns of sections 2 and 3 instead of `/.*`), `versions ["Default"]` and `allowance_scope ""` like admin. **They are generated and have not been tested against a real role** (the maintainer will); load one with the SSO JWT (one curl per file) and then verify with cnc_check_permissions as a user carrying the role:
+`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape the AAA API document gives for `POST /crosswork/aaa/v1/role` — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers — with `rate`/`per`/`quota_max`/`active`/`partitions`/`key_expires_in` copied from the lab's admin role, one `access_rights` entry per api_id, `versions ["Default"]` and `allowance_scope ""` like admin. Where admin grants `allowed_urls [{"url": "/.*", "methods": [all five]}]`, a generated row carries **one entry per HTTP method**, `{"url": "^<listen path>/(<path>|<path>|...)$", "methods": ["POST"]}`, whose URL pattern is an anchored regex naming exactly the path templates the granted tools send with that method (methods that send the same paths share an entry; a runtime value is one segment, `[^/]+`, except in the last segment, `.+`, where a RESTCONF key such as `.../device={}` or `.../restconf/data/{}` carries `/`). The gateway runs each pattern as an unanchored search on the full request path (section 1), which is why every alternative starts with `^` and the listen path and ends with `$` — nothing else on the row is permitted. Two limits of that claim: a last-segment `.+` also admits deeper sub-paths under its template, and a mid-path `[^/]+` assumes the runtime key never contains `/` (the gateway matches the decoded path, so a percent-encoded `/` is refused too) — no key the tools send does today.
+
+So `cnc-mcp-readonly` (43 rows, 47 URL entries) **refuses every write path at the gateway**: of the 53 (method, path) pairs only the write tools send, none with a mutating method matches any of its entries — `POST /crosswork/inventory/v1/nodes`, `POST /crosswork/inventory/v1/tags`, `PUT /crosswork/alarms/v1/ack`, `POST /crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-create` and every DELETE, PUT and PATCH are refused — while every path the read tools send matches one. The 2 write-tool pairs it does match are GETs: reads a write tool sends that fall under a read tool's own runtime-valued path, so a read tool can send them just as well (`GET /crosswork/proxy/nso/restconf/data/{}-plan={}`, `GET /crosswork/proxy/nso/restconf/data/{}/{}-plan={}` under `GET /crosswork/proxy/nso/restconf/data/{}`). No mutating method leaks — the generator refuses to write a body where one would. `tests/test_rbac_map.py` proves all of this under Tyk's matching rule. `cnc-mcp-operator` (47 rows, 60 URL entries) permits every path every tool sends, and nothing beyond their templates. Neither body permits `GET /crosswork/aaa/v1/api` or `GET /crosswork/aaaread/v1/api`.
+
+**They are generated and have not been tested against a real role** (the maintainer will); load one with the SSO JWT (one curl per file) and then verify with cnc_check_permissions as a user carrying the role:
 
 ```bash
 CNC=https://<host>:30603
@@ -481,4 +489,4 @@ curl -sk -X POST "$CNC/crosswork/aaa/v1/role" -H "Authorization: Bearer $JWT" \
 curl -sk -X DELETE "$CNC/crosswork/sso/v1/tickets/$TGT" -H "Authorization: Bearer $JWT"
 ```
 
-No UI import for a role body is documented; the alternative is ticking the rows of sections 2 and 3 in the role editor by hand.
+No UI import for a role body is documented; the alternative is ticking the rows of sections 2 and 3 in the role editor by hand — with the caveat of section 2 that the editor's Read / Write / Delete checkboxes cannot express the per-path grants above.

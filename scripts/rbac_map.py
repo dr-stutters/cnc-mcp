@@ -41,9 +41,14 @@ compare):
   table, the task-checkbox bundles, verification;
 - ``docs/rbac/cnc-mcp-readonly.role.json`` / ``cnc-mcp-operator.role.json`` —
   ready-made role bodies for ``POST /crosswork/aaa/v1/role`` (untested
-  against a real role — the maintainer will test). Every row carries ``url
-  "/.*"`` except the ``ANCHORED_APIS`` rows, whose ``url`` is an anchored regex
-  covering exactly the path templates the tools send (``anchored_url``).
+  against a real role — the maintainer will test). Per api_id, ``allowed_urls``
+  carries one entry PER HTTP METHOD whose ``url`` is an anchored regex covering
+  exactly the path templates the granted tools send with that method
+  (``path_regex``; methods that send the same templates share an entry), so
+  the gateway refuses every other path on the row — in particular the
+  read-only body refuses the write paths that share a row and a method with
+  the query-over-POST reads (``POST /crosswork/inventory/v1/nodes`` next to
+  ``POST .../nodes/query``).
 
 Two per-tool overrides the static extraction cannot see: ``METHOD_CHOICES``
 (a tool whose method argument the analyser reads as ``*`` but which only
@@ -105,7 +110,6 @@ AAA_READ_V2_API = "/crosswork/aaaread/v2/api"
 UNCATEGORISED = "(not in aaa/v2/api)"
 ALL_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 WILDCARD = "*"
-ANY_PATH = "/.*"
 
 # A tool whose method argument the analyser folds to ``*`` (passed through at runtime)
 # but which validates it against a subset: the map records the subset, not all five.
@@ -121,12 +125,26 @@ ANY_OF: dict[str, list[list[str]]] = {
     "cnc_check_permissions": [["aaa_cw_role_read"], ["aaa_cwaaa"]],
 }
 
-# API rows whose generated ``allowed_urls`` are ANCHORED to the path templates the tools
-# send instead of ``/.*``. Both AAA APIs also serve ``GET .../v1/api`` — the gateway's
-# full API-definition listing, administrative data that a non-administrator must not be
-# granted — and Tyk evaluates ``allowed_urls`` as an unanchored search, so ``/.*`` (and
-# any unanchored pattern) would include it.
-ANCHORED_APIS = ("aaa_cw_role_read", "aaa_cwaaa")
+# The two AAA rows the guide calls out for UI-built roles: both APIs also serve
+# ``GET .../v1/api`` — the gateway's full API-definition listing, administrative data
+# that a non-administrator must not be granted — and a row ticked in the UI grants
+# ``/.*``, which Tyk's unanchored search reads as "every path". The generated bodies
+# anchor EVERY row (``path_regex``); these two are singled out in the doc only.
+AAA_APIS = ("aaa_cw_role_read", "aaa_cwaaa")
+
+# Write-only request paths the guide names as examples of what the read-only body
+# refuses at the gateway, next to "and every DELETE" (each must be sent by a write tool
+# only — checked at render).
+REFUSED_EXAMPLES = (
+    ("POST", "/crosswork/inventory/v1/nodes"),
+    ("POST", "/crosswork/inventory/v1/tags"),
+    ("PUT", "/crosswork/alarms/v1/ack"),
+    (
+        "POST",
+        "/crosswork/nbi/optimization/v3/restconf/operations/"
+        "cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-create",
+    ),
+)
 
 # The Tyk policy fields of the lab's admin role (GET /crosswork/aaa/v1/role, verified
 # 2026-09-14) that a generated role copies verbatim. ``_id``/``id``/``last_updated``/
@@ -328,17 +346,26 @@ class Router:
         return best[1] if best else None
 
     def ambiguous(self, template: str, chosen: str | None) -> list[str]:
-        """APIs a runtime value of ``{}`` could extend the template into: listen paths
-        that start with the template's literal prefix but are longer than it."""
-        if api_coverage.PLACEHOLDER not in template:
-            return []
-        prefix = template.split(api_coverage.PLACEHOLDER, 1)[0]
-        found = []
-        for api_id, api in self.catalogue.items():
-            listen = api["listen_path"].rstrip("/")
-            if api_id != chosen and len(listen) > len(prefix) and listen.startswith(prefix):
-                found.append(api_id)
-        return sorted(found)
+        """APIs a runtime value of ``{}`` could extend the template into
+        (``could_extend_into``), other than the one it routes to."""
+        return sorted(
+            api_id
+            for api_id, api in self.catalogue.items()
+            if api_id != chosen and could_extend_into(template, api["listen_path"])
+        )
+
+
+def could_extend_into(template: str, listen_path: str) -> bool:
+    """Whether a runtime value of the template's first ``{}`` could extend it into
+    ``listen_path``: the listen path starts with the template's literal prefix but is
+    longer than it (``/crosswork/inventory/v1/{}`` into ``/crosswork/inventory/v1/
+    networkelement``). ``build_map`` records such a template on the longer API too,
+    and ``path_regex`` renders it there as its whole path."""
+    if api_coverage.PLACEHOLDER not in template:
+        return False
+    prefix = template.split(api_coverage.PLACEHOLDER, 1)[0]
+    listen = listen_path.rstrip("/")
+    return len(listen) > len(prefix) and listen.startswith(prefix)
 
 
 def build_map(catalogue: Catalogue, tools: list[api_coverage.Tool], composed: dict[str, list[str]]):
@@ -430,87 +457,226 @@ def ordered(methods: set[str]) -> list[str]:
     return [m for m in ALL_METHODS if m in methods]
 
 
-Templates = dict[str, set[str]]  # api_id -> path templates the tools send to it
+Paths = dict[str, dict[str, set[str]]]  # api_id -> method -> path templates sent with it
 
 
-def templates_for(tool_specs: list[dict[str, Any]]) -> Templates:
-    templates: Templates = defaultdict(set)
+def paths_for(tool_specs: list[dict[str, Any]]) -> Paths:
+    """Per api_id and HTTP method, the path templates the given tools send (a ``*``
+    requirement counts for all five methods)."""
+    paths: Paths = defaultdict(lambda: defaultdict(set))
     for spec in tool_specs:
         for req in spec["requirements"]:
-            templates[req["api_id"]].add(req["path"])
-    return templates
+            for method in needed_methods(req["method"]):
+                paths[req["api_id"]][method].add(req["path"])
+    return paths
 
 
-def anchored_url(listen_path: str, templates: Iterable[str]) -> str:
-    """One anchored regex covering exactly the path templates under ``listen_path``.
+def sent_by(tool_specs: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Every (method, path template) pair the given tools send."""
+    return {
+        (method, req["path"])
+        for spec in tool_specs
+        for req in spec["requirements"]
+        for method in needed_methods(req["method"])
+    }
 
-    Per first segment after the listen path (the API version): the second
-    segments (the resources) grouped into ``^<listen>/<version>/(a|b)(/|$)``
-    when a template goes deeper than the resource and ``^<listen>/<version>/
-    (c|d)$`` when it is the whole path; a ``{}`` segment becomes ``[^/]+``.
-    Alternatives are joined with ``|`` — Go's RE2 (Tyk) and Python's ``re``
-    read the result identically. Tyk searches the FULL request path, so every
-    alternative starts at ``^`` and names the listen path.
+
+# The characters that are regex metacharacters in BOTH Go RE2 (Tyk) and Python's ``re``;
+# escaping only these keeps ``-``, ``:`` and ``=`` (common in RESTCONF paths) literal
+# and readable (``re.escape`` would write ``\-``, which RE2 accepts but nobody enjoys).
+_META_RE = re.compile(r"[\\.^$*+?()\[\]{}|]")
+
+
+def escape_literal(text: str) -> str:
+    return _META_RE.sub(lambda m: "\\" + m.group(), text)
+
+
+def segment_regex(segment: str, *, tail: bool) -> str:
+    """One path segment of a template as a regex: literal text escaped, each ``{}``
+    runtime value ``[^/]+`` (one segment) — or ``.+`` in the LAST segment, where a
+    RESTCONF-style value (``.../restconf/data/{}``, ``.../node={}``) carries ``/``."""
+    value = ".+" if tail else "[^/]+"
+    return value.join(escape_literal(part) for part in segment.split(api_coverage.PLACEHOLDER))
+
+
+def path_regex(listen_path: str, templates: Iterable[str]) -> str:
+    """One anchored regex matching exactly the path templates under ``listen_path``.
+
+    ``^<base>/(alt|alt|...)$`` — ``base`` is the part of the template the listen
+    path claims (literal for the template, so ``v{.}`` in a listen path becomes
+    the ``v1`` the tool sends), the alternatives are the sorted, deduplicated
+    remainders rendered by ``segment_regex``; a template that IS the base gives
+    ``^<base>$``; templates under different bases are joined with ``|``. A
+    template the listen path does not claim but a runtime value of its ``{}``
+    could extend into it (``could_extend_into`` — ``build_map`` records those
+    on the longer API too) is rendered whole, ``^<template>$``: the gateway
+    consults this row only for requests the listen path claims, so that is
+    exactly the paths the tool can send here. Tyk (Go RE2) and Python's ``re``
+    read the result identically — no lookarounds, no back-references — and
+    Tyk searches the FULL request path (section 1 of the guide), which is why
+    every alternative starts at ``^`` and names the listen path.
     """
-    base = listen_path.rstrip("/")
-    resources: dict[str, dict[str, bool]] = defaultdict(dict)  # version -> resource -> deeper
-    bare_versions: set[str] = set()
-    for template in sorted(templates):
-        if not template.startswith(base + "/"):
-            raise SystemExit(f"anchored_url: {template} is not under listen path {listen_path}")
-        segments = template[len(base) + 1 :].split("/")
-        if len(segments) == 1:
-            bare_versions.add(segments[0])
+    from cnc_mcp.tools.admin import listen_path_pattern
+
+    claimed = listen_path_pattern(listen_path)
+    bare: set[str] = set()
+    remainders: dict[str, set[str]] = defaultdict(set)  # base regex -> alternatives
+    for template in templates:
+        segments = template.split("/")
+        rendered = [
+            segment_regex(segment, tail=index == len(segments) - 1)
+            for index, segment in enumerate(segments)
+        ]
+        match = claimed.match(template)
+        if match is None:
+            if not could_extend_into(template, listen_path):
+                raise SystemExit(f"path_regex: {template} is not under listen path {listen_path}")
+            bare.add("/".join(rendered))
             continue
-        version, resource, deeper = segments[0], segments[1], len(segments) > 2
-        resources[version][resource] = resources[version].get(resource, False) or deeper
-
-    def alt(segment: str) -> str:
-        return "[^/]+" if segment == api_coverage.PLACEHOLDER else re.escape(segment)
-
-    def group(segments: list[str]) -> str:
-        inner = "|".join(alt(s) for s in segments)
-        return f"({inner})" if len(segments) > 1 else inner
-
+        n_base = template[: match.end()].count("/") + 1
+        base = "/".join(rendered[:n_base])
+        if n_base == len(segments):
+            bare.add(base)
+        else:
+            remainders[base].add("/".join(rendered[n_base:]))
     parts: list[str] = []
-    for version in sorted(set(resources) | bare_versions):
-        prefix = f"^{re.escape(base)}/{alt(version)}"
-        if version in bare_versions:
-            parts.append(f"{prefix}$")
-        deep = [r for r, d in sorted(resources.get(version, {}).items()) if d]
-        flat = [r for r, d in sorted(resources.get(version, {}).items()) if not d]
-        if deep:
-            parts.append(f"{prefix}/{group(deep)}(/|$)")
-        if flat:
-            parts.append(f"{prefix}/{group(flat)}$")
+    for base in sorted(bare | set(remainders)):
+        if base in bare:
+            parts.append(f"^{base}$")
+        alternatives = sorted(remainders.get(base, ()))
+        if len(alternatives) == 1:
+            parts.append(f"^{base}/{alternatives[0]}$")
+        elif alternatives:
+            parts.append(f"^{base}/({'|'.join(alternatives)})$")
     return "|".join(parts)
 
 
-def allowed_url(api_id: str, catalogue: Catalogue, templates: Templates) -> str:
-    """The ``allowed_urls[].url`` a generated role grants on ``api_id``: ``/.*`` (every
-    path of the API) except for the ANCHORED_APIS, which get ``anchored_url``."""
-    if api_id in ANCHORED_APIS:
-        return anchored_url(catalogue[api_id]["listen_path"], templates[api_id])
-    return ANY_PATH
+def allowed_urls_for(listen_path: str, by_method: dict[str, set[str]]) -> list[dict[str, Any]]:
+    """The ``allowed_urls`` of one access_rights entry: one ``{url, methods}`` per HTTP
+    method, ``url`` anchored to exactly the templates sent with that method
+    (``path_regex``); methods that send the same templates share one entry. Ordered
+    by first method (GET, POST, PUT, PATCH, DELETE)."""
+    by_templates: dict[frozenset[str], set[str]] = defaultdict(set)
+    for method, templates in by_method.items():
+        by_templates[frozenset(templates)].add(method)
+    entries = [
+        {"url": path_regex(listen_path, templates), "methods": ordered(methods)}
+        for templates, methods in by_templates.items()
+    ]
+    return sorted(entries, key=lambda entry: ALL_METHODS.index(entry["methods"][0]))
 
 
-def role_body(
-    name: str, grants: Grants, templates: Templates, catalogue: Catalogue
-) -> dict[str, Any]:
+def role_body(name: str, paths: Paths, catalogue: Catalogue) -> dict[str, Any]:
     access_rights = {
         api_id: {
             "api_name": catalogue[api_id]["name"],
             "api_id": api_id,
             "versions": ["Default"],
-            "allowed_urls": [
-                {"url": allowed_url(api_id, catalogue, templates), "methods": ordered(methods)}
-            ],
+            "allowed_urls": allowed_urls_for(catalogue[api_id]["listen_path"], by_method),
             "limit": None,
             "allowance_scope": "",
         }
-        for api_id, methods in sorted(grants.items())
+        for api_id, by_method in sorted(paths.items())
     }
     return {name: {"name": name, **ROLE_SKELETON, "access_rights": access_rights}}
+
+
+def entry_count(body: dict[str, Any]) -> int:
+    """The number of ``allowed_urls`` entries across a role body's access_rights."""
+    (role,) = body.values()
+    return sum(len(grant["allowed_urls"]) for grant in role["access_rights"].values())
+
+
+def concrete_path(template: str) -> str:
+    """A plausible request path for a template: ``abc`` for a mid-path runtime value,
+    ``a/b=c`` (a RESTCONF key, with ``/``) for one in the last segment."""
+    segments = template.split("/")
+    return "/".join(
+        segment.replace(api_coverage.PLACEHOLDER, "a/b=c" if index == len(segments) - 1 else "abc")
+        for index, segment in enumerate(segments)
+    )
+
+
+def body_permits(body: dict[str, Any], api_id: str, method: str, path: str) -> bool:
+    """Tyk's granular-access rule (section 1 of the guide): the role grants the API and
+    some ``allowed_urls`` entry lists the method and matches the full path (unanchored
+    search)."""
+    (role,) = body.values()
+    grant = role["access_rights"].get(api_id)
+    return grant is not None and any(
+        method in entry["methods"] and re.search(entry["url"], path) is not None
+        for entry in grant["allowed_urls"]
+    )
+
+
+def readonly_exceptions(
+    readonly_body: dict[str, Any], tools: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """The (method, path) pairs only the WRITE tools send that the read-only body
+    nevertheless permits: GET reads a write tool sends under a read tool's own runtime-
+    valued template (``GET /crosswork/proxy/nso/restconf/data/{}`` covers every RESTCONF
+    data path — a read tool can send them too). A mutating method here would mean the
+    read-only body permits a write a read tool could equally send: the generator stops
+    so the read tool's template is narrowed rather than the property silently lost."""
+    read_specs = [s for s in tools.values() if s["read_only"]]
+    read_pairs = sent_by(read_specs)
+    exceptions: set[tuple[str, str]] = set()
+    for spec in tools.values():
+        if spec["read_only"]:
+            continue
+        for req in spec["requirements"]:
+            for method in needed_methods(req["method"]):
+                if (method, req["path"]) in read_pairs:
+                    continue
+                if body_permits(readonly_body, req["api_id"], method, concrete_path(req["path"])):
+                    exceptions.add((method, req["path"]))
+    mutating = sorted(pair for pair in exceptions if pair[0] != "GET")
+    if mutating:
+        raise SystemExit(
+            "the read-only body permits write paths only write tools send (narrow the read "
+            "tool whose template covers them): "
+            + ", ".join(f"{method} {path}" for method, path in mutating)
+        )
+    return sorted(exceptions)
+
+
+def covering_reads(
+    exceptions: Iterable[tuple[str, str]], tools: dict[str, Any], catalogue: Catalogue
+) -> dict[tuple[str, str], list[str]]:
+    """For each read-only exception (``readonly_exceptions``), the read tools' path
+    templates on an API the write tools send it to, with the same method, whose own
+    rendered pattern (``path_regex``) matches it — the runtime-valued reads that cover
+    it. A body entry is the union of its templates' patterns, so a permitted exception
+    always has one; the generator stops rather than attribute it to the wrong read."""
+    read_reqs = {
+        (method, req["path"], req["api_id"])
+        for spec in tools.values()
+        if spec["read_only"]
+        for req in spec["requirements"]
+        for method in needed_methods(req["method"])
+    }
+    write_apis: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for spec in tools.values():
+        if spec["read_only"]:
+            continue
+        for req in spec["requirements"]:
+            for method in needed_methods(req["method"]):
+                write_apis[(method, req["path"])].add(req["api_id"])
+    covering: dict[tuple[str, str], list[str]] = {}
+    for method, path in exceptions:
+        found = {
+            template
+            for read_method, template, api_id in read_reqs
+            if read_method == method
+            and api_id in write_apis[(method, path)]
+            and re.search(
+                path_regex(catalogue[api_id]["listen_path"], {template}), concrete_path(path)
+            )
+        }
+        if not found:
+            raise SystemExit(f"no read tool's template covers the permitted {method} {path}")
+        covering[(method, path)] = sorted(found)
+    return covering
 
 
 # --- documentation ----------------------------------------------------------------------
@@ -527,17 +693,41 @@ def api_row(catalogue: Catalogue, api_id: str, methods: set[str]) -> str:
     )
 
 
-def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
+def aaa_entries(body: dict[str, Any], api_id: str) -> list[str]:
+    """``- api_id (METHODS): url`` lines for one AAA row of a role body (empty when the
+    body does not grant the row)."""
+    (role,) = body.values()
+    grant = role["access_rights"].get(api_id)
+    if grant is None:
+        return []
+    return [
+        f"- `{api_id}` ({', '.join(entry['methods'])}): `{entry['url']}`"
+        for entry in grant["allowed_urls"]
+    ]
+
+
+def render_doc(
+    rbac_map: dict[str, Any],
+    catalogue: Catalogue,
+    readonly_body: dict[str, Any],
+    operator_body: dict[str, Any],
+) -> str:
     tools = rbac_map["tools"]
     read_specs = [s for s in tools.values() if s["read_only"]]
+    all_specs = list(tools.values())
     read_grants = grants_for(read_specs)
-    read_templates = templates_for(read_specs)
-    all_templates = templates_for(list(tools.values()))
     write_areas: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
     for name, spec in tools.items():
         if not spec["read_only"]:
             write_areas[spec["area"]].append((name, spec))
-    operator_grants = grants_for(list(tools.values()))
+    operator_grants = grants_for(all_specs)
+    write_only = sent_by(all_specs) - sent_by(read_specs)
+    for example in REFUSED_EXAMPLES:
+        if example not in write_only:
+            raise SystemExit(
+                f"REFUSED_EXAMPLES: {example[0]} {example[1]} is no longer a write-only path"
+            )
+    refused_examples = ", ".join(f"`{method} {path}`" for method, path in REFUSED_EXAMPLES)
     info = rbac_map["generated_from"]
     n_read = len(read_specs)
     n_write = len(tools) - n_read
@@ -671,14 +861,27 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
     w("## 2. Least-privilege recipe: a read-only account")
     w("")
     w(
-        f"The {n_read} read-only tools need the {len(read_grants)} API rows below. In "
-        "Administration > Users and Roles > Roles, create a role, tick these rows under their "
-        "feature and give each row the listed methods (if the editor only offers Read / Write "
-        "/ Delete, tick **Write as well as Read** for every row whose methods include POST, "
-        "PUT or PATCH — those are the query-over-POST reads); leave `ApiAccess` on; assign the "
-        "role to a dedicated service account with device access group `ALL-ACCESS` (or the "
-        "device scope you intend). Or load `docs/rbac/cnc-mcp-readonly.role.json` (section 6), "
-        "which carries exactly these methods."
+        f"The {n_read} read-only tools need the {len(read_grants)} API rows below with the "
+        "listed methods. **The recommended way is to load "
+        f"`docs/rbac/{READONLY_ROLE}.role.json` (section 6)**: it grants each row exactly the "
+        "request paths the read tools send with each method (anchored URL patterns, one per "
+        "method), so every path that only the write tools send is refused at the gateway "
+        "(403) even where it shares a row and a method with a read — "
+        "`POST /crosswork/inventory/v1/nodes/query` (list devices) is permitted while "
+        f"{refused_examples} and every DELETE are not. Assign the role to a dedicated service "
+        "account with device access group `ALL-ACCESS` (or the device scope you intend)."
+    )
+    w("")
+    w(
+        "Building the role in the UI instead (Administration > Users and Roles > Roles: create "
+        "a role, tick these rows under their feature, leave `ApiAccess` on) cannot reach the "
+        "same result: the editor's per-row **Read / Write / Delete** checkboxes cannot separate "
+        "a POST query from a POST create on the same row, so a UI-built role is read-only only "
+        "if the UI's *Read* maps to what the tools send — which is not verified (section 1). If "
+        "the editor offers only Read / Write / Delete, tick **Write as well as Read** for every "
+        "row whose methods include POST, PUT or PATCH (the query-over-POST reads), and accept "
+        "that the row then permits its writes too (`POST /crosswork/inventory/v1/nodes` next "
+        "to `POST .../nodes/query`)."
     )
     w("")
     w("| feature | api_id | API name | HTTP methods the read tools use |")
@@ -696,18 +899,19 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
     )
     w("")
     w(
-        "**Restrict the URL of the two AAA rows.** Both APIs also serve the broader "
+        "**The two AAA rows in a UI-built role.** Both APIs also serve the broader "
         "`GET .../v1/api` listing, which returns the gateway's full API definitions — "
-        "administrative data; do not grant it to a non-administrator. Because the gateway "
-        "evaluates a row's URL pattern as an unanchored search on the full path (section 1), "
-        "`/.*` (or any unanchored pattern) includes it. Set the row's URL to the anchored "
-        "pattern below — exactly the paths the tools send, derived from the map — instead of "
-        "`/.*`; the generated role bodies (section 6) carry these patterns:"
+        "administrative data; do not grant it to a non-administrator. A row ticked in the UI "
+        "grants URL pattern `/.*`, and because the gateway evaluates a row's pattern as an "
+        "unanchored search on the full path (section 1), `/.*` (or any unanchored pattern) "
+        "includes that listing. Where the editor lets you set a row's URL pattern, use the "
+        "anchored patterns below — exactly the paths the read tools send, derived from the "
+        "map; the generated bodies carry them (and a pattern of the same kind on every other "
+        "row):"
     )
     w("")
-    for api_id in ANCHORED_APIS:
-        if api_id in read_grants:
-            w(f"- `{api_id}`: `{allowed_url(api_id, catalogue, read_templates)}`")
+    for api_id in AAA_APIS:
+        out.extend(aaa_entries(readonly_body, api_id))
     w("")
     # --- 3
     w("## 3. Write areas: what each adds")
@@ -740,18 +944,25 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
             w("Nothing beyond section 2 (the writes use rows and methods the reads already need).")
     widened = [
         api_id
-        for api_id in ANCHORED_APIS
-        if all_templates.get(api_id, set()) != read_templates.get(api_id, set())
+        for api_id in AAA_APIS
+        if aaa_entries(operator_body, api_id) != aaa_entries(readonly_body, api_id)
     ]
+    w("")
+    w(
+        f"`{OPERATOR_ROLE}.role.json` widens the URL patterns accordingly: per row, the "
+        "methods the writes add get their own anchored entries covering exactly the write "
+        "paths, and a method the reads already use gains the write paths it sends (section "
+        "6). "
+        + (
+            "The AAA rows of section 2 widen to:"
+            if widened
+            else "The AAA rows of section 2 are unchanged (the write tools add no path on them)."
+        )
+    )
     if widened:
         w("")
-        w(
-            "The anchored URL patterns of section 2 widen for the operator role (the writes "
-            "send more paths on these rows); `cnc-mcp-operator.role.json` carries:"
-        )
-        w("")
         for api_id in widened:
-            w(f"- `{api_id}`: `{allowed_url(api_id, catalogue, all_templates)}`")
+            out.extend(aaa_entries(operator_body, api_id))
     w("")
     # --- 4
     w("## 4. Per-tool requirements")
@@ -886,6 +1097,8 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
     w("")
     w("### Ready-made role bodies")
     w("")
+    (readonly_role,) = readonly_body.values()
+    (operator_role,) = operator_body.values()
     w(
         f"`docs/rbac/{READONLY_ROLE}.role.json` (section 2) and "
         f"`docs/rbac/{OPERATOR_ROLE}.role.json` "
@@ -893,10 +1106,57 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
         'gives for `POST /crosswork/aaa/v1/role` — `{"<role name>": {<rbacRole>}}`, the '
         "shape `GET /crosswork/aaa/v1/role` answers — with `rate`/`per`/`quota_max`/`active`/"
         "`partitions`/`key_expires_in` copied from the lab's admin role, one `access_rights` "
-        'entry per api_id with `allowed_urls [{"url": "/.*", "methods": [exactly the '
-        "methods needed]}]` (the two AAA rows carry the anchored URL patterns of sections 2 "
-        'and 3 instead of `/.*`), `versions ["Default"]` and `allowance_scope ""` like '
-        "admin. **They are generated and have not been tested against a real role** (the "
+        'entry per api_id, `versions ["Default"]` and `allowance_scope ""` like admin. Where '
+        'admin grants `allowed_urls [{"url": "/.*", "methods": [all five]}]`, a generated '
+        "row carries **one entry per HTTP method**, "
+        '`{"url": "^<listen path>/(<path>|<path>|...)$", "methods": ["POST"]}`, whose URL '
+        "pattern is an anchored regex naming exactly the path templates the granted tools "
+        "send with that method (methods that send the same paths share an entry; a runtime "
+        "value is one segment, `[^/]+`, except in the last segment, `.+`, where a RESTCONF "
+        "key such as `.../device={}` or `.../restconf/data/{}` carries `/`). The gateway runs "
+        "each pattern as an unanchored search on the full request path (section 1), which is "
+        "why every alternative starts with `^` and the listen path and ends with `$` — "
+        "nothing else on the row is permitted. Two limits of that claim: a last-segment "
+        "`.+` also admits deeper sub-paths under its template, and a mid-path `[^/]+` "
+        "assumes the runtime key never contains `/` (the gateway matches the decoded path, "
+        "so a percent-encoded `/` is refused too) — no key the tools send does today."
+    )
+    w("")
+    exceptions = readonly_exceptions(readonly_body, tools)
+    if exceptions:
+        by_cover: dict[tuple[str, ...], list[tuple[str, str]]] = defaultdict(list)
+        for pair, covers in covering_reads(exceptions, tools, catalogue).items():
+            by_cover[tuple(covers)].append(pair)
+        listed = "; ".join(
+            ", ".join(f"`{method} {path}`" for method, path in pairs)
+            + " under "
+            + " and ".join(f"`{pairs[0][0]} {template}`" for template in covers)
+            for covers, pairs in sorted(by_cover.items())
+        )
+        exception_text = (
+            f" The {len(exceptions)} write-tool pairs it does match are GETs: reads a write "
+            "tool sends that fall under a read tool's own runtime-valued path, so a read tool "
+            f"can send them just as well ({listed}). No mutating method leaks — the generator "
+            "refuses to write a body where one would."
+        )
+    else:
+        exception_text = ""
+    w(
+        f"So `{READONLY_ROLE}` ({len(readonly_role['access_rights'])} rows, "
+        f"{entry_count(readonly_body)} URL entries) **refuses every write path at the "
+        f"gateway**: of the {len(write_only)} (method, path) pairs only the write tools "
+        "send, none with a mutating method matches any of its entries — "
+        f"{refused_examples} and every DELETE, PUT and PATCH are refused — while every "
+        f"path the read tools send matches one.{exception_text} "
+        "`tests/test_rbac_map.py` proves all of this under Tyk's "
+        f"matching rule. `{OPERATOR_ROLE}` ({len(operator_role['access_rights'])} rows, "
+        f"{entry_count(operator_body)} URL entries) permits every path every tool sends, and "
+        "nothing beyond their templates. Neither body permits `GET /crosswork/aaa/v1/api` or "
+        "`GET /crosswork/aaaread/v1/api`."
+    )
+    w("")
+    w(
+        "**They are generated and have not been tested against a real role** (the "
         "maintainer will); load one with the SSO JWT (one curl per file) and then verify "
         "with cnc_check_permissions as a user carrying the role:"
     )
@@ -915,7 +1175,8 @@ def render_doc(rbac_map: dict[str, Any], catalogue: Catalogue) -> str:
     w("")
     w(
         "No UI import for a role body is documented; the alternative is ticking the rows of "
-        "sections 2 and 3 in the role editor by hand."
+        "sections 2 and 3 in the role editor by hand — with the caveat of section 2 that the "
+        "editor's Read / Write / Delete checkboxes cannot express the per-path grants above."
     )
     return "\n".join(out) + "\n"
 
@@ -933,15 +1194,13 @@ def generate(catalogue: Catalogue, src: Path) -> tuple[dict[str, str], dict[str,
     rbac_map, ambiguities = build_map(catalogue, tools, composed)
     read_specs = [s for s in rbac_map["tools"].values() if s["read_only"]]
     all_specs = list(rbac_map["tools"].values())
+    readonly_body = role_body(READONLY_ROLE, paths_for(read_specs), catalogue)
+    operator_body = role_body(OPERATOR_ROLE, paths_for(all_specs), catalogue)
     files = {
         str(MAP_RELATIVE): dump_json(rbac_map),
-        str(DOC_RELATIVE): render_doc(rbac_map, catalogue),
-        str(ROLE_DIR_RELATIVE / f"{READONLY_ROLE}.role.json"): dump_json(
-            role_body(READONLY_ROLE, grants_for(read_specs), templates_for(read_specs), catalogue)
-        ),
-        str(ROLE_DIR_RELATIVE / f"{OPERATOR_ROLE}.role.json"): dump_json(
-            role_body(OPERATOR_ROLE, grants_for(all_specs), templates_for(all_specs), catalogue)
-        ),
+        str(DOC_RELATIVE): render_doc(rbac_map, catalogue, readonly_body, operator_body),
+        str(ROLE_DIR_RELATIVE / f"{READONLY_ROLE}.role.json"): dump_json(readonly_body),
+        str(ROLE_DIR_RELATIVE / f"{OPERATOR_ROLE}.role.json"): dump_json(operator_body),
     }
     return files, rbac_map, ambiguities
 

@@ -75,6 +75,11 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ### Changed
 
+- The generated role bodies in `docs/rbac/` grant one anchored, exact-path
+  `allowed_urls` entry per HTTP method instead of `/.*` per API row, so the
+  read-only role refuses every write path at the gateway (POST creates share
+  API ids with the POST `.../query` reads); `docs/RBAC.md` says which two
+  GET paths the read-only role cannot exclude and why.
 - `cnc_get_lsp_utilization` / `cnc_get_lsp_delay` default `hours` is now 6
   (was 24): the largest window NPM answers with raw 5-minute samples, and
   the window `cnc_explain_sr_policy` reads, so a drill-in lands on the same
