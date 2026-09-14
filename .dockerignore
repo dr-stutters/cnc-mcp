@@ -1,12 +1,46 @@
 # Credentials must never enter the image — pass them at runtime via --env-file/-e.
-.env
-.env.*
+# (Docker patterns match from the context root only; "**/" makes them recursive.)
+**/.env
+**/.env.*
 !.env.example
+# The live smoke plan carries instance addresses and credentials.
+scripts/smoke_plan.json
 
+# Not needed to run the server (the image needs pyproject.toml, uv.lock,
+# README.md — the package metadata's readme — and src/).
+tests/
+scripts/
+.github/
 .venv/
 .git/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
+.gitignore
+.dockerignore
+Dockerfile
+Makefile
+CLAUDE.md
+CONTRIBUTING.md
+SECURITY.md
+CHANGELOG.md
+
+# Build output and tooling caches
 dist/
 build/
+**/*.egg-info/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Scratch and editor files
+**/*.log
+**/*.orig
+**/*.rej
+**/*.swp
+**/*~
+**/.DS_Store
+.idea/
+.vscode/
+.claude/

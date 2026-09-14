@@ -36,39 +36,134 @@ alone — see [How it was verified](#how-it-was-verified).
 - [Roadmap](#roadmap)
 - [Project layout](#project-layout)
 - [Development](#development)
+- Project: [CHANGELOG](CHANGELOG.md) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md)
+- Docs: [platform facts](docs/platform-facts.md) (the full verified list) ·
+  [API coverage](docs/COVERAGE.md) (every published CNC 7.2 operation against the tools)
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/), Python 3.11+, and a Crosswork user
-(the `admin` role covers everything; reads need the inventory, topology, alarm
-and AAA read tasks, writes need inventory write).
+Requires [uv](https://docs.astral.sh/uv/) (it fetches a Python 3.11+ on its
+own if none is installed) and a Crosswork user (the `admin` role covers
+everything; reads need the inventory, topology, alarm and AAA read tasks,
+writes need inventory write).
+
+### Run it without cloning
 
 ```bash
-git clone https://github.com/dr-stutters/cnc-mcp && cd cnc-mcp
-make install                      # uv sync
-cp .env.example .env              # set CNC_MCP_BASE_URL, USERNAME, PASSWORD
-make test && make lint            # 500+ tests, all HTTP mocked — no CNC needed
-make run                          # start the server on stdio
-make inspect                      # open MCP Inspector against it
+uvx --from git+https://github.com/dr-stutters/cnc-mcp cnc-mcp
 ```
 
-Register it with an MCP client (Claude Desktop, Claude Code, Cursor, …):
+`uvx` fetches the repository, builds the package into its cache and starts
+the server on stdio. Append a ref to the URL to pin what you run — `@v0.1.0` (a release tag, once
+that release exists) or `@main`.
+Settings are read from `CNC_MCP_*` environment variables or a `.env` file in
+the server's working directory — [Configuration](#configuration) lists every
+variable and `.env.example` is a commented template. Run unconfigured, the
+server exits at once with `Configuration error — check environment variables
+(CNC_MCP_BASE_URL)`, which is the quickest check that the install works.
+
+A PyPI package (plain `uvx cnc-mcp`) is planned once the project is
+registered there; until then the git URL above is the install path.
+
+### Register it with an MCP client
+
+**Claude Code**
+
+```bash
+claude mcp add cnc -e CNC_MCP_BASE_URL=https://cnc.example.com:30603 \
+  -- uvx --from git+https://github.com/dr-stutters/cnc-mcp cnc-mcp
+```
+
+The credentials (`CNC_MCP_USERNAME` / `CNC_MCP_PASSWORD`, or
+`CNC_MCP_API_TOKEN`) reach the server either as variables exported in the
+shell that starts the client, or from a `.env` file in the server's working
+directory. To make that directory explicit — independent of where the client
+happens to start the server — pass uv's `--directory` flag:
+
+```bash
+claude mcp add cnc -- uvx --directory /home/me/cnc-config \
+  --from git+https://github.com/dr-stutters/cnc-mcp cnc-mcp
+```
+
+with `/home/me/cnc-config/.env` holding the `CNC_MCP_*` settings (copy
+`.env.example`). Claude Code's default `local` scope and the `user` scope
+keep the registration in your own `~/.claude.json`; the `project` scope
+writes a `.mcp.json` into the repository for everyone who checks it out.
+**`CNC_MCP_USERNAME` / `CNC_MCP_PASSWORD` must never go into a shared client
+config** — a `.mcp.json` in a repository, a team-distributed
+`claude_desktop_config.json`, a `.cursor/mcp.json` that gets committed.
+Use `-e` only for non-secret settings such as `CNC_MCP_BASE_URL`, and keep
+the secrets in a `.env` (git-ignored here) or in your own shell environment.
+
+**Claude Desktop** — `claude_desktop_config.json` (Settings → Developer →
+Edit Config):
 
 ```json
 {
   "mcpServers": {
     "cnc": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/cnc-mcp", "run", "cnc-mcp"],
+      "command": "uvx",
+      "args": [
+        "--directory", "/home/me/cnc-config",
+        "--from", "git+https://github.com/dr-stutters/cnc-mcp", "cnc-mcp"
+      ],
       "env": { "CNC_MCP_BASE_URL": "https://cnc.example.com:30603" }
     }
   }
 }
 ```
 
-Keep the credentials in `.env` (never in the client config). Write tools are
-not even registered until `CNC_MCP_ENABLE_WRITES=true`, so a read-only
-deployment cannot be talked into changing anything.
+Desktop clients do not start servers in a predictable working directory, so
+the `--directory` form is the reliable way to have the `.env` found. If the
+client reports that it cannot find `uvx`, use its absolute path (`which uvx`)
+as `command`.
+
+**Cursor** — the same `mcpServers` block in `~/.cursor/mcp.json` (per user)
+or `.cursor/mcp.json` (per project, shared if committed).
+
+**VS Code** — `.vscode/mcp.json` (per project) or the user-level `mcp.json`
+(*MCP: Open User Configuration*); same entry, but the top-level key is
+`servers` and the entry carries `"type": "stdio"`.
+
+Write tools are not registered at all until `CNC_MCP_ENABLE_WRITES=true`,
+so a read-only registration cannot be talked into changing anything.
+
+### Clone and run (development)
+
+```bash
+git clone https://github.com/dr-stutters/cnc-mcp && cd cnc-mcp
+make install                      # uv sync
+cp .env.example .env              # set CNC_MCP_BASE_URL, USERNAME, PASSWORD
+make test && make lint            # 2,000+ tests, all HTTP mocked — no CNC needed
+make run                          # start the server on stdio
+make inspect                      # MCP Inspector against it
+make cli ARGS="list"              # scripts/mcp_cli.py: list | schema <tool> | call <tool> '{...}'
+make build                        # wheel + sdist into dist/
+```
+
+`scripts/mcp_cli.py` drives the server over the real MCP stdio protocol —
+`instructions`, `list [--writes]`, `schema <tool>`, `call <tool> '<json>'` —
+so what it prints is exactly what an agent sees. To register a checkout with
+a client, replace the `uvx` command above with
+`"command": "uv", "args": ["--directory", "/path/to/cnc-mcp", "run", "cnc-mcp"]`;
+the checkout's own `.env` is then the configuration.
+
+### Docker
+
+```bash
+docker run -i --rm --env-file .env ghcr.io/dr-stutters/cnc-mcp:latest
+```
+
+The image is published to GHCR by the release workflow on each tag. It
+contains no credentials (`.dockerignore` keeps `.env` out of the build
+context); they are passed at run time with `--env-file` or `-e`. To build
+locally instead: `make docker-build`, then `docker run -i --rm --env-file
+.env cnc-mcp`. In a client config the entry is `"command": "docker"` with
+`"args": ["run", "-i", "--rm", "--env-file", "/path/to/.env",
+"ghcr.io/dr-stutters/cnc-mcp:latest"]`.
+
+Every setting, its default and what it does is in [Configuration](#configuration)
+below; `.env.example` is the same list as a commented template.
 
 ## Tools
 
@@ -193,8 +288,10 @@ Environment variables (or a `.env` file), prefix `CNC_MCP_`:
 | `CNC_MCP_API_TOKEN` | — | Alternative: a pre-issued JWT (cannot be refreshed; expires in ~8 h) |
 | `CNC_MCP_VERIFY_TLS` | `true` | `false` for self-signed lab certificates |
 | `CNC_MCP_ENABLE_WRITES` | `false` | **Write tools are not registered until `true`** |
-| `CNC_MCP_TIMEOUT_SECONDS` | `30` | Per-request read timeout |
-| `CNC_MCP_MAX_RETRIES` | `3` | Retries for 429 / 5xx / transport errors (idempotent calls) |
+| `CNC_MCP_TIMEOUT_SECONDS` | `30` | Per-request read timeout, seconds (>= 1) |
+| `CNC_MCP_CONNECT_TIMEOUT_SECONDS` | `10` | TCP connect timeout, seconds (>= 1) |
+| `CNC_MCP_MAX_RETRIES` | `3` | Retries for 429 / 5xx / transport errors (idempotent calls; 0-10) |
+| `CNC_MCP_RETRY_BACKOFF_SECONDS` | `1.0` | Base delay for the exponential backoff between retries, seconds (>= 0) |
 | `CNC_MCP_MAX_CONCURRENT_REQUESTS` | `5` | Cap on in-flight requests to the platform |
 | `CNC_MCP_MAX_RESPONSE_CHARS` | `40000` | Tool responses longer than this are truncated with a note |
 | `CNC_MCP_LOG_LEVEL` | `INFO` | Python logging level (stderr only — stdout is the MCP transport) |
@@ -241,118 +338,18 @@ read as success).
 
 ## Platform facts that shaped the design
 
-These are the behaviours that differ from what the published OpenAPI
-documents suggest and that a client must get right. The full record lives in
-a platform-notes file kept outside this repository.
-
-- **No 401s.** Rejected or expired tokens are `403 "Unauthorized request"`;
-  JWT-shaped garbage is `500 "Middleware error"`. The same 403 body is also
-  what a valid token gets on an unknown path.
-- **`offset` is ignored.** Inventory `…/query` honours `limit` but silently
-  ignores `offset`; real paging is `filterData.PageSize` / `PageNum`.
-- **Unknown filter fields are ignored** (the whole collection comes back) on
-  inventory, while dg-manager rejects them with `400 unable to unmarshal
-  payload to proto`. Two grammars exist inside dg-manager itself.
-- **Failed writes are HTTP 200** with `state: JOB_FAILED` in a job envelope;
-  `JOB_COMPLETED_WITH_WARNING` is a success with an advisory. Update is
-  `PATCH`, delete takes a JSON body; path-parameter forms do not exist.
-- **Response envelopes differ per endpoint** (`data`, `tags`, `jobs`,
-  `providers`, a dict keyed by username, `application_summary_list`, bare
-  `{}` when empty).
-- **RESTCONF NBI**: a keyed GET on a top-level list may ignore the key and
-  return everything; a missing nested entry is `409 data-missing`, never 404;
-  errors use a bare `errors` key (NSO's proxy uses the standard
-  `ietf-restconf:errors`); RPC failures ride inside HTTP 200 as
-  `output.status: "error"` (COE) or `result: false` (NSO).
-- **NSO device actions are fire-and-forget.** `POST /inventory/v1/nso/<action>`
-  answers `JOB_ACCEPTED` at once and never validates its node filter, so a
-  typo matches nothing and still "succeeds"; the outcome only appears in the
-  device's `nso_state` a few seconds later. The tools resolve the selector to
-  at least one device first and hand back the timestamp to wait from.
-  `nso/sync` is global: the body is ignored and every device is re-checked.
-- **A 404 means "no such route"**, never "no such object": the home
-  application's fallback page identifies an API that is not installed on the
-  deployment (Service Health, Change Automation and Health Insights are
-  absent on single-VM builds).
-- **CNC 7.x learns the topology from an SR-PCE over gRPC**, not the HTTP
-  `/topo/subscribe/json` feed of earlier releases: the router needs
-  `lslib-server` and `grpc … service-layer`, and the provider needs **both** an
-  HTTP and a GRPC endpoint (plus a gRPC credential). With HTTP only the
-  provider reports "Reachable" forever while the topology stays L2-only —
-  the HTTP leg is just the reachability probe (and RSVP/Tree-SID/PCEP data).
-  The HTTP leg itself must use `authentication digest` on the router.
-- **The Optimization Engine rejects bad input with a bare, empty 500** — the same
-  answer as an absent backend — so the SR-TE tools validate node names, router-ids
-  and explicit hops against the topology before every RPC, and explicit hops are
-  sent with both the address *and* the prefix-SID (the documented one-of does not
-  work). Failures otherwise ride inside HTTP 200 (`results[].state: failure` with
-  the platform's message, e.g. "SR Policy name is empty.").
-- **Crosswork caps concurrent SSO sessions per user** (API sessions idle out after
-  8 h by default); the client deletes its ticket-granting ticket on close so a
-  restart loop or a run of scripts cannot lock the service account out.
-- **Topology NBI keys must be fully percent-encoded** (interface names carry
-  `/`, link ids carry spaces and `:`); an unencoded `/` breaks the route and
-  the gateway answers a plain 404, while a properly encoded key that matches
-  nothing answers `409 data-missing`. The keyed `network=<id>` GET returns a
-  *shallow* topology (no IS-IS/SR attributes) — only the collection GET is
-  complete, so the tools fetch the collection and select the network
-  client-side. Performance-metric containers cannot be listed, only read by
-  key, and exist for IGP links and policies only.
-- **Webhook subscriptions need an explicit port** in the client URL
-  (`http://host:80/path`); without one the notification service answers a
-  bare 500. The receiver must answer 2xx or the subscription is created and
-  then dropped. A duplicate (same topic, URL and format) is refused with the
-  existing subscription's id.
-- **The collection service reports rejections inside HTTP 200**
-  (`result.request_result: REJECTED` with `result.error.error`), and a sensor
-  template lookup that matches nothing — the documented wildcard included —
-  is one such rejection ("Template for the given TemplateId does not exist"),
-  which the tools report as an empty result. Application-context queries need
-  both `application_id` and `context_id`; the built-in DLM job is
-  `cw.dlminvmgr0` / `dlm/cli-collector/group/te-tunnel-id/subscription`.
-- **Device grouping answers an empty list for an unknown classifier** rather
-  than an error, and the group-detail RPC takes the group's UUID (the root
-  groups are read by classifier name, e.g. `PortType`).
-- **NSO's RESTCONF dry-run works through the proxy** (`?dry-run=native`
-  answers the exact device CLI NSO would push, and the function pack's
-  validation runs too), so every provisioning tool takes `dry_run`. The CAT
-  inventory reports the SR policy service type under its own namespace
-  (`cisco-ts-sr-policies`), not the YANG module's; a head-end NSO considers
-  out of sync answers `502 "device X: out of sync"` (sync-from first); a SID
-  list still referenced by a policy cannot be deleted; and an L3VPN without
-  `local_as` on its endpoints is rejected with `TSDN-L3VPN-415` unless the PE
-  already runs BGP — with `local_as` the function pack renders `router bgp`
-  itself.
-- **Performance dashboards name metrics `<SCHEMA>_<metric>`** with the exact
-  metric names of the policy templates (`CEPMINTERFACE_ifInBitsRate`, not
-  `INTERFACE_…`), page from 1, want ISO timestamps with milliseconds, and
-  answer a Spring envelope whose `message` is a code (`INVALID_SCHEMA`,
-  `MISSING_TIME_DETAILS`, …). The NPM analytics service never validates its
-  keys: an unknown LSP or interface answers the same empty list as "no data",
-  so the tools refuse host names and a zero colour before sending anything.
-- **OAM trace routes need the full request form** (yang-path, both inventory
-  uuids, service type and name, node names and TE router-ids — with only the
-  uuids the engine answers "No path found" without tracing), gNMI
-  connectivity to the routers and `mpls oam` on them; they report their
-  verdict in a status code rather than an HTTP error. A successful trace
-  returns every ECMP path with per-hop labels and LSP-ping return codes.
-- **Onboarding gNMI on a device takes three PATCHes**: the capability cannot
-  change while the device is admin-up and attached to a Data Gateway, so the
-  tool bounces it admin-down, adds the `ROBOT_MSVC_TRANS_GNMI` transport
-  (whose `encoding_type` is mandatory) plus the `GNMI` capability, and brings
-  it back up. The credential profile must already carry a gNMI login — and a
-  credential PUT is a full replace: an entry left out is removed.
-- **CAT's VPN operational reads need `content=nonconfig`** (the batch list
-  answers 409 without it even when services exist; `/status/oper-status` is
-  never readable as a sub-path — only the service node itself).
-- **The EMS job scheduler takes raw text bodies** (`Failed Feature
-  Sync:Inventory`, no JSON quoting) and answers a bare `true`/`false` with
-  HTTP 200 either way; its job list refuses to answer without a `Range`
-  header.
+The published OpenAPI documents describe a platform that is not quite the one
+on the wire, so the client is built around the differences, each verified live:
+there are no 401s (an expired token is `403`, garbage is `500`); failed writes
+are HTTP 200 with `state: JOB_FAILED` in a job envelope; a missing RESTCONF
+entry is `409 data-missing` while a 404 means "no such route"; the Optimization
+Engine answers bad input with a bare, empty 500; NSO device actions are
+fire-and-forget. The full list of 21 verified facts is in
+[docs/platform-facts.md](docs/platform-facts.md).
 
 ## Roadmap
 
-The published CNC 7.2 API has ~950 operations across 103 OpenAPI documents;
+The published CNC 7.2 API has 948 operations across 103 OpenAPI documents;
 this server covers the inventory (incl. tags, locks, locations), the EMF
 inventory, topology, TE state, SR-TE operations, fault management, device
 configuration (backups, templates, deployments), platform administration and
@@ -361,7 +358,10 @@ collection service, device grouping, the LCM / Circuit-Style managers, the
 CAT service inventory and T-SDN service provisioning through the NSO proxy,
 performance monitoring and NPM analytics, OAM trace routes and Service
 Health probes, SWIM / ZTP reads and the EMS inventory scheduler.
-Planned modules, in the order they become exercisable on a lab:
+[docs/COVERAGE.md](docs/COVERAGE.md) is the full picture: every documented
+operation, whether a tool sends it, and if not why (it is generated by
+`scripts/api_coverage.py` from the OpenAPI set, so its numbers are computed,
+not claimed). Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
@@ -392,7 +392,11 @@ scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers
   mcp_cli.py                call the server over the real MCP stdio protocol (list/schema/call)
+  api_coverage.py           maps the published OpenAPI operations onto the tools -> docs/COVERAGE.md
   smoke_plan.example.json   sanitised smoke plan
+docs/
+  platform-facts.md         the verified platform behaviours the client is built around
+  COVERAGE.md               every published CNC 7.2 operation against the tools (generated)
 tests/                      one test module per source module; respx-mocked
 ```
 

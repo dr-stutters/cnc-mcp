@@ -1,0 +1,170 @@
+name: Release
+
+# Runs when a version tag (v0.1.0, v1.2.3-rc1, ...) is pushed. The tag must
+# match [project].version in pyproject.toml — compared on the PEP 440-normalised
+# form, so a pre-release may be tagged v1.0.0-rc1 (semver spelling) while
+# pyproject.toml carries 1.0.0rc1 (what `uv version 1.0.0-rc1` writes) — and
+# have its own "## [x.y.z]" section in CHANGELOG.md (either spelling), which
+# becomes the GitHub Release body. Anything PEP 440 calls a pre-release or dev
+# release is published as a GitHub pre-release and gets no :latest image tag.
+#
+#   build  — uv build, wheel smoke, GitHub Release with dist/* attached
+#   image  — ghcr.io/<owner>/cnc-mcp:<version> and :latest (final releases only)
+#   pypi   — trusted publishing; runs only when the repository variable
+#            PUBLISH_TO_PYPI is "true" (see CONTRIBUTING.md)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check that the tag matches pyproject.toml
+        id: version
+        # Compared as PEP 440 versions: v1.0.0-rc1 and v1.0.0rc1 both match a
+        # pyproject.toml version of 1.0.0rc1. Outputs: version (the tag without
+        # its "v"), pep440 (the normalised form) and prerelease (true/false).
+        run: |
+          uv run --no-project --with packaging python - "${GITHUB_REF_NAME#v}" <<'EOF' >> "$GITHUB_OUTPUT"
+          import sys
+          import tomllib
+
+          from packaging.version import InvalidVersion, Version
+
+          tag = sys.argv[1]
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]["version"]
+          try:
+              tag_version, project_version = Version(tag), Version(project)
+          except InvalidVersion as e:
+              sys.exit(f"not a PEP 440 version: {e}")
+          if tag_version != project_version:
+              sys.exit(f"tag v{tag} does not match pyproject.toml version {project}")
+          print(f"version={tag}")
+          print(f"pep440={project_version}")
+          print(f"prerelease={'true' if tag_version.is_prerelease else 'false'}")
+          EOF
+          echo "--- version ---"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Extract the CHANGELOG section for this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PEP440: ${{ steps.version.outputs.pep440 }}
+        run: |
+          awk -v ver="$VERSION" -v pep="$PEP440" '
+            /^## \[/ {
+              if (found) exit
+              found = (index($0, "## [" ver "]") == 1 || index($0, "## [" pep "]") == 1)
+              next
+            }
+            /^\[[^]]+\]: / { next }   # skip the link-reference definitions at the end
+            found { print }
+          ' CHANGELOG.md | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "CHANGELOG.md has no '## [$VERSION]' (or '## [$PEP440]') section" >&2
+            exit 1
+          fi
+          echo "--- release notes ---"
+          cat release_notes.md
+
+      - name: Build
+        run: uv build
+
+      - name: Smoke the wheel
+        # The console script must start from the wheel alone and fail fast
+        # with a configuration error when nothing is configured.
+        run: |
+          wheel="$(ls "$PWD"/dist/*.whl)"
+          cd "$(mktemp -d)"
+          if uvx --from "$wheel" cnc-mcp </dev/null 2>stderr.txt; then
+            echo "expected a configuration error from an unconfigured server" >&2
+            exit 1
+          fi
+          grep -q "Configuration error" stderr.txt
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: dist/*
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+
+  image:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # v1.2.3 -> :1.2.3 (v1.0.0-rc1 -> :1.0.0-rc1, v1.0.0rc1 -> :1.0.0rc1 —
+          # raw, not type=semver, so a PEP 440-spelled tag still yields an image
+          # tag); ":latest" only for a final release, as decided by the build
+          # job's PEP 440 parse rather than by the tag's spelling.
+          tags: |
+            type=raw,value=${{ needs.build.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.build.outputs.prerelease == 'false' }}
+          flavor: |
+            latest=false
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  pypi:
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing (OIDC); no API token needed
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

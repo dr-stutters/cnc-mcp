@@ -112,7 +112,6 @@ def _home_app_fallback_path(data: Any, text: str) -> str | None:
 # which application is missing instead of "some prefix".
 _UNROUTED_APPLICATIONS: dict[str, str] = {
     "/crosswork/aa/": "Service Health (Crosswork Active Assurance, capp-aa)",
-    "/crosswork/probemgr/": "Service Health (Crosswork Active Assurance, capp-aa)",
     "/crosswork/hi/": "Health Insights",
     "/crosswork/nca/": "Change Automation",
     "/crosswork/path_analytics/": "Path Analytics",

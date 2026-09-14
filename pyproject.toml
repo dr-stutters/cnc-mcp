@@ -1,16 +1,50 @@
 [project]
 name = "cnc-mcp"
 version = "0.1.0"
-description = "MCP server for Cisco Crosswork Network Controller (inventory, providers, topology, alarms)"
+description = "MCP server for Cisco Crosswork Network Controller 7.2: inventory, topology, SR-TE, NSO and T-SDN services, fault, performance monitoring, Data Gateway and platform administration through CNC's REST APIs, every tool verified against a live instance"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Mitchell McInnes" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "cisco",
+    "crosswork",
+    "cnc",
+    "crosswork-network-controller",
+    "sdn",
+    "segment-routing",
+    "sr-te",
+    "nso",
+    "restconf",
+    "network-automation",
+    "ai-agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+]
 dependencies = [
     "mcp[cli]>=2.1,<3",
     "httpx>=0.27",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dr-stutters/cnc-mcp"
+Repository = "https://github.com/dr-stutters/cnc-mcp"
+Issues = "https://github.com/dr-stutters/cnc-mcp/issues"
+Changelog = "https://github.com/dr-stutters/cnc-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cnc-mcp = "cnc_mcp.server:main"
@@ -24,11 +58,33 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cnc_mcp"]
+
+[tool.hatch.build.targets.sdist]
+# Everything a `pip install` or a `docker build` from the sdist needs, plus the
+# tests and the live-verification scripts. LICENSE and README.md are always
+# included by hatchling; .env, the local smoke plan and caches never are.
+only-include = [
+    "src/cnc_mcp",
+    "tests",
+    "scripts",
+    "pyproject.toml",
+    "uv.lock",
+    "README.md",
+    "LICENSE",
+    "Makefile",
+    "Dockerfile",
+    ".env.example",
+]
+exclude = [
+    "scripts/smoke_plan.json",
+    "scripts/specialize.py",
+    "**/__pycache__",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
