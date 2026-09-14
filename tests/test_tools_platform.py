@@ -4,6 +4,8 @@ through MCPServer (schema validation included). All HTTP mocked with respx."""
 from __future__ import annotations
 
 import json
+import re
+from datetime import UTC, datetime
 
 import httpx
 import respx
@@ -13,6 +15,7 @@ from cnc_mcp.auth import StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import platform
+from cnc_mcp.tools.platform import _job_line
 from tests.conftest import BASE_URL, call_tool_text
 
 TAGS_URL = f"{BASE_URL}/crosswork/inventory/v1/tags/query"
@@ -561,6 +564,32 @@ async def test_list_inventory_jobs_uses_filterdata_paging(settings):
     }
     assert "**j-1** JOB_COMPLETED — 1 device(s) added successfully" in text
     assert "error: Software Type needs to be configured" in text
+    # Round 3: creation/completion are epoch seconds on the wire and render as ISO + age,
+    # like every alarm line — no raw '1789212325' reaches the agent.
+    assert "created=2026-09-12T11:25:25Z, completed=2026-09-12T11:25:30Z, age=" in text
+    assert re.search(r"age=\d+[dhm], by admin, impacted: 1\)", text), text
+    assert "1789212325" not in text and "created 1789212325" not in text
+
+
+def test_job_line_renders_iso_timestamps_and_age_since_creation():
+    """The one-line job rendering, pinned: ISO-8601 UTC for created/completed and the age
+    since creation (a running job's age = how long it has been running); a job without a
+    completion time (still running) simply omits 'completed='."""
+    now = datetime(2026, 9, 14, 11, 25, 25, tzinfo=UTC)  # 2 days after creation
+    assert _job_line(JOB_COMPLETED, now) == (
+        "- **j-1** JOB_COMPLETED — 1 device(s) added successfully "
+        "(created=2026-09-12T11:25:25Z, completed=2026-09-12T11:25:30Z, age=2d, by admin, "
+        "impacted: 1)"
+    )
+    assert _job_line(JOB_RUNNING, datetime(2026, 9, 12, 11, 30, 0, tzinfo=UTC)) == (
+        "- **j-1** JOB_RUNNING — 1 device(s) being added "
+        "(created=2026-09-12T11:25:25Z, age=4m, by admin, impacted: 0)"
+    )
+    assert _job_line(JOB_FAILED, now).endswith("\n  - error: Software Type needs to be configured")
+    # No timestamps at all: no created/completed/age segments, no crash.
+    assert _job_line({"job_id": "j-9", "state": "JOB_RUNNING", "type": "x"}, now) == (
+        "- **j-9** JOB_RUNNING — x"
+    )
 
 
 @respx.mock

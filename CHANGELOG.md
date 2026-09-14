@@ -9,6 +9,43 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ## [Unreleased]
 
+### Added
+
+- **Playbook tools** (`tools/composite.py`): `cnc_investigate_device`,
+  `cnc_network_health_report`, `cnc_explain_sr_policy`, `cnc_alarm_triage`,
+  `cnc_explain_service` (reads) and `cnc_provision_l3vpn_e2e`,
+  `cnc_create_sr_policy_e2e` (writes) — one call each, composed server-side
+  from the existing tools: a verdict with reasons, one section per underlying
+  tool, partial failures reported as unavailable sections, and an audit list
+  of the calls made. Verified live (the L3VPN and SR-policy playbooks ran end
+  to end on the lab and were reverted); blind-agent measurements cut a
+  "device looks degraded" investigation from 44 tool calls and a network
+  health overview from 25.
+- **MCP prompts** (`prompts.py`): `troubleshoot_device`,
+  `network_health_check`, `explain_sr_policy`, `provision_l3vpn`,
+  `alarm_triage`, `explain_service` — operator playbooks that name the tools
+  to use, adapt to whether the playbook tools are registered, and reject
+  unknown arguments by name. `scripts/mcp_cli.py` gains `prompts` and
+  `prompt <name>`.
+
+### Changed
+
+- `cnc_get_lsp_utilization` / `cnc_get_lsp_delay` default `hours` is now 6
+  (was 24): the largest window NPM answers with raw 5-minute samples, and
+  the window `cnc_explain_sr_policy` reads, so a drill-in lands on the same
+  series. Pass `hours=24` for the hourly roll-ups.
+- `cnc_list_sr_policies` with no headend/endpoint filter now reads the
+  topology once so the rows carry host names next to the TE router-ids
+  (one extra GET; a failed read degrades to router-ids with a footer).
+- `cnc_list_inventory_jobs` renders `created=` / `completed=` as ISO-8601
+  UTC with an `age=`, like the alarm lines (the JSON view keeps the raw
+  epoch seconds).
+- Performance collection-status caveats now describe the method that
+  proves sample delivery (a 1-hour statistics window) instead of pointing
+  at a "newest sample time" the statistics tool does not return; the
+  topology PCEP-session text separates what is verified (no state leaf)
+  from what is assumed (down sessions omitted).
+
 ## [0.1.0] - 2026-09-14
 
 Initial public release: an MCP server (official MCP Python SDK 2.x, stdio

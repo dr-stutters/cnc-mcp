@@ -1648,6 +1648,61 @@
       "args": {}
     },
     {
+      "tool": "cnc_investigate_device",
+      "args": {
+        "host_name": "PE2"
+      }
+    },
+    {
+      "tool": "cnc_investigate_device",
+      "args": {
+        "host_name": "PE2",
+        "response_format": "json"
+      }
+    },
+    {
+      "tool": "cnc_investigate_device",
+      "args": {
+        "host_name": "nope"
+      }
+    },
+    {
+      "tool": "cnc_network_health_report",
+      "args": {}
+    },
+    {
+      "tool": "cnc_explain_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      }
+    },
+    {
+      "tool": "cnc_explain_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 999
+      }
+    },
+    {
+      "tool": "cnc_alarm_triage",
+      "args": {}
+    },
+    {
+      "tool": "cnc_explain_service",
+      "args": {
+        "name": "nope"
+      }
+    },
+    {
+      "tool": "cnc_explain_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=nope"
+      }
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {
@@ -3011,6 +3066,68 @@
       "tool": "cnc_delete_vpn_service",
       "args": {
         "vpn_id": "smoke-l3vpn-1"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_provision_l3vpn_e2e",
+      "args": {
+        "vpn_id": "smoke-e2e-l3vpn",
+        "route_distinguisher": "0:65095:95",
+        "route_target": "0:65095:95",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback95\", \"address\": \"10.95.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback95\", \"address\": \"10.95.2.1\", \"prefix_length\": 30, \"local_as\": 65000}]",
+        "wait_seconds": 90
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_explain_service",
+      "args": {
+        "vpn_id": "smoke-e2e-l3vpn"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_explain_service",
+      "args": {
+        "name": "smoke-e2e-l3vpn"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_vpn_service",
+      "args": {
+        "vpn_id": "smoke-e2e-l3vpn"
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_create_sr_policy_e2e",
+      "args": {
+        "headend": "PE2",
+        "endpoint": "PE1",
+        "color": 320,
+        "path_name": "smoke-e2e-320",
+        "objective": "igp-metric",
+        "wait_seconds": 60
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_explain_sr_policy",
+      "args": {
+        "headend": "PE2",
+        "endpoint": "PE1",
+        "color": 320
+      },
+      "phase": "write"
+    },
+    {
+      "tool": "cnc_delete_sr_policy",
+      "args": {
+        "headend": "PE2",
+        "endpoint": "PE1",
+        "color": 320
       },
       "phase": "write"
     }

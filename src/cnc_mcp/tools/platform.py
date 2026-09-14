@@ -32,6 +32,7 @@ Crosswork:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
@@ -50,12 +51,13 @@ from cnc_mcp.crosswork import (
     unwrap,
 )
 from cnc_mcp.errors import PlatformError, format_error
-from cnc_mcp.formatting import ResponseFormat, finalize, to_json
+from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, to_json
 from cnc_mcp.polling import wait_until
 from cnc_mcp.safety import AppContext, register_tool
 from cnc_mcp.tools.fault import (
     ALARM_SORTS,
     DEFAULT_ALARM_SORT,
+    age_text,
     alarm_line,
     sort_alarms,
     stale_alarm_footer,
@@ -200,11 +202,17 @@ def _alarms_markdown(
     return "\n".join(lines)
 
 
-def _job_line(j: dict) -> str:
+def _job_line(j: dict, now: datetime | None = None) -> str:
+    """One markdown line per inventory job. ``creation_time`` / ``completion_time`` are
+    epoch seconds (strings) on the wire; they render as ISO-8601 UTC plus ``age=`` since
+    creation, the way every alarm line does (:func:`cnc_mcp.tools.fault.alarm_line`), so a
+    job's recency reads at a glance. ``now`` fixes the reference time (tests)."""
+    now = now or datetime.now(UTC)
     line = f"- **{j.get('job_id', '?')}** {j.get('state', '?')} — {j.get('type', '?')}"
     details = [
-        f"created {j['creation_time']}" if j.get("creation_time") else "",
-        f"completed {j['completion_time']}" if j.get("completion_time") else "",
+        f"created={epoch_iso(j['creation_time'])}" if j.get("creation_time") else "",
+        f"completed={epoch_iso(j['completion_time'])}" if j.get("completion_time") else "",
+        f"age={age_text(j['creation_time'], now)}" if j.get("creation_time") else "",
         f"by {j['created_by']}" if j.get("created_by") else "",
         f"impacted: {len(j['impacted'])}" if isinstance(j.get("impacted"), list) else "",
     ]
@@ -216,7 +224,8 @@ def _job_line(j: dict) -> str:
     return line
 
 
-def _jobs_markdown(jobs: list[dict], envelope: dict[str, Any]) -> str:
+def _jobs_markdown(jobs: list[dict], envelope: dict[str, Any], now: datetime | None = None) -> str:
+    now = now or datetime.now(UTC)
     total = envelope["total"] if envelope["total"] is not None else "unknown"
     lines = [
         f"# Inventory jobs ({envelope['count']} shown, page {envelope['page']}, total {total})",
@@ -224,7 +233,7 @@ def _jobs_markdown(jobs: list[dict], envelope: dict[str, Any]) -> str:
     ]
     if not jobs:
         lines.append("No inventory jobs returned.")
-    lines.extend(_job_line(j) for j in jobs)
+    lines.extend(_job_line(j, now) for j in jobs)
     lines.extend(_more_hint(envelope))
     return "\n".join(lines)
 
@@ -586,12 +595,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             page_size / page: page size and 0-based page number.
 
         Returns:
-            str: Markdown listing, or JSON:
+            str: Markdown listing — one "- **<job_id>** <state> — <type>
+            (created=<ISO>, completed=<ISO>, age=<since creation>, by <user>,
+            impacted: <n>)" line per job, the timestamps rendered as ISO-8601
+            UTC with an age exactly like the alarm lines (the wire carries
+            epoch seconds; the JSON view keeps them raw) — or JSON:
             {"total": int|null, "count": int, "page": int, "page_size": int,
              "items": [{"job_id": str, "state": str, "type": str,
-                        "creation_time": str, "completion_time": str,
-                        "created_by": str, "impacted": [str, ...], "error": str},
-                       ...],
+                        "creation_time": str (epoch s), "completion_time": str
+                        (epoch s), "created_by": str, "impacted": [str, ...],
+                        "error": str}, ...],
              "has_more": bool, "next_page": int|null, "collection_total": int|null}
             States: JOB_COMPLETED and JOB_COMPLETED_WITH_WARNING (a success with
             an advisory in "error", e.g. a no-op or partially applied write),

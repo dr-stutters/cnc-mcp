@@ -67,11 +67,14 @@ Object model (performance):
   the form each service was verified with — so
   ``2026-09-13T12:00:00Z``, ``2026-09-13T12:00:00.000Z``,
   ``2026-09-13T14:00:00+02:00`` and ``1789300800000`` are all the same
-  instant to every tool. The top-N and NPM tools also take ``hours``
-  (default 24) like the statistics dashboard — the tool computes ``from`` /
-  ``to`` itself where the wire has no ``timeInterval`` — so a "last N hours"
-  question needs no explicit window; only ``summary`` still needs both
-  bounds. Retention (``GET dataretention/all|default``): raw 24 h, hourly
+  instant to every tool. The top-N and NPM tools also take ``hours`` like
+  the statistics dashboard (default 24 — except the two NPM LSP series,
+  which default to :data:`LSP_DEFAULT_HOURS` = 6, the largest window NPM
+  answers with 5-minute samples and the window cnc_explain_sr_policy uses)
+  — the tool computes ``from`` / ``to`` itself where the wire has no
+  ``timeInterval`` — so a "last N hours" question needs no explicit window;
+  only ``summary`` still needs both bounds. Retention (``GET
+  dataretention/all|default``): raw 24 h, hourly
   168 h, daily 744 h, weekly 9072 h by default — a window older than the
   raw retention only has aggregated data. How long NPM keeps its samples is
   not documented and was not verified.
@@ -208,6 +211,23 @@ TOP_N_SCHEMAS = (
 KNOWN_SCHEMAS = TOP_N_SCHEMAS + ("SRPOLICY", "SRV6LOCATOR")
 # MonitoringPolicyDeviceDTO.collectionStatus (documented enum; all three seen live).
 COLLECTION_STATUSES = ("ACTIVE", "DEGRADED", "NOTPOLLING")
+# Verified live 2026-09-14: a device whose interface samples had stopped ~6 h earlier (stuck
+# ROBOT_OPER_STATE_CHECKING after a re-attach) still listed 'collection ACTIVE, updated
+# <re-attach time>' — the flag is scheduler membership, not sample delivery. The proof that
+# works is a SHORT statistics window: cnc_get_performance_statistics returns per-object
+# window averages with no sample time, so that same device still answered rows for the
+# default 24 h (samples existed earlier in the window) and only hours=1 answered "No
+# CEPMINTERFACE statistics for last 1 h"; cnc_get_collection_health reported the collector
+# job healthy throughout (it is job state, not sample delivery).
+COLLECTION_STATUS_CAVEAT = (
+    "collection ACTIVE / DEGRADED / NOTPOLLING is the policy's membership flag (its scheduling "
+    "state; 'updated' is when that record last changed), not proof that samples are arriving "
+    "— verify with cnc_get_performance_statistics(schema=<SCHEMA>, device_uuid=<uuid>, "
+    "hours=1): rows in a 1 h window prove samples are arriving; 'No <SCHEMA> statistics' in "
+    "that short window while hours=24 still answers rows means collection stalled — narrow "
+    "from_time/to_time to date the last sample (the rows are window averages with no sample "
+    "time; cnc_get_collection_health reports the collector job's state, not sample delivery)."
+)
 # Documented reachabilityState filter values beyond the friendly names of
 # crosswork.REACHABILITY_STATES (accepted verbatim, never seen live).
 _DOCUMENTED_REACHABILITY = {
@@ -282,6 +302,17 @@ _TO_DESC = f"Window end — {_TIME_FORMS}."
 _HOURS_DESC = (
     "Window: the last N hours back from now (e.g. 24); ignored when from_time and to_time "
     "are given."
+)
+# The NPM LSP series (cnc_get_lsp_utilization / cnc_get_lsp_delay) default to 6 h — the
+# largest window NPM answers with raw ~5-minute samples (verified live 2026-09-14: 6 h ->
+# 73 samples, anything longer -> hourly roll-ups) and the window cnc_explain_sr_policy
+# uses, so a drill-in from the composite lands on the same series. Deliberate exception
+# to the PM family's 24 h default (dashboards/statistics has no such resolution cliff).
+LSP_DEFAULT_HOURS = 6
+_LSP_HOURS_DESC = (
+    f"Window: the last N hours back from now (default {LSP_DEFAULT_HOURS} — the largest window "
+    "NPM answers with raw 5-minute samples; longer windows, e.g. 24, answer hourly roll-ups); "
+    "ignored when from_time and to_time are given."
 )
 _FROM_OPTIONAL_DESC = (
     f"Explicit window start — {_TIME_FORMS}; pass with to_time, or neither (then the last "
@@ -1547,6 +1578,26 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         NOTPOLLING devices (the ``comments`` say why: POLLED_BY_ANOTHER_POLICY,
         MISSING_DEVICE_DETAILS, UN_MANAGED_DEVICE, SCHEDULING_FAILURE, ...).
 
+        ``collectionStatus`` is the policy's MEMBERSHIP flag — whether the
+        scheduler has the device in this policy's active / degraded /
+        not-polling set — and ``lastUpdateTime`` is when that membership
+        record last changed (a re-attach, a policy edit), NOT the newest
+        sample. It is not refreshed when a collector stops delivering: a
+        device whose interface samples stopped hours ago (seen live
+        2026-09-14 on a device stuck ROBOT_OPER_STATE_CHECKING after a
+        re-attach) still reads ``collection ACTIVE``. Treat ACTIVE as "meant
+        to be polled" and prove data with a SHORT statistics window:
+        cnc_get_performance_statistics(schema=<SCHEMA>, device_uuid=<uuid>,
+        hours=1) — rows in a 1 h window prove samples are arriving; "No
+        <SCHEMA> statistics" in that short window while ``hours=24`` still
+        answers rows means collection stalled, so narrow from_time/to_time
+        to date the last sample. The statistics rows are window averages
+        with no sample time, which is why a long window hides a stall (that
+        same device still answered rows for 24 h), and
+        cnc_get_collection_health reports the collector job's state, not
+        sample delivery (it read healthy while those samples were 6 h
+        stale). The markdown ends with that caveat.
+
         Args:
             policy_id: the policy id (an integer).
             host_name / ip_address / reachability_state / collection_status:
@@ -1558,7 +1609,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str: Markdown "# Devices of performance policy <id> (page P, N
             shown, total T|unknown)" and one "- **host** ip (uuid):
             reachability / admin state, collection STATUS, product, gateway,
-            updated <ISO> [notes]" line per device, plus a "(more ...)" note
+            updated <ISO> [notes]" line per device, the membership-flag caveat
+            line, plus a "(more ...)" note
             when another page may exist; or JSON {"policy_id", "total" (null
             when unknown), "count", "page", "page_size", "has_more",
             "next_page", "offset", "next_offset", "items": [{"host_name",
@@ -1609,6 +1661,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "",
             ]
             lines.extend(policy_device_line(v) for v in views)
+            lines.extend(["", COLLECTION_STATUS_CAVEAT])
             if env["has_more"]:
                 lines.append(f"\n(more may exist: call again with page={env['next_page']})")
             return finalize("\n".join(lines), settings)
@@ -2498,7 +2551,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def cnc_get_lsp_utilization(
         headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=253)],
         endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=253)],
-        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        hours: Annotated[int, Field(description=_LSP_HOURS_DESC, ge=1, le=MAX_HOURS)] = (
+            LSP_DEFAULT_HOURS
+        ),
         from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
         to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         color: Annotated[int, Field(description=_COLOR_DESC, ge=0, le=4294967295)] = 0,
@@ -2556,13 +2611,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         60-minute spacing)"), so report the resolution you actually got; for 5-minute
         detail over a long period, page through it in 6 h windows.
 
-        Time window: ``hours`` (default 24, the last N hours ending now) or
-        both ``from_time`` and ``to_time`` — ISO-8601 with or without
-        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
-        is accepted and normalised (the same convention as
-        cnc_get_performance_statistics). How long NPM keeps samples is not
-        documented and was not verified; the performance service's retention
-        (cnc_get_performance_retention) does not govern NPM.
+        Time window: ``hours`` (default 6 — the largest window that answers
+        raw 5-minute samples, and the window cnc_explain_sr_policy uses, so
+        a drill-in lands on the same series; pass 24 for the hourly roll-up
+        view) or both ``from_time`` and ``to_time`` — ISO-8601 with or
+        without milliseconds, 'Z' or a UTC offset, or epoch milliseconds;
+        either form is accepted and normalised (the same convention as
+        cnc_get_performance_statistics, whose ``hours`` defaults to 24). How
+        long NPM keeps samples is not documented and was not verified; the
+        performance service's retention (cnc_get_performance_retention) does
+        not govern NPM.
 
         Args:
             headend / endpoint: host name or TE router-id (the same names
@@ -2644,7 +2702,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def cnc_get_lsp_delay(
         headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=253)],
         endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=253)],
-        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        hours: Annotated[int, Field(description=_LSP_HOURS_DESC, ge=1, le=MAX_HOURS)] = (
+            LSP_DEFAULT_HOURS
+        ),
         from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
         to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         color: Annotated[int, Field(description=_COLOR_DESC, ge=0, le=4294967295)] = 0,
@@ -2697,12 +2757,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         observed spacing ("73 sample(s) (... to ...; ~5-minute spacing, gaps
         93 s to 300 s)"), so report the resolution you actually got.
 
-        Time window: ``hours`` (default 24, the last N hours ending now) or
-        both ``from_time`` and ``to_time`` — ISO-8601 with or without
-        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
-        is accepted and normalised (the same convention as
-        cnc_get_performance_statistics). How long NPM keeps samples is not
-        documented and was not verified.
+        Time window: ``hours`` (default 6 — the largest window that answers
+        raw 5-minute samples, and the window cnc_explain_sr_policy uses, so
+        a drill-in lands on the same series; pass 24 for the hourly roll-up
+        view) or both ``from_time`` and ``to_time`` — ISO-8601 with or
+        without milliseconds, 'Z' or a UTC offset, or epoch milliseconds;
+        either form is accepted and normalised (the same convention as
+        cnc_get_performance_statistics, whose ``hours`` defaults to 24). How
+        long NPM keeps samples is not documented and was not verified.
 
         Args:
             headend / endpoint: host name or TE router-id (the same names

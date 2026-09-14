@@ -100,6 +100,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
@@ -128,6 +129,8 @@ from cnc_mcp.tools.topology import (
     router_ids,
     select_by_field,
 )
+
+logger = logging.getLogger(__name__)
 
 TE_DATA = f"{TOPOLOGY_NBI}/data"
 
@@ -1392,16 +1395,22 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``(headend, endpoint, color)`` where headend/endpoint are the TE
         router-ids (loopbacks such as ``10.0.0.1``). The headend/endpoint
         filters accept a host name too (resolved through the topology, one
-        extra GET; a router-id costs nothing extra). When a host name was
-        given, the topology nodes that resolved it also supply a router-id ->
-        host name map, and the header and every row then read ``PE2
-        (10.0.0.3) -> PE1 (10.0.0.1) color 100`` (the node ids are the exact
-        keys for cnc_get_topology_node); with router-id filters only, or no
-        filter, nothing extra is read and the rows show router-ids alone. An
-        empty answer (``{}``) is a normal result ("No SR policies are
-        reported"), not an error — check the SR-PCE provider
-        (cnc_list_providers) and the PCC's PCEP session
-        (``node-pcep-sessions`` in the topology) when policies are expected.
+        extra GET; a router-id costs nothing extra). The markdown rows carry
+        host names next to the router-ids — ``PE2 (10.0.0.3) -> PE1
+        (10.0.0.1) color 100`` (the node ids are the exact keys for
+        cnc_get_topology_node) — whenever the router-id -> host name map is
+        in hand: a host-name filter supplies it from the topology nodes that
+        resolved the name, and with NO headend/endpoint filter the tool reads
+        the topology ``networks`` collection once itself (one extra GET, so
+        the everyday "what policies are there" call answers in host names;
+        should that read fail, the rows fall back to router-ids and a footer
+        says so). With a router-id filter nothing extra is read (the fast
+        path) and the rows show router-ids alone; the json view is always
+        the raw entries (router-ids only, no topology read). An empty answer
+        (``{}``) is a normal result ("No SR policies are reported"), not an
+        error — check the SR-PCE provider (cnc_list_providers) and the PCC's
+        PCEP session (``node-pcep-sessions`` in the topology) when policies
+        are expected.
 
         Origin vs delegation (two independent flags, verified live):
         ``policy-details.pcep-info.pcep-flag-c`` says who instantiated the
@@ -1410,8 +1419,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         the head-end router) — rendered as ``origin=``;
         ``policy-details.pce-controlled`` says whether it is delegated to the
         PCE for (re)optimisation. PCC-initiated + pce-controlled true = a
-        router-configured policy delegated to the PCE (the lab's colour-100
-        policies).
+        router-configured policy delegated to the PCE (a candidate path
+        configured ``dynamic`` / ``pcep`` on the head-end).
 
         Args:
             headend, endpoint: host name or TE router-id (exact router-id
@@ -1422,7 +1431,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             network: topology network id host names are resolved in.
             response_format: markdown (one line per policy: key — with host
                 names next to the router-ids when a host-name filter was
-                given — admin/oper state, type, binding SID, origin,
+                given or no headend/endpoint filter at all — admin/oper
+                state, type, binding SID, origin,
                 pce-controlled, PCC address, then the active path — the
                 operationally-UP path of highest preference, else the first
                 — with its name, preference, type, metric, hops as
@@ -1494,6 +1504,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "them (PCEP report-all).",
                     settings,
                 )
+            # No headend/endpoint filter (the everyday "what policies are there" call): read
+            # the topology once so the rows answer in host names — one extra GET, and only
+            # when there are rows to name. A router-id filter keeps the fast path (nothing
+            # extra read); a failed read degrades to router-ids with a footer, never an error.
+            names_note = ""
+            if matched and not names and head_key is None and end_key is None:
+                try:
+                    names = router_id_names(await fetch_topology_nodes(client, network))
+                except Exception as e:  # the policy list is the answer; names are a bonus
+                    logger.debug("cnc_list_sr_policies: host names unavailable: %s", e)
+                    # format_error() sanitises whatever was raised (a PlatformError keeps
+                    # its message; anything else becomes the generic "Unexpected ..." text)
+                    # so no raw parser / shape-error text reaches the agent.
+                    reason = format_error(e).removeprefix("Error: ").rstrip(".")
+                    names_note = (
+                        f"Host names could not be resolved ({reason}); the rows show TE "
+                        "router-ids only — cnc_list_topology_nodes maps them."
+                    )
             lines = [f"# SR policies ({len(matched)} of {len(policies)}, {_filter_text(shown)})"]
             lines.append("")
             if not matched:
@@ -1505,7 +1533,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if names:
                 key_note = (
                     "Keys are (headend, endpoint, color); host names are shown next to the TE "
-                    "router-ids the wire uses ('PE2 (10.0.0.3)') and the get tools accept either"
+                    "router-ids the wire uses ('PE2 (10.0.0.3)', resolved through the topology "
+                    "nodes) and the get tools accept either"
                 )
             else:
                 key_note = (
@@ -1513,6 +1542,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "(the get tools accept host names too, and a host-name filter here shows "
                     "host names next to the router-ids)"
                 )
+            if names_note:
+                lines.extend(["", names_note])
             lines.extend(
                 [
                     "",
@@ -1578,7 +1609,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         0 PCC-initiated (configured on the head-end router);
         ``pce-controlled`` = delegated to the PCE for (re)optimisation.
         ``pcep-flag-c 0`` + ``pce-controlled true`` is a router-configured
-        policy delegated to the PCE (the lab's CNC-DYN-100 policies).
+        policy delegated to the PCE — e.g. a candidate path configured
+        ``dynamic`` with ``pcep`` on the head-end, which the router owns but
+        lets the PCE compute; the PCE can neither modify nor delete it.
 
         Args:
             headend, endpoint: host name or TE router-id.

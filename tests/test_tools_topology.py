@@ -726,7 +726,11 @@ async def test_get_node_markdown_encodes_key_and_renders_details(mcp):
     # the index (1) is rendered as the absolute label (SRGB 16000 + 1)
     assert "- 10.0.0.1/32 -> sid 16001 (index 1) algorithm 0" in text
     assert "- 10.1.1.0/30 -> no SID" in text
-    assert "PCEP sessions (1):" in text
+    # Round 3: the feed carries no state leaf (verified); whether a down session is
+    # omitted was never observed live, so the header states only the verified fact.
+    assert "PCEP sessions (1; the feed carries no state leaf):" in text
+    assert " established;" not in text and "omits down sessions" not in text
+    assert "no established PCEP session" not in text  # the old, unverified claim
     assert (
         "- pcc 10.0.0.1 -> pce 10.0.0.5 stateful=True sr=True update=True instantiate=True msd=10"
     ) in text
@@ -763,6 +767,23 @@ async def test_get_node_accepts_the_prefixed_node_id_spelling(mcp):
     text = await call_tool_text(mcp, "cnc_get_topology_node", {"node_id": "PE1"})
     assert text.startswith("# Topology node PE1 (network Default-network)")
     assert "- **PE1** router-id=10.0.0.1" in text
+
+
+@respx.mock
+async def test_get_node_without_pcep_session_says_none_is_not_down(mcp):
+    """An L3 node with no node-pcep-sessions (P1 here) renders an explicit 'none' that
+    separates the verified fact (no state leaf in the feed) from the assumption (a down
+    session is absent rather than listed — never observed live) and says where to check,
+    so an agent does not read 0 as "not a PCC" or as "PCEP down" without checking."""
+    respx.get(node_url("P1")).mock(return_value=ok({"ietf-network-state:node": [P1]}))
+    text = await call_tool_text(mcp, "cnc_get_topology_node", {"node_id": "P1"})
+    assert "PCEP sessions (0; the feed carries no state leaf):" in text
+    assert "- (none: no PCEP session with the SR-PCE in the feed" in text
+    assert "presumably absent rather than listed as down (assumed, not verified live)" in text
+    assert "cnc_get_device_backup" in text and "cnc_list_providers" in text
+    assert " established;" not in text and "omits down sessions" not in text
+    assert "no established PCEP session" not in text  # the old, unverified claim
+    assert "pce = the address" not in text  # the PCEP note only follows actual sessions
 
 
 @respx.mock

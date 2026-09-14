@@ -18,6 +18,7 @@ from cnc_mcp.auth import AuthStrategy, CrossworkCasAuth, StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.errors import PlatformError
+from cnc_mcp.prompts import register_prompts
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import register_all_tools
 
@@ -198,6 +199,10 @@ def build_instructions(settings: Settings) -> str:
         "- Newly added devices show reachability 'CONN_STATE_UNKNOWN' / operational "
         "'ROBOT_OPER_STATE_CHECKING' for a minute or two; cnc_wait_for_device_reachable "
         "waits for the check to finish.",
+        "- Prompts (MCP prompts/list): troubleshoot_device, network_health_check, "
+        "explain_sr_policy, provision_l3vpn, alarm_triage and explain_service are playbooks "
+        "that say which tools to call (the one-call composite when this build has it, the "
+        "individual tools otherwise), how to drill in and how to answer.",
     ]
     if settings.enable_writes:
         lines.append(
@@ -238,6 +243,7 @@ def build_server(settings: Settings | None = None, client: ApiClient | None = No
 
     mcp = MCPServer(SERVER_NAME, instructions=build_instructions(settings), lifespan=lifespan)
     register_all_tools(mcp, ctx)
+    register_prompts(mcp, ctx)
     return mcp
 
 

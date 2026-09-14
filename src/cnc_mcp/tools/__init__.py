@@ -11,6 +11,7 @@ from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import (
     admin,
     collection,
+    composite,
     credentials,
     data_gateway,
     device_config,
@@ -60,6 +61,7 @@ ALL_MODULES = [
     oam,  # Optimization Engine OAM trace routes; Service Health probe status
     swim_ztp,  # SWIM repository / preferences / jobs; ZTP profiles, devices, serials, files, images
     ems_jobs,  # EMS inventory scheduler jobs: list, run now, suspend, resume, wait
+    composite,  # one-call playbooks composed from the tools above (keep last)
 ]
 
 

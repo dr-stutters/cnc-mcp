@@ -711,9 +711,18 @@ def _node_markdown(network_id: str, node: dict[str, Any]) -> str:
                 sid_text = "no SID"
             lines.append(f"- {field(prefix, 'prefix', '?')} -> {sid_text}")
         sessions = pcep_sessions_of(l3)
-        lines.append(f"PCEP sessions ({len(sessions)}):")
+        # Verified: the feed carries no state leaf (pcc/pce address, capabilities, stateful,
+        # msd only). NOT verified: that a down session is omitted — only Up sessions have
+        # been observed live — so the header states the fact and the 'none' line marks the
+        # omission as an assumption instead of reading 0 as "PCEP down".
+        lines.append(f"PCEP sessions ({len(sessions)}; the feed carries no state leaf):")
         if not sessions:
-            lines.append("- (none)")
+            lines.append(
+                "- (none: no PCEP session with the SR-PCE in the feed — a down or "
+                "never-established session is presumably absent rather than listed as down "
+                "(assumed, not verified live); a configured PCC showing 0 should be checked "
+                "on the router (cnc_get_device_backup) and against cnc_list_providers)"
+            )
         for s in sessions:
             lines.append(
                 f"- pcc {field(s, 'pcc-address', '?')} -> pce {field(s, 'pce-address', '?')} "
@@ -1129,22 +1138,34 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         cnc_list_node_interfaces; adjacency: cnc_list_topology_links with
         node=<node-id>.
 
-        PCEP session addresses (verified live 2026-09-14): ``pcc-address`` is
-        the router's TE router-id (loopback); ``pce-address`` is the address
-        the SR-PCE feed identifies itself by — the SR-PCE provider's endpoint
-        address as shown by cnc_list_providers (on the lab the PCE's
+        PCEP sessions: the feed carries no state leaf (verified — each entry
+        is pcc/pce address, the SR / update / instantiate capabilities,
+        stateful and msd, nothing else); a down or never-established
+        session is presumably absent rather than listed as down — NOT
+        verified live (only Up sessions have ever been observed; no down
+        PCC session has been seen in the feed). So ``PCEP sessions (0 ...)``
+        on a router configured as a PCC most likely means it has no session
+        with the SR-PCE right now: check on the router (cnc_get_device_backup,
+        its ``pce`` config) and against cnc_list_providers rather than
+        reading the 0 alone as "PCEP down"; a P router that never speaks
+        PCEP shows 0 as well.
+        Session addresses (verified live 2026-09-14): ``pcc-address`` is the
+        router's TE router-id (loopback); ``pce-address`` is the address the
+        SR-PCE feed identifies itself by — the SR-PCE provider's endpoint
+        address as shown by cnc_list_providers (typically the PCE's
         management address), NOT necessarily the ``pce address ipv4
-        <loopback>`` peer configured on the router (the PCE's loopback on the
-        lab). A mismatch between the two is therefore normal and is not a
-        misconfigured peer; the router-side peer address is only visible in
-        the device configuration / backup (cnc_get_device_backup).
+        <loopback>`` peer configured on the router (often the PCE's
+        loopback). A mismatch between the two is therefore normal and is not
+        a misconfigured peer; the router-side peer address is only visible
+        in the device configuration / backup (cnc_get_device_backup).
 
         Args:
             node_id: exact node-id (no wildcards).
             network: topology network id.
             response_format: markdown (summary line, router-ids, IS-IS,
-                SR-MPLS, prefix table, PCEP sessions, one line per
-                termination point) or json (the raw node object).
+                SR-MPLS, prefix table, PCEP sessions — "N; the feed carries
+                no state leaf" — one line per termination point)
+                or json (the raw node object).
 
         Returns:
             str: Markdown, or the JSON node {"node-id": str,

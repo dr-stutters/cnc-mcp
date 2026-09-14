@@ -663,27 +663,91 @@ def test_has_pm_telemetry_only_for_a_present_napm_key():
 
 @respx.mock
 async def test_list_sr_policies_markdown_url_accept_and_lines(settings):
+    """Round 3: with no headend/endpoint filter the tool reads the topology once (one
+    extra GET) so the rows answer in host names — 'PE1 (10.0.0.1)' — instead of sending
+    the agent to cnc_list_topology_nodes for the translation."""
     route = respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    networks = mock_networks()
     text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
     request = route.calls[0].request
     assert str(request.url) == SR_POLICIES_URL
     assert request.method == "GET" and request.headers["Accept"] == YANG_JSON
+    assert networks.call_count == 1
     assert "# SR policies (2 of 2, no filter)" in text
     assert (
-        "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP oper=UP type=REGULAR bsid=24005 "
-        "origin=PCC-initiated pce-controlled=True pcc=10.0.0.1 | active path: CNC-DYN-100 "
-        "pref=100 PT-DYNAMIC metric=IGP-METRIC:20 hops=16003(IPV4-NODE-SID/10.0.0.3) "
-        "updated=2026-09-13T"
+        "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP oper=UP type=REGULAR "
+        "bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.1 | active path: "
+        "CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
+        "hops=16003(IPV4-NODE-SID/10.0.0.3) updated=2026-09-13T"
     ) in text
     assert (
-        "- **10.0.0.3 -> 10.0.0.1 color 100** admin=UP oper=UP type=REGULAR bsid=24005 "
-        "origin=PCC-initiated pce-controlled=True pcc=10.0.0.3 | active path: CNC-DYN-100 "
-        "pref=100 PT-DYNAMIC metric=IGP-METRIC:20 hops=16001(IPV4-NODE-SID/10.0.0.1) updated="
+        "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100** admin=UP oper=UP type=REGULAR "
+        "bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.3 | active path: "
+        "CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
+        "hops=16001(IPV4-NODE-SID/10.0.0.1) updated="
     ) in text
-    assert "TE router-ids" in text and "cnc_get_sr_policy" in text
+    assert "- **10.0.0.1 -> 10.0.0.3 color 100**" not in text
+    assert "host names are shown next to the TE router-ids" in text
+    assert "resolved through the topology nodes" in text and "cnc_get_sr_policy" in text
     # The origin/delegation legend, so an agent does not have to infer it (scenario 3).
     assert "1 = PCE-initiated" in text and "0 = PCC-initiated" in text
     assert "router-configured policy delegated to the PCE" in text
+
+
+@respx.mock
+async def test_list_sr_policies_unfiltered_falls_back_to_router_ids_when_topology_fails(
+    settings,
+):
+    """The policy list is the answer; the host names are decoration. A topology read that
+    fails (here: an empty networks container -> PlatformError) degrades the rows to
+    router-ids with a footer saying so, never to an Error."""
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    networks = mock_networks({})
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
+    assert networks.call_count == 1
+    assert not text.startswith("Error:")
+    assert "# SR policies (2 of 2, no filter)" in text
+    assert "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP" in text
+    assert "Host names could not be resolved (the topology NBI reports no networks yet" in text
+    assert "cnc_list_topology_nodes maps them" in text
+    assert "a host-name filter here shows host names next to the router-ids" in text
+    # A non-end filter alone (color) is still "no headend/endpoint filter": names resolved.
+    mock_networks()
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"color": 100})
+    assert networks.call_count == 2
+    assert "# SR policies (2 of 2, color=100)" in text
+    assert "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100**" in text
+
+
+@respx.mock
+async def test_list_sr_policies_host_name_footer_is_sanitised_through_format_error(
+    make_settings, monkeypatch
+):
+    """The fallback catches ANY exception from the topology read, so its footer must go
+    through format_error() like every other text that reaches the agent: a PlatformError
+    keeps its message, anything else (a shape error in the unwrap helpers, a stray
+    assertion) renders as the generic "Unexpected <Type> ..." rather than raw Python text."""
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+
+    async def broken(client, network):  # the signature is the contract
+        raise KeyError("raw parser text that must not leak")
+
+    monkeypatch.setattr(te_state, "fetch_topology_nodes", broken)
+    text = await call_tool_text(build(make_settings()), "cnc_list_sr_policies", {})
+    assert not text.startswith("Error:")
+    assert "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP" in text
+    assert (
+        "Host names could not be resolved (Unexpected KeyError while calling the platform "
+        "API); the rows show TE router-ids only — cnc_list_topology_nodes maps them."
+    ) in text
+    assert "raw parser text" not in text
+    # A transport failure keeps the client's hint (it arrives as a PlatformError).
+    monkeypatch.undo()
+    respx.get(NETWORKS_URL).mock(side_effect=httpx.ConnectError("boom"))
+    text = await call_tool_text(build(make_settings(max_retries=0)), "cnc_list_sr_policies", {})
+    assert not text.startswith("Error:")
+    assert "Host names could not be resolved (Could not reach the platform (ConnectError)." in text
+    assert "Check base_url, network reachability, and the verify_tls setting)" in text
 
 
 @respx.mock
@@ -725,10 +789,15 @@ async def test_list_sr_policies_unknown_host_name_is_error_before_the_policy_rea
 
 @respx.mock
 async def test_list_sr_policies_json_is_raw_entries(settings):
+    # The json view never reads the topology (raw entries, router-ids). The networks route
+    # IS mocked and asserted uncalled: a read that failed would be swallowed by the
+    # host-name fallback (a footer, not an Error), so an unmocked route proves nothing.
+    networks = mock_networks()
     respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
     text = await call_tool_text(
         build(settings), "cnc_list_sr_policies", {"response_format": "json"}
     )
+    assert networks.call_count == 0
     data = json.loads(text)
     assert data["count"] == 2 and data["total"] == 2
     assert data["items"] == [PE2_POLICY, PE1_POLICY]
@@ -765,9 +834,15 @@ async def test_list_sr_policies_filters_client_side(settings, args, expected):
 
 @respx.mock
 async def test_list_sr_policies_no_match_is_not_error(settings):
+    # With nothing to name, the topology is not read at all. The networks route is mocked
+    # and asserted uncalled (an attempted read that failed would NOT surface as an Error —
+    # the host-name fallback degrades it to a footer — so leaving it unmocked proves nothing).
+    networks = mock_networks()
     respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
     text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"oper_state": "down"})
+    assert networks.call_count == 0
     assert not text.startswith("Error:")
+    assert "Host names could not be resolved" not in text
     assert "# SR policies (0 of 2, oper_state=DOWN)" in text
     assert "No SR policies match the filter (oper_state=DOWN); 2 are reported in total." in text
 
@@ -782,6 +857,7 @@ async def test_list_sr_policies_bad_oper_state_is_error_before_any_call(settings
 
 @respx.mock
 async def test_list_sr_policies_empty_container_is_not_error(settings):
+    networks = mock_networks()  # mocked and asserted uncalled: nothing to name, no read
     respx.get(SR_POLICIES_URL).mock(return_value=ok(EMPTY))
     text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
     assert text.startswith("No SR policies are reported by the SR-PCE feed.")
@@ -789,6 +865,7 @@ async def test_list_sr_policies_empty_container_is_not_error(settings):
     text = await call_tool_text(
         build(settings), "cnc_list_sr_policies", {"response_format": "json"}
     )
+    assert networks.call_count == 0
     assert json.loads(text) == {
         "count": 0,
         "total": 0,
@@ -820,14 +897,15 @@ async def test_list_sr_policies_policy_without_details_says_no_path_reported(set
             {"cisco-crosswork-segment-routing-policy:sr-policies": {"policy": [bare, no_paths]}}
         )
     )
+    mock_networks()
     text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
     assert not text.startswith("Error:") and "# SR policies (2 of 2, no filter)" in text
     assert (
-        "- **10.0.0.1 -> 10.0.0.3 color 100** admin=UP oper=UP type=REGULAR bsid=- "
+        "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP oper=UP type=REGULAR bsid=- "
         "origin=unknown pce-controlled=None pcc=- | no path reported updated=-"
     ) in text
     assert (
-        "- **10.0.0.3 -> 10.0.0.1 color 100** admin=UP oper=UP type=REGULAR bsid=- "
+        "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100** admin=UP oper=UP type=REGULAR bsid=- "
         "origin=unknown pce-controlled=True pcc=- | no path reported updated=-"
     ) in text
 

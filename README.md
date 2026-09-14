@@ -21,7 +21,7 @@ analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**237 tools** (176 read, 61 write) over 24 API areas. Every tool was built from
+**244 tools** (181 read, 63 write) over 24 API areas plus six MCP prompts. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -137,13 +137,14 @@ cp .env.example .env              # set CNC_MCP_BASE_URL, USERNAME, PASSWORD
 make test && make lint            # 2,000+ tests, all HTTP mocked — no CNC needed
 make run                          # start the server on stdio
 make inspect                      # MCP Inspector against it
-make cli ARGS="list"              # scripts/mcp_cli.py: list | schema <tool> | call <tool> '{...}'
+make cli ARGS="list"              # scripts/mcp_cli.py: list | schema | call | prompts | prompt
 make build                        # wheel + sdist into dist/
 ```
 
 `scripts/mcp_cli.py` drives the server over the real MCP stdio protocol —
-`instructions`, `list [--writes]`, `schema <tool>`, `call <tool> '<json>'` —
-so what it prints is exactly what an agent sees. To register a checkout with
+`instructions`, `list [--writes]`, `schema <tool>`, `call <tool> '<json>'`,
+`prompts`, `prompt <name> '<json>'` — so what it prints is exactly what an
+agent sees. To register a checkout with
 a client, replace the `uvx` command above with
 `"command": "uv", "args": ["--directory", "/path/to/cnc-mcp", "run", "cnc-mcp"]`;
 the checkout's own `.env` is then the configuration.
@@ -194,6 +195,7 @@ Read tools — always registered:
 | **OAM & probes** | `cnc_get_oam_settings` · `cnc_list_oam_trace_routes` · `cnc_get_oam_trace_route` · `cnc_wait_for_oam_trace_route` · `cnc_get_probe_status` |
 | **SWIM & ZTP** | `cnc_get_swim_preferences` · `cnc_list_software_images` · `cnc_get_device_running_images` · `cnc_get_swim_job` · `cnc_list_ztp_profiles` · `cnc_list_ztp_devices` · `cnc_list_ztp_serial_numbers` · `cnc_list_ztp_static_routes` · `cnc_get_ztp_device_policy` · `cnc_list_ztp_config_files` · `cnc_list_ztp_images` |
 | **EMS inventory scheduler** | `cnc_list_inventory_scheduler_jobs` · `cnc_get_inventory_scheduler_job` · `cnc_wait_for_inventory_scheduler_job` |
+| **Playbooks** (one call, composed from the tools above) | `cnc_investigate_device` · `cnc_network_health_report` · `cnc_explain_sr_policy` · `cnc_alarm_triage` · `cnc_explain_service` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
 the MCP `destructive` annotation:
@@ -215,6 +217,21 @@ the MCP `destructive` annotation:
 | **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
 | **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
 | **EMS inventory scheduler** | `cnc_run_inventory_scheduler_job` · `cnc_suspend_inventory_scheduler_job` · `cnc_resume_inventory_scheduler_job` |
+| **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) |
+
+The playbook tools compose the others server-side: each answers with a
+**verdict** (healthy / degraded / red / deployed …, with the reasons), one
+section per underlying tool, and an audit list of the calls it made, so an
+agent can drill into any section with the individual tool. A section whose
+call fails is reported as unavailable rather than failing the whole answer.
+Blind-agent measurements: a "device looks degraded" investigation dropped
+from 44 tool calls to a handful, a network health overview from 25.
+
+Six **MCP prompts** package the operator workflows for clients that expose
+them as slash commands: `troubleshoot_device`, `network_health_check`,
+`explain_sr_policy`, `provision_l3vpn`, `alarm_triage`, `explain_service`.
+Each tells the assistant which playbook to start from, where to drill in, and
+what to do when the write tools are absent.
 
 Every tool has flat, typed parameters with examples and constraints (unknown
 argument names are rejected with a "did you mean" hint), a docstring that
@@ -391,7 +408,7 @@ src/cnc_mcp/
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers
-  mcp_cli.py                call the server over the real MCP stdio protocol (list/schema/call)
+  mcp_cli.py                call the server over the real MCP stdio protocol (list/schema/call/prompts)
   api_coverage.py           maps the published OpenAPI operations onto the tools -> docs/COVERAGE.md
   smoke_plan.example.json   sanitised smoke plan
 docs/

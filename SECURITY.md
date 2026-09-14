@@ -57,7 +57,7 @@ Only the latest release is supported with fixes.
 
 ## Writes are off by default
 
-`CNC_MCP_ENABLE_WRITES` defaults to `false`. While it is unset the 61 write
+`CNC_MCP_ENABLE_WRITES` defaults to `false`. While it is unset the 63 write
 tools are **not registered** — they are absent from the tool list an agent
 sees, not merely refused — so a read-only deployment cannot be talked into
 changing anything. `safety.register_tool()` is the only registration path,

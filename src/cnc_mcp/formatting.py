@@ -16,6 +16,7 @@ the tool does not have.
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -71,8 +72,22 @@ TRUNCATION_HINT = (
 _JSON_AWARE_MAX_CHARS = 8_000_000
 
 
+# Set (by tools/composite.py) around a server-side sub-call: the answer feeds
+# another tool, never an agent's context, so the size cap must not apply — the
+# composite's own finalize() caps what finally leaves the server. A capped
+# sub-answer would silently drop data the composite then reasons over
+# (verified in an agent scenario: an alarm triage read 15 of 32 alarms).
+uncapped_internal_call: ContextVar[bool] = ContextVar(
+    "cnc_mcp_uncapped_internal_call", default=False
+)
+
+
 def finalize(text: str, settings: Settings, *, hint: str | None = None) -> str:
     """Apply the response-size cap. Call as the last step of every tool.
+
+    Inside a server-side composite sub-call (:data:`uncapped_internal_call`
+    true) the text is returned untouched: the cap belongs to the answer that
+    reaches the client, not to an intermediate one.
 
     ``hint`` is the tool's own advice for an oversized answer (e.g. "Lower
     page_size or narrow with app_id."); without it the generic
@@ -85,6 +100,8 @@ def finalize(text: str, settings: Settings, *, hint: str | None = None) -> str:
     keep at least one entry, or the text is not such a JSON payload, the
     text is cut at the cap and a bracketed note is appended instead.
     """
+    if uncapped_internal_call.get():
+        return text
     limit = settings.max_response_chars
     if len(text) <= limit:
         return text

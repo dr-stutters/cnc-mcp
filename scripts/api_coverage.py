@@ -926,8 +926,10 @@ def render(
     tools_used = {name for r in covered + generic for name in r.tools + r.generic_tools} - {
         AUTH_LABEL
     }
-    tools_without_docs = sorted(t.name for t in tools if t.name not in tools_used)
     tools_without_endpoints = sorted(t.name for t in tools if not t.endpoints)
+    # A tool that sends no request of its own (the composite playbooks call sibling tools
+    # through the server) belongs in the second list only, not among the unmatched endpoints.
+    tools_without_docs = sorted(t.name for t in tools if t.name not in tools_used and t.endpoints)
     read_tools = sum(t.read_only for t in tools)
     write_tools = len(tools) - read_tools
     deprecated_docs = sum(d.deprecated for d in documents)
@@ -1040,8 +1042,10 @@ def render(
         w("")
     if tools_without_endpoints:
         w(
-            "Tools for which the script found no request at all (pure client-side tools or "
-            "an analysis miss): " + ", ".join(f"`{n}`" for n in tools_without_endpoints) + "."
+            "Tools that send no request of their own (the composite playbooks call the tools "
+            "above through the server; anything else here is an analysis miss): "
+            + ", ".join(f"`{n}`" for n in tools_without_endpoints)
+            + "."
         )
         w("")
 

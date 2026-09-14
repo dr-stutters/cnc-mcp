@@ -725,8 +725,8 @@ async def test_lsp_tools_use_the_shared_te_key_names(make_settings):
     cnc_get_sr_policy and cnc_get_sr_policy_performance_metrics use, so their output
     chains without remapping, and headend / endpoint take a host name OR a router-id
     (deliberate change: a host name used to be refused with "NOT the host name"). The
-    window is ``hours`` (default 24) or an optional explicit from_time / to_time, as in
-    cnc_get_performance_statistics."""
+    window is ``hours`` (default 6 — see test_every_pm_window_says_either_time_form_is_accepted)
+    or an optional explicit from_time / to_time, as in cnc_get_performance_statistics."""
     tools = {t.name: t for t in await build(make_settings()).list_tools()}
     for name in ("cnc_get_lsp_utilization", "cnc_get_lsp_delay"):
         schema = tools[name].input_schema
@@ -751,26 +751,35 @@ async def test_every_pm_window_says_either_time_form_is_accepted(make_settings):
     """One time convention across the family: every from_time / to_time description names
     both ISO forms and epoch milliseconds; the hours-or-window tools default hours to 24
     with from_time / to_time optional (top-N joined them — deliberate change: it used to
-    require from/to), the from/to-only summary dashboard keeps them required."""
+    require from/to), the from/to-only summary dashboard keeps them required. Round 3
+    (deliberate change): the two NPM LSP series default to 6 h instead — the largest
+    window NPM answers with 5-minute samples (a 24 h window answers hourly roll-ups) and
+    the window cnc_explain_sr_policy uses, so a drill-in from the composite lands on the
+    same series; their description says so, and that 24 gives the hourly view."""
     tools = {t.name: t for t in await build(make_settings()).list_tools()}
     windowed = {
-        "cnc_get_performance_statistics": True,
-        "cnc_get_performance_top_n": True,
-        "cnc_get_performance_summary": False,
-        "cnc_get_lsp_utilization": True,
-        "cnc_get_lsp_delay": True,
-        "cnc_get_interface_delay": True,
+        "cnc_get_performance_statistics": 24,
+        "cnc_get_performance_top_n": 24,
+        "cnc_get_performance_summary": None,
+        "cnc_get_lsp_utilization": 6,
+        "cnc_get_lsp_delay": 6,
+        "cnc_get_interface_delay": 24,
     }
-    for name, has_hours in windowed.items():
+    for name, default_hours in windowed.items():
         schema = tools[name].input_schema
         props = schema["properties"]
         for key in ("from_time", "to_time"):
             text = props[key]["description"]
             assert "either form is accepted" in text, (name, key)
             assert "epoch milliseconds" in text and "+02:00" in text, (name, key)
+        has_hours = default_hours is not None
         if has_hours:
-            assert props["hours"]["default"] == 24 and props["hours"]["minimum"] == 1, name
-            assert props["hours"]["maximum"] == 9072, name
+            assert props["hours"]["default"] == default_hours, name
+            assert props["hours"]["minimum"] == 1 and props["hours"]["maximum"] == 9072, name
+            if default_hours == 6:
+                text = props["hours"]["description"]
+                assert "default 6" in text and "5-minute samples" in text, name
+                assert "e.g. 24, answer hourly roll-ups" in text, name
             assert props["from_time"]["default"] == "" and props["to_time"]["default"] == ""
             assert "from_time" not in schema["required"], name
         else:
@@ -1379,6 +1388,22 @@ async def test_list_policy_devices_unfiltered_page_has_unknown_total(settings):
         "collection NOTPOLLING, Cisco XRd Virtual Router, gateway EMBEDDED_DEF_POOL-1, updated "
         "2026-09-13T12:00:00Z [POLLED_BY_ANOTHER_POLICY Default interface health]"
     )
+    # Round 3: 'collection ACTIVE' is the scheduler's membership flag (seen live still
+    # ACTIVE hours after a device's samples stopped), so the listing says what proves data —
+    # a SHORT statistics window, because the statistics rows are window averages with no
+    # sample time (the stalled device still answered rows for 24 h; only hours=1 showed the
+    # stall) and collection health is the collector job's state, not sample delivery.
+    assert lines[5] == (
+        "collection ACTIVE / DEGRADED / NOTPOLLING is the policy's membership flag (its "
+        "scheduling state; 'updated' is when that record last changed), not proof that "
+        "samples are arriving — verify with cnc_get_performance_statistics(schema=<SCHEMA>, "
+        "device_uuid=<uuid>, hours=1): rows in a 1 h window prove samples are arriving; "
+        "'No <SCHEMA> statistics' in that short window while hours=24 still answers rows "
+        "means collection stalled — narrow from_time/to_time to date the last sample (the "
+        "rows are window averages with no sample time; cnc_get_collection_health reports "
+        "the collector job's state, not sample delivery)."
+    )
+    assert "newest sample time" not in text  # the rows carry no sample time to read
     # A full page with no total_count: more may exist (heuristic).
     assert lines[-1] == "(more may exist: call again with page=2)"
 
@@ -2443,33 +2468,37 @@ async def test_get_lsp_utilization_refuses_color_0_for_sr(settings):
 
 @respx.mock
 async def test_get_lsp_utilization_hours_window(settings, fixed_now):
-    """hours (default 24) replaces an explicit window: from/to are the last N hours ending
-    now, whole seconds; from_time / to_time (either form) win when both are given, and one
-    without the other is refused before anything is sent."""
+    """hours (default 6 — deliberate change from 24: the 5-minute-sample window, and the
+    one cnc_explain_sr_policy uses) replaces an explicit window: from/to are the last N
+    hours ending now, whole seconds; from_time / to_time (either form) win when both are
+    given, and one without the other is refused before anything is sent."""
     samples = post(f"{NPM_BASE}/lsp/utilizations", UTILIZATIONS)
     maximum = post(f"{NPM_BASE}/lsp/max/utilization", MAX_UTIL)
     base = {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100}
+    text = await call_tool_text(build(settings), "cnc_get_lsp_utilization", {**base, "hours": 24})
+    assert sent(samples)["from"] == "2026-09-13T08:30:15Z"  # an explicit 24 h
+    assert sent(samples)["to"] == "2026-09-14T08:30:15Z"
+    await call_tool_text(build(settings), "cnc_get_lsp_utilization", base)
+    assert sent(samples, 1) == {**LSP_KEY_SR, **LAST_6H}  # the default: 6 h
+    assert sent(maximum, 1) == {**LSP_KEY_SR, **LAST_6H}
     text = await call_tool_text(build(settings), "cnc_get_lsp_utilization", {**base, "hours": 6})
-    assert sent(samples) == {**LSP_KEY_SR, **LAST_6H} and sent(maximum) == {**LSP_KEY_SR, **LAST_6H}
+    assert sent(samples, 2) == {**LSP_KEY_SR, **LAST_6H}
     assert text.startswith(
         "# Utilization of SR LSP 10.0.0.1 -> 10.0.0.3 color 100, 2026-09-14T02:30:15Z to "
         "2026-09-14T08:30:15Z\n"
     )
-    await call_tool_text(build(settings), "cnc_get_lsp_utilization", base)
-    assert sent(samples, 1)["from"] == "2026-09-13T08:30:15Z"  # the default 24 h
-    assert sent(samples, 1)["to"] == "2026-09-14T08:30:15Z"
     # An explicit window (offset + epoch-ms forms) is normalised and beats hours.
     await call_tool_text(
         build(settings),
         "cnc_get_lsp_utilization",
         {**base, "hours": 6, "from_time": "2026-09-13T14:00:00+02:00", "to_time": "1789322400000"},
     )
-    assert sent(samples, 2) == LSP_KEY_SR
+    assert sent(samples, 3) == LSP_KEY_SR
     text = await call_tool_text(
         build(settings), "cnc_get_lsp_utilization", {**base, "from_time": FROM}
     )
     assert text.startswith("Error: pass both from_time and to_time") and "Nothing was sent" in text
-    assert samples.call_count == 3 and maximum.call_count == 3
+    assert samples.call_count == 4 and maximum.call_count == 4
 
 
 @respx.mock
@@ -2671,30 +2700,33 @@ async def test_get_lsp_delay_all_empty_and_json(settings):
 
 @respx.mock
 async def test_get_lsp_delay_hours_window(settings, fixed_now):
+    """hours defaults to 6 (the same deliberate change from 24 as cnc_get_lsp_utilization:
+    the 5-minute-sample window cnc_explain_sr_policy uses) — asserted on the wire, not
+    only in the schema — and an explicit hours=6 sends the identical window."""
     routes = [
         post(f"{NPM_BASE}/lsp/delay", []),
         post(f"{NPM_BASE}/lsp/max/delay", MAX_DELAY_NONE),
         post(f"{NPM_BASE}/lsp/delayVariance", []),
         post(f"{NPM_BASE}/lsp/loss", []),
     ]
-    text = await call_tool_text(
-        build(settings),
-        "cnc_get_lsp_delay",
-        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100, "hours": 6},
-    )
+    base = {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100}
+    text = await call_tool_text(build(settings), "cnc_get_lsp_delay", base)
     for route in routes:
-        assert sent(route) == {**LSP_KEY_SR, **LAST_6H}
+        assert sent(route) == {**LSP_KEY_SR, **LAST_6H}  # the default: 6 h, all four routes
     assert text.startswith(
         "No LSP delay, delay-variance or loss samples for SR LSP 10.0.0.1 -> 10.0.0.3 color 100 "
         "between 2026-09-14T02:30:15Z and 2026-09-14T08:30:15Z"
     )
-    text = await call_tool_text(
-        build(settings),
-        "cnc_get_lsp_delay",
-        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100, "to_time": TO},
-    )
+    text = await call_tool_text(build(settings), "cnc_get_lsp_delay", {**base, "hours": 6})
+    for route in routes:
+        assert sent(route, 1) == {**LSP_KEY_SR, **LAST_6H}
+    assert "between 2026-09-14T02:30:15Z and 2026-09-14T08:30:15Z" in text
+    text = await call_tool_text(build(settings), "cnc_get_lsp_delay", {**base, "hours": 24})
+    assert sent(routes[0], 2)["from"] == "2026-09-13T08:30:15Z"  # an explicit 24 h
+    assert sent(routes[0], 2)["to"] == "2026-09-14T08:30:15Z"
+    text = await call_tool_text(build(settings), "cnc_get_lsp_delay", {**base, "to_time": TO})
     assert text.startswith("Error: pass both from_time and to_time")
-    assert all(route.call_count == 1 for route in routes)
+    assert all(route.call_count == 3 for route in routes)
 
 
 @respx.mock
