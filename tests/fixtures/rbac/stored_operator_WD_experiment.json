@@ -1,0 +1,673 @@
+{
+ "captured": "2026-09-14",
+ "how": "CNC 7.2.0 lab, admin session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the 47 rows of the operator body of that generation, each rewritten to {url: '/.*', methods: ['GET']} plus {url: '/.*', methods: ['POST', 'PUT', 'PATCH']} where the row carried a POST/PUT/PATCH and {url: '/.*', methods: ['DELETE']} where it carried a DELETE (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). That generation predates the template capture, so it carried Write on the 8 rows whose reads POST within the template as well (21 Write rows against the current operator body's 13). 'submitted.ticks' is the per-row ticks the entries stood for; 'stored' keeps, per api_id, only the url and methods of every allowed_urls entry read back, in the order read back (the two baseline rows the service adds appear although none was submitted).",
+ "stored": {
+  "aaa_cw_role_read": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "aaa_cwaaa": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "aaa_cwpassword": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/(.*passwordHistoryCheck.*)$"
+   }
+  ],
+  "aaa_selected_pref": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cat-fp-deployment-manager": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "collection_dg-manager": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-config-service-deprecated": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-ack-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-manager-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-recommended-action": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-severity-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarms-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-clear-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-events-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-gnmi-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-notes-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-grouping-service": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-image-service-deprecated": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-inventory-job-dashboard": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-probe-mgr": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-ztp-service": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cwcollection": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "device-config": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "dg-manager-global-parameters-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "ems-inventory": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "event-processing-service-suppressionpolicy-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "external-notification-subscription": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "inventory_cwinventory": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-1-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-nt-2-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-nt-9-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-chassis-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-equipment-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-module-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-node-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-tp-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-subscription-api-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nso-connector": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "optima_analytics_api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "optima_restconf": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "performance-dataretention-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "performance-policies-rest-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "performance-rest-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": ".*/links/.*"
+   }
+  ],
+  "platform_cwplatform": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "proxy_cw-proxy": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "swim-nbi": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "topo_restconf": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "tsdn_cat-restconf-nbi": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ]
+ },
+ "submitted": {
+  "ticks": {
+   "aaa_cw_role_read": "R",
+   "aaa_cwaaa": "R",
+   "cat-fp-deployment-manager": "R",
+   "collection_dg-manager": "RW",
+   "cw-config-service-deprecated": "R",
+   "cw-fault-ack-api": "RW",
+   "cw-fault-alarm-manager-settings": "R",
+   "cw-fault-alarm-recommended-action": "R",
+   "cw-fault-alarm-settings": "R",
+   "cw-fault-alarm-severity-settings": "R",
+   "cw-fault-alarms-api": "RW",
+   "cw-fault-clear-api": "RW",
+   "cw-fault-events-api": "RW",
+   "cw-fault-gnmi-settings": "R",
+   "cw-fault-notes-api": "RW",
+   "cw-grouping-service": "R",
+   "cw-image-service-deprecated": "R",
+   "cw-inventory-job-dashboard": "RW",
+   "cw-probe-mgr": "RW",
+   "cw-ztp-service": "RW",
+   "cwcollection": "RW",
+   "device-config": "RWD",
+   "dg-manager-global-parameters-api": "RW",
+   "ems-inventory": "R",
+   "event-processing-service-suppressionpolicy-api": "RWD",
+   "external-notification-subscription": "R",
+   "inventory_cwinventory": "RWD",
+   "nb-api-alarm-1-700": "R",
+   "nb-api-alarm-nt-2-700": "R",
+   "nb-api-alarm-nt-9-700": "R",
+   "nb-api-inv-chassis-700": "R",
+   "nb-api-inv-equipment-700": "R",
+   "nb-api-inv-module-700": "R",
+   "nb-api-inv-node-700": "R",
+   "nb-api-inv-tp-700": "R",
+   "nb-api-subscription-api-700": "RWD",
+   "nso-connector": "RW",
+   "optima_analytics_api": "RW",
+   "optima_restconf": "RW",
+   "performance-dataretention-apis": "R",
+   "performance-policies-rest-apis": "R",
+   "performance-rest-apis": "R",
+   "platform_cwplatform": "RW",
+   "proxy_cw-proxy": "RWD",
+   "swim-nbi": "R",
+   "topo_restconf": "R",
+   "tsdn_cat-restconf-nbi": "RW"
+  }
+ }
+}

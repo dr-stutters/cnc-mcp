@@ -1094,7 +1094,182 @@
   "generator": "scripts/rbac_map.py",
   "platform": "CNC 7.2.0",
   "routing": "a path is routed to the secured API with the longest matching listen path ({...} = one segment, trailing slash optional); a role's allowed_urls regex is an unanchored search on the full request path (Tyk v5.1.1 source); '{}' in a path is a runtime value; method '*' means the tool passes the method through (all five needed); 'any_of' lists groups of api_ids of which one group's rows suffice (the tool falls back from the first to the next)",
+  "ticks": "a row submitted as {url: '/.*', methods: [GET]} / [POST, PUT, PATCH] / [DELETE] is stored verbatim; a row with a GET entry and no POST entry also receives the platform's read templates ('platform.read_templates', extra POST entries for that API's read-by-POST paths) and every stored role the 'platform.baseline_rows'; a requirement is permitted by Read when its method is GET or a read template of its API matches its path under the unanchored-search rule (the stored forms were verified 2026-09-14 by storing a test role through an admin session; that the role editor's Read / Write / Delete ticks emit exactly these entries is inferred — the editor's wire shape was not captured, no UI-built role exists on the lab)",
   "tool_count": 245
+ },
+ "platform": {
+  "baseline_rows": {
+   "aaa_cwpassword": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/(.*passwordHistoryCheck.*)$"
+    },
+    {
+     "methods": [
+      "GET",
+      "PUT"
+     ],
+     "url": "/.*"
+    }
+   ],
+   "aaa_selected_pref": [
+    {
+     "methods": [
+      "GET",
+      "PUT"
+     ],
+     "url": "/.*"
+    }
+   ]
+  },
+  "captured": "2026-09-14",
+  "read_templates": {
+   "aaa_cw_role_read": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "collection_dg-manager": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "cw-fault-alarms-api": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/crosswork/alarms/v1/query"
+    }
+   ],
+   "cw-fault-events-api": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/crosswork/alarms/v1/event/query"
+    }
+   ],
+   "cw-probe-mgr": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/(probeStatusReport|reactivateProbe)$"
+    }
+   ],
+   "cw-ztp-service": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/(query|csvtemplate|export|count)$"
+    }
+   ],
+   "cwcollection": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    },
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/v1/jobs/events$"
+    }
+   ],
+   "device-config": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "dg-manager-global-parameters-api": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "ems-inventory": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "inventory_cwinventory": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/query$"
+    }
+   ],
+   "optima_analytics_api": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/api/v1/(dashboard/lsp/.*|lsp/.*|link/.*|interface/.*)$"
+    }
+   ],
+   "optima_restconf": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+(sr-policy-dryrun|get-plan|sr-policies-on-interface|sr-policies-on-node|sr-policy-routes|sr-policy-route-preview|rsvp-te-tunnel-dryrun|get-lcm-domains|get-lcm-recommendation-preview|get-lcm-recommendation-policies|get-lcm-recommendation|get-lcm-config|get-lcm-managed-interfaces|cs-policy-paths-on-interface|cs-policy-paths-on-nodes|all-cs-policy-paths|get-csm-interfaces-bandwidth-pool)$"
+    }
+   ],
+   "performance-rest-apis": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": ".*/links/.*"
+    }
+   ],
+   "platform_cwplatform": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/(query|get|verify|list)$"
+    }
+   ],
+   "proxy_cw-proxy": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/jsonrpc/(nsoLogin|new_trans|get_trans|query|show_config|get_trans_changes|logout|get_service_points|get_module_prefix_map)$"
+    }
+   ],
+   "tsdn_cat-restconf-nbi": [
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/.+/operations/cat-inventory-rpc:.*"
+    }
+   ]
+  },
+  "version": "7.2.0"
  },
  "tools": {
   "cnc_acknowledge_alarm": {

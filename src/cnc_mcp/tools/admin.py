@@ -2450,10 +2450,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         permits nothing); a method of '*' needs all five.
 
         Static and explicit about its limits: nothing is sent to the tools'
-        endpoints; the map is a source-derived heuristic; the UI's Read/Write/
-        Delete checkboxes' translation to HTTP methods is unverified (many
-        Crosswork reads are POST .../query calls, so a UI-built "Read" role may
-        refuse them); a device access group other than ALL-ACCESS restricts
+        endpoints; the map is a source-derived heuristic; how the AAA service
+        stores a role was verified 2026-09-14 (a Read row is GET /.* plus the
+        platform's read-by-POST templates, so POST .../query reads run under
+        Read) but that the role editor's Read/Write/Delete ticks emit that
+        shape is inferred, not observed; a device access group other than
+        ALL-ACCESS restricts
         devices, not APIs, and is reported but not evaluated; two gateway
         fail-open cases (an allowed_urls regex that does not compile, an empty
         access_rights map) are reported as refusals — the role as it should be
@@ -2581,8 +2583,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "rbac_map.py) and matched against the role's access_rights — no tool endpoint "
                 "was called. Each allowed_urls regex is evaluated as an unanchored search "
                 "against the full request path, per the Tyk v5.1.1 gateway source "
-                "(mw_granular_access.go), not observed live; the UI's Read/Write/Delete "
-                "checkboxes to HTTP-method mapping is unverified."
+                "(mw_granular_access.go), not observed live. How the AAA service stores a "
+                "role was verified 2026-09-14 (a Read row is GET /.* plus the platform's "
+                "read-by-POST templates, so POST .../query reads run under Read); that the "
+                "role editor's Read/Write/Delete ticks emit that shape is inferred, not "
+                "observed."
             )
             fail_open = _fail_open_grants(access_rights)
             if fail_open:

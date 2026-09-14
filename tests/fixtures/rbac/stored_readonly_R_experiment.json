@@ -1,0 +1,529 @@
+{
+ "captured": "2026-09-14",
+ "how": "CNC 7.2.0 lab, admin session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the 43 rows of docs/rbac/cnc-mcp-readonly.role.json each rewritten to a single entry {url: '/.*', methods: ['GET']} (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). 'submitted.ticks' is the per-row tick the entries stood for; 'stored' keeps, per api_id, only the url and methods of every allowed_urls entry read back, in the order read back (the two baseline rows the service adds appear although none was submitted).",
+ "stored": {
+  "aaa_cw_role_read": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "aaa_cwaaa": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "aaa_cwpassword": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/(.*passwordHistoryCheck.*)$"
+   }
+  ],
+  "aaa_selected_pref": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cat-fp-deployment-manager": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "collection_dg-manager": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "cw-config-service-deprecated": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-manager-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-recommended-action": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-severity-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarms-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/crosswork/alarms/v1/query"
+   }
+  ],
+  "cw-fault-events-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/crosswork/alarms/v1/event/query"
+   }
+  ],
+  "cw-fault-gnmi-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-grouping-service": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-image-service-deprecated": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-inventory-job-dashboard": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-probe-mgr": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/(probeStatusReport|reactivateProbe)$"
+   }
+  ],
+  "cw-ztp-service": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/(query|csvtemplate|export|count)$"
+   }
+  ],
+  "cwcollection": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/v1/jobs/events$"
+   }
+  ],
+  "device-config": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "dg-manager-global-parameters-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "ems-inventory": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "event-processing-service-suppressionpolicy-api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "external-notification-subscription": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "inventory_cwinventory": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "nb-api-alarm-1-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-nt-2-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-nt-9-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-chassis-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-equipment-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-module-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-node-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-inv-tp-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-subscription-api-700": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "optima_analytics_api": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/api/v1/(dashboard/lsp/.*|lsp/.*|link/.*|interface/.*)$"
+   }
+  ],
+  "optima_restconf": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+(sr-policy-dryrun|get-plan|sr-policies-on-interface|sr-policies-on-node|sr-policy-routes|sr-policy-route-preview|rsvp-te-tunnel-dryrun|get-lcm-domains|get-lcm-recommendation-preview|get-lcm-recommendation-policies|get-lcm-recommendation|get-lcm-config|get-lcm-managed-interfaces|cs-policy-paths-on-interface|cs-policy-paths-on-nodes|all-cs-policy-paths|get-csm-interfaces-bandwidth-pool)$"
+   }
+  ],
+  "performance-dataretention-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "performance-policies-rest-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "performance-rest-apis": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": ".*/links/.*"
+   }
+  ],
+  "platform_cwplatform": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/(query|get|verify|list)$"
+   }
+  ],
+  "proxy_cw-proxy": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/jsonrpc/(nsoLogin|new_trans|get_trans|query|show_config|get_trans_changes|logout|get_service_points|get_module_prefix_map)$"
+   }
+  ],
+  "swim-nbi": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "topo_restconf": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "tsdn_cat-restconf-nbi": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/operations/cat-inventory-rpc:.*"
+   }
+  ]
+ },
+ "submitted": {
+  "ticks": {
+   "aaa_cw_role_read": "R",
+   "aaa_cwaaa": "R",
+   "cat-fp-deployment-manager": "R",
+   "collection_dg-manager": "R",
+   "cw-config-service-deprecated": "R",
+   "cw-fault-alarm-manager-settings": "R",
+   "cw-fault-alarm-recommended-action": "R",
+   "cw-fault-alarm-settings": "R",
+   "cw-fault-alarm-severity-settings": "R",
+   "cw-fault-alarms-api": "R",
+   "cw-fault-events-api": "R",
+   "cw-fault-gnmi-settings": "R",
+   "cw-grouping-service": "R",
+   "cw-image-service-deprecated": "R",
+   "cw-inventory-job-dashboard": "R",
+   "cw-probe-mgr": "R",
+   "cw-ztp-service": "R",
+   "cwcollection": "R",
+   "device-config": "R",
+   "dg-manager-global-parameters-api": "R",
+   "ems-inventory": "R",
+   "event-processing-service-suppressionpolicy-api": "R",
+   "external-notification-subscription": "R",
+   "inventory_cwinventory": "R",
+   "nb-api-alarm-1-700": "R",
+   "nb-api-alarm-nt-2-700": "R",
+   "nb-api-alarm-nt-9-700": "R",
+   "nb-api-inv-chassis-700": "R",
+   "nb-api-inv-equipment-700": "R",
+   "nb-api-inv-module-700": "R",
+   "nb-api-inv-node-700": "R",
+   "nb-api-inv-tp-700": "R",
+   "nb-api-subscription-api-700": "R",
+   "optima_analytics_api": "R",
+   "optima_restconf": "R",
+   "performance-dataretention-apis": "R",
+   "performance-policies-rest-apis": "R",
+   "performance-rest-apis": "R",
+   "platform_cwplatform": "R",
+   "proxy_cw-proxy": "R",
+   "swim-nbi": "R",
+   "topo_restconf": "R",
+   "tsdn_cat-restconf-nbi": "R"
+  }
+ }
+}

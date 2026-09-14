@@ -61,8 +61,8 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 - **`docs/RBAC.md`, `docs/rbac/*.role.json` and `scripts/rbac_map.py`**: the
   least-privilege recipe for a read-only account and what each write area
   adds, a per-tool table, the task-checkbox bundles, and ready-made role
-  bodies (untested against a real role) — all generated from the tool
-  source and the gateway's secured-API catalogue (`make rbac`, offline;
+  bodies — all generated from the tool source, the gateway's secured-API
+  catalogue and the platform's stored-role behaviour (`make rbac`, offline;
   `make rbac-fetch`, live; `make rbac-check` fails CI when a tool changed
   without regenerating).
 - **Playbook `dry_run`**: `cnc_provision_l3vpn_e2e` and
@@ -75,11 +75,32 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ### Changed
 
-- The generated role bodies in `docs/rbac/` grant one anchored, exact-path
-  `allowed_urls` entry per HTTP method instead of `/.*` per API row, so the
-  read-only role refuses every write path at the gateway (POST creates share
-  API ids with the POST `.../query` reads); `docs/RBAC.md` says which two
-  GET paths the read-only role cannot exclude and why.
+- The RBAC map, `docs/RBAC.md` and the `docs/rbac/*.role.json` bodies now
+  follow how Crosswork's AAA service actually stores a role (verified live
+  2026-09-14 by storing a test role through an admin session and reading it
+  back): a `/.*` row with `[GET]`, `[POST, PUT, PATCH]` or `[DELETE]` — the
+  shape the role editor's Read / Write / Delete ticks are taken to emit
+  (inferred; no UI-built role was read back) — is stored verbatim, a
+  GET-only row also receives the platform's per-API **read templates**
+  (extra POST entries for that API's read-by-POST paths, `/.+/query$` and
+  the like), every role gains two baseline rows, and a row whose only entry
+  was a custom-URL POST is reinterpreted into a wider grant on the nine APIs
+  it was tried on. The map carries the captured templates in a
+  `platform` block (`scripts/rbac_map.py --read-templates <capture>`; offline
+  runs reuse it), classifies every requirement as the R/W/D tick that permits
+  it (a POST is Read only where the API's template names it), and the bodies
+  are UI-shaped: the read-only body is the Read tick on 43 rows, the operator
+  body adds Write/Delete where a tool needs them; only the two AAA rows keep
+  an anchored GET pattern (kept verbatim by the service) so the `GET
+  .../v1/api` listing stays out. Evaluated as stored, the read-only role
+  permits 168 of the 182 read tools; the 14 that read through a POST outside
+  their API's template (NSO check-sync, config-backup jobs, sensor templates,
+  the OAM / SR-policy-metrics / SR-policy path-notification state /
+  LCM-preview RPCs; docs/RBAC.md section 2 lists them) are listed with the
+  two options (tick Write there, or `CNC_MCP_DISABLED_TOOLS`), and
+  `cnc_reactivate_probe` is noted as a write the Read tick permits. The
+  gateway's refusal itself is still assumed from the Tyk source (no
+  restricted user has logged in yet).
 - `cnc_get_lsp_utilization` / `cnc_get_lsp_delay` default `hours` is now 6
   (was 24): the largest window NPM answers with raw 5-minute samples, and
   the window `cnc_explain_sr_policy` reads, so a drill-in lands on the same

@@ -8,7 +8,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/aaaread/(v1/role/.+|v1/roleAccess/.+)$"
+      "url": "^/crosswork/aaaread/(v1/role/[^/]+|v1/roleAccess/[^/]+)$"
      }
     ],
     "api_id": "aaa_cw_role_read",
@@ -25,7 +25,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/aaa/(v1/activeSessions|v1/getSessionMgmtPermissions|v1/isNSOConfigured|v1/passwordPolicyConfig|v1/role|v1/role/.+|v1/roleAccess/.+|v1/sessionconfig|v1/user|v1/user/.+|v1/userpermission|v1/userpermission/.+|v1/usertask/.+|v2/api)$"
+      "url": "^/crosswork/aaa/(v1/activeSessions|v1/getSessionMgmtPermissions|v1/isNSOConfigured|v1/passwordPolicyConfig|v1/role|v1/role/[^/]+|v1/roleAccess/[^/]+|v1/sessionconfig|v1/user|v1/user/[^/]+|v1/userpermission|v1/userpermission/[^/]+|v1/usertask/[^/]+|v2/api)$"
      }
     ],
     "api_id": "aaa_cwaaa",
@@ -42,7 +42,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/cat/cat-fp-deployment-manager-service/v1/(twophasecommitrunner/getDeploymentInfo|twophasecommitrunner/packages)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cat-fp-deployment-manager",
@@ -57,9 +57,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/dg-manager/(v1/destinations/query|v1/device/load-metrics/query|v1/device/outage-history/query|v1/system-files/query|v1/vitals/query|v2/custom-files/query|v2/dg/query|v2/hapool/query)$"
+      "url": "/.*"
      }
     ],
     "api_id": "collection_dg-manager",
@@ -76,7 +76,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/configsvc/(v1/configs|v1/configs/count|v1/platforms|v1/types)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-config-service-deprecated",
@@ -93,7 +93,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/manager/settings$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-alarm-manager-settings",
@@ -110,7 +110,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/recommended-action$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-alarm-recommended-action",
@@ -127,7 +127,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/settings$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-alarm-settings",
@@ -144,7 +144,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/severity-config$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-alarm-severity-settings",
@@ -159,9 +159,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/alarms/v1/query$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-alarms-api",
@@ -176,9 +176,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/alarms/v1/event/query$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-events-api",
@@ -195,7 +195,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/gnmi/settings$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-fault-gnmi-settings",
@@ -212,7 +212,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/grouping/(v1/grouping/device/.+|v1/grouping/device/rule/conditions|v1/grouping/group/[^/]+/details|v1/grouping/group/root/[^/]+/uuid|v1/grouping/groups/.+|v1/grouping/ports/rule/conditions)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-grouping-service",
@@ -229,7 +229,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/imagesvc/(v1/images|v1/images/count|v1/platforms)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-image-service-deprecated",
@@ -246,7 +246,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-inventory-job-dashboard",
@@ -261,9 +261,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/probemgr/v1/probeStatusReport$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-probe-mgr",
@@ -278,9 +278,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/ztp/(v1/devices/policies/query|v1/devices/query|v1/profiles/query|v1/serialnumbers/query|v1/staticroutes/query)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cw-ztp-service",
@@ -295,9 +295,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/collection/(v1/collectionjob/count/query|v1/collectionjob/state/query|v1/collectionjob/summary/query|v1/jobs/query|v1/template)$"
+      "url": "/.*"
      }
     ],
     "api_id": "cwcollection",
@@ -314,13 +314,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/config/(v1/config-backup/.+|v1/config-backup/[^/]+/.+|v1/device-config-preferences/config-settings|v1/latest-config-backup/.+|v1/templates/.+)$"
-     },
-     {
-      "methods": [
-       "POST"
-      ],
-      "url": "^/crosswork/config/(v1/config-backup-job/.+|v1/config-backup-jobs|v1/templates/deploy-template/[^/]+/query|v1/templates/jobs/deployments/query|v1/templates/query)$"
+      "url": "/.*"
      }
     ],
     "api_id": "device-config",
@@ -335,9 +329,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/dg-manager/v1/command/global-parameter/query$"
+      "url": "/.*"
      }
     ],
     "api_id": "dg-manager-global-parameters-api",
@@ -354,7 +348,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/v1/networkelement/collectionstatussummary/query$"
+      "url": "/.*"
      }
     ],
     "api_id": "ems-inventory",
@@ -371,7 +365,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/v1/suppressionpolicy$"
+      "url": "/.*"
      }
     ],
     "api_id": "event-processing-service-suppressionpolicy-api",
@@ -388,7 +382,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/notification/v2/subscription$"
+      "url": "/.*"
      }
     ],
     "api_id": "external-notification-subscription",
@@ -405,13 +399,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/(v1/nodes/count|v1/nodes/operstatesummary|v1/nodes/reachabilitysummary|v1/sysoids/licensetype/count/query)$"
-     },
-     {
-      "methods": [
-       "POST"
-      ],
-      "url": "^/crosswork/inventory/(v1/credentials/query|v1/devicepackage/cadence/query|v1/inventoryconfig/query|v1/jobs/query|v1/nodes/query|v1/nso/check-sync|v1/nso/policy/query|v1/policies/query|v1/providers/query|v1/tags/query)$"
+      "url": "/.*"
      }
     ],
     "api_id": "inventory_cwinventory",
@@ -428,7 +416,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/alarm/restconf/data/v2/rtm:alarm$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-alarm-1-700",
@@ -445,7 +433,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/notification/restconf/data/v2/notifications:subscription-admin$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-alarm-nt-2-700",
@@ -462,7 +450,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/notification/restconf/data/v2/ietf-restconf-monitoring:restconf-state/streams$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-alarm-nt-9-700",
@@ -479,7 +467,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/restconf/data/v2/resource-physical:chassis$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-inv-chassis-700",
@@ -496,7 +484,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/restconf/data/v2/resource-physical:equipment$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-inv-equipment-700",
@@ -513,7 +501,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/restconf/data/v2/resource-physical:module$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-inv-module-700",
@@ -530,7 +518,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/restconf/data/v2/resource-physical:node$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-inv-node-700",
@@ -547,7 +535,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/inventory/restconf/data/v2/resource-ems:termination-point$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-inv-tp-700",
@@ -564,7 +552,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/notification/restconf/data/v2/notifications:subscription$|^/crosswork/notification/restconf/data/v2/notifications:subscription/.+$"
+      "url": "/.*"
      }
     ],
     "api_id": "nb-api-subscription-api-700",
@@ -579,9 +567,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/optima-analytics/(api/v1/interface/delays|api/v1/interface/loss|api/v1/interface/max/delay|api/v1/lsp/delay|api/v1/lsp/delayVariance|api/v1/lsp/loss|api/v1/lsp/max/delay|api/v1/lsp/max/utilization|api/v1/lsp/utilizations)$"
+      "url": "/.*"
      }
     ],
     "api_id": "optima_analytics_api",
@@ -596,9 +584,9 @@
     "allowed_urls": [
      {
       "methods": [
-       "POST"
+       "GET"
       ],
-      "url": "^/crosswork/nbi/optimization/v3/restconf/(operations/cisco-crosswork-optimization-engine-csm-config-operations:get-csm-interfaces-bandwidth-pool|operations/cisco-crosswork-optimization-engine-csm-policy-operations:all-cs-policy-paths|operations/cisco-crosswork-optimization-engine-csm-policy-operations:cs-policy-paths-on-interface|operations/cisco-crosswork-optimization-engine-csm-policy-operations:cs-policy-paths-on-nodes|operations/cisco-crosswork-optimization-engine-function-pack-operations:get-lcm-config|operations/cisco-crosswork-optimization-engine-function-pack-operations:get-lcm-managed-interfaces|operations/cisco-crosswork-optimization-engine-lcm-domain-operations:get-lcm-domains|operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-msl-recommendation-preview|operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-recommendation|operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-recommendation-preview|operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-delete-interval|operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query|operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query-id|operations/cisco-crosswork-optimization-engine-operations:get-interface-sr-policy-paths-notification-state|operations/cisco-crosswork-optimization-engine-operations:sr-policies-on-interface|operations/cisco-crosswork-optimization-engine-operations:sr-policies-on-node|operations/cisco-crosswork-optimization-engine-operations:sr-policy-metrics|operations/cisco-crosswork-optimization-engine-operations:sr-policy-route-preview|operations/cisco-crosswork-optimization-engine-operations:sr-policy-routes|operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-dryrun)$"
+      "url": "/.*"
      }
     ],
     "api_id": "optima_restconf",
@@ -615,7 +603,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/performance/v1/dataretention/(all|default)$"
+      "url": "/.*"
      }
     ],
     "api_id": "performance-dataretention-apis",
@@ -632,7 +620,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/performance/v1/policies$|^/crosswork/performance/v1/policies/(.+|[^/]+/deployment-history|devices/.+|policy-templates)$"
+      "url": "/.*"
      }
     ],
     "api_id": "performance-policies-rest-apis",
@@ -649,7 +637,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/performance/v1/dashboards/(healthsettings|statistics|summary|topn|topn/columns)$"
+      "url": "/.*"
      }
     ],
     "api_id": "performance-rest-apis",
@@ -666,13 +654,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/platform/(v2/cert/renew/check-expiry|v2/cert/summary/list|v2/cluster/app/health/list|v2/cluster/dc/node/summary/list|v2/cluster/infra/summary|v2/cluster/summary/list|v2/cluster/version/show|v2/platform/balancer/status|v2/platform/maintenance/status|v2/upgrademanager)$"
-     },
-     {
-      "methods": [
-       "POST"
-      ],
-      "url": "^/crosswork/platform/(v2/capp/applicationstatus/query|v2/capp/applicationsummary/query|v2/capp/events/query|v2/capp/installedapplicationid/query|v2/capp/jobs/query|v2/cluster/banner/get|v2/cluster/dc/node/details/query|v2/cluster/microservice/list/query)$"
+      "url": "/.*"
      }
     ],
     "api_id": "platform_cwplatform",
@@ -689,7 +671,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/proxy/(nso/restconf/data/.+|nso/restconf/data/tailf-ncs:devices/device|nso/restconf/data/tailf-ncs:devices/device=.+|nso/restconf/data/tailf-ncs:devices/device=[^/]+/config|nso/restconf/data/tailf-ncs:devices/device=[^/]+/config/.+|nso/restconf/data/tailf-ncs:devices/device=[^/]+/config/tailf-ned-cisco-ios-xr:.+)$"
+      "url": "/.*"
      }
     ],
     "api_id": "proxy_cw-proxy",
@@ -706,7 +688,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/api/v1/op/swim/(image/getDeviceRunningImages/.+|image/getImagesForRepository|image/getImagesForRepository/.+|image/getSwimPreference|image/getSwimPreference/.+|image/jobAllDetailsById/.+)$"
+      "url": "/.*"
      }
     ],
     "api_id": "swim-nbi",
@@ -723,7 +705,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/nbi/topology/v3/restconf/(data/cisco-crosswork-performance-metrics:igp-links-performance-metrics/igp-link-pm=.+|data/cisco-crosswork-performance-metrics:rsvp-policies-performance-metrics/rsvp-policy-pm=.+|data/cisco-crosswork-performance-metrics:sr-policies-performance-metrics/sr-policy-pm=.+|data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels|data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels/rsvp-te-tunnel=.+|data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies|data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies/p2mp-policy=.+|data/cisco-crosswork-segment-routing-policy:sr-policies|data/cisco-crosswork-segment-routing-policy:sr-policies/policy=.+|data/ietf-network-state:networks|data/ietf-network-state:networks/network=[^/]+/ietf-network-topology-state:link=.+|data/ietf-network-state:networks/network=[^/]+/node=.+|data/ietf-network-state:networks/network=[^/]+/node=[^/]+/ietf-network-topology-state:termination-point=.+)$"
+      "url": "/.*"
      }
     ],
     "api_id": "topo_restconf",
@@ -740,13 +722,7 @@
       "methods": [
        "GET"
       ],
-      "url": "^/crosswork/nbi/cat-inventory/v1/restconf/(data/[^/]+:[^/]+/vpn-services/vpn-service|data/[^/]+:[^/]+/vpn-services/vpn-service=.+|data/[^/]+:[^/]+/vpn-services/vpn-service=[^/]+/underlay-transport/.+:discovered-underlay-transport)$"
-     },
-     {
-      "methods": [
-       "POST"
-      ],
-      "url": "^/crosswork/nbi/cat-inventory/v1/restconf/(operations/cat-inventory-rpc:get-all-services|operations/cat-inventory-rpc:get-associated-services-for-transport|operations/cat-inventory-rpc:get-available-service-types|operations/cat-inventory-rpc:get-service-plan-data|operations/cat-inventory-rpc:get-services-count|operations/cat-inventory-rpc:get-sub-service-count|operations/cat-inventory-rpc:get-sub-service-paths)$"
+      "url": "/.*"
      }
     ],
     "api_id": "tsdn_cat-restconf-nbi",
