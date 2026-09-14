@@ -304,6 +304,39 @@ async def test_get_device_labels_state_map_keys_and_keeps_the_rest(settings):
     assert "NOT tied to ``last_upd_time``" in description
     assert "``nd.sys-up-time`` is itself a snapshot as of ``nd.collection-time``" in description
     assert "snapshot captured by the last" not in description
+    # Two live behaviours (2026-09-14) the docstring must explain: key 0 alone is the
+    # not-checked-yet placeholder of a (re)attached device in ROBOT_OPER_STATE_CHECKING, and
+    # next_check_time mirrors last_updated_time on 7.2 (it is not a schedule).
+    assert "**key 0 alone**" in description and "ROBOT_OPER_STATE_CHECKING" in description
+    assert 'means "not checked yet", not "unsupported device"' in description
+    assert "``next_check_time`` **equals ``last_updated_time`` on every" in description
+    # Whitespace-normalised so a reflow of the prose cannot break the assertion.
+    assert "must not be read as a schedule" in " ".join(description.split())
+
+
+@respx.mock
+async def test_get_device_labels_the_lone_unsupported_placeholder(settings):
+    # Seen live 2026-09-14 on P2 right after re-attach: only key 0, no 1/2/3, while the
+    # operational_state was still ROBOT_OPER_STATE_CHECKING.
+    p2 = {
+        **node("ec35be58-0000-4000-8000-000000000004", "P2", "198.18.140.14"),
+        "operational_state": "ROBOT_OPER_STATE_CHECKING",
+        "reachability_state": "CONN_STATE_UNKNOWN",
+        "state_map": {
+            "0": {"value": "UP", "last_updated_time": "1789356493", "next_check_time": "1789356493"}
+        },
+    }
+    respx.post(NODES_QUERY).mock(return_value=httpx.Response(200, json={"data": [p2]}))
+    data = json.loads(await call_tool_text(build(settings), "cnc_get_device", {"host_name": "P2"}))
+    assert data["state_map"] == {
+        "0": {
+            "element": "UNSUPPORTED",
+            "value": "UP",
+            "last_updated_time": "1789356493",
+            "next_check_time": "1789356493",
+        }
+    }
+    assert data["operational_state"] == "ROBOT_OPER_STATE_CHECKING"
 
 
 def test_label_state_map_respects_a_platform_element_and_missing_maps():

@@ -105,7 +105,12 @@ GNMI_SETTLE_AFTER_ADD = 3
 # "next_check_time" (epoch s), "info"?}. The spec's ``robotapiCurrentState`` carries an
 # ``element`` leaf naming the check, but the live record omits it — cnc_get_device fills it
 # in from this table so the keys are readable. PE2 showed keys 1, 2, 3 = reachability /
-# discovery / clock-drift, all UP; 4 and 5 were not present on the lab's devices.
+# discovery / clock-drift, all UP; 4 and 5 were not present on the lab's devices. Key 0
+# (UNSUPPORTED) is the placeholder a freshly (re)attached device carries ALONE — seen live
+# 2026-09-14 on P2 right after re-attach, operational_state ROBOT_OPER_STATE_CHECKING:
+# {"0": {"element": "UNSUPPORTED", "value": "UP", ...}} and no 1/2/3 until the DLM's first
+# check cycle ran. ``next_check_time`` equals ``last_updated_time`` on every element on
+# 7.2 (re-read live 2026-09-14) — it is not a schedule.
 STATE_MAP_ELEMENTS = {
     "0": "UNSUPPORTED",
     "1": "REACHABILITY",
@@ -564,8 +569,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         keyed by the numeric RobotNodeStateElement enum: 1 = REACHABILITY,
         2 = DISCOVERY (inventory collection), 3 = CLOCK_DRIFT, 4 = LOCK,
         5 = SYNC (0 = UNSUPPORTED). This tool adds the spec's ``element`` name
-        to each entry because the live record omits it. ``uptime`` (e.g.
-        "0w1d14h4m30s") is NOT live and is NOT tied to ``last_upd_time``
+        to each entry because the live record omits it. Two live behaviours
+        to read it by (verified live 2026-09-14): (a) **key 0 alone** —
+        ``{"0": {"element": "UNSUPPORTED", "value": "UP", ...}}`` with no
+        REACHABILITY / DISCOVERY / CLOCK_DRIFT entry — is the placeholder a
+        freshly added or re-attached device shows while its
+        ``operational_state`` is ROBOT_OPER_STATE_CHECKING (seen on P2 right
+        after re-attach): the DLM's first check cycle has not run yet, so it
+        means "not checked yet", not "unsupported device"; the real entries
+        replace it once the checks complete (cnc_wait_for_device_reachable).
+        (b) ``next_check_time`` **equals ``last_updated_time`` on every
+        element on 7.2** — it is NOT a next-run time and must not be read as
+        a schedule; the reachability cadence (1200 s on the lab) is only
+        inferable from successive ``last_updated_time`` readings.
+        ``uptime`` (e.g. "0w1d14h4m30s") is NOT live and is NOT tied to ``last_upd_time``
         (verified live 2026-09-14, PE2 polled over 25 min): it is refreshed by
         the DLM reachability check, so its as-of time is
         ``state_map["1"].last_updated_time`` (a 1200 s cadence on the lab —
@@ -584,11 +601,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ``element`` label in each ``state_map`` entry:
             "state_map": {"1": {"element": "REACHABILITY", "value": "UP",
                                 "last_updated_time": "<epoch s>",
-                                "next_check_time": "<epoch s>", "info"?: str},
+                                "next_check_time": "<same as last_updated_time>",
+                                "info"?: str},
                           "2": {"element": "DISCOVERY", ...},
                           "3": {"element": "CLOCK_DRIFT", ...}, ...}
             (only the checks the DLM runs for the device are present — PE2 on
-            the lab showed 1, 2 and 3). "Error: ..." (not found -> no device
+            the lab showed 1, 2 and 3; a device still in
+            ROBOT_OPER_STATE_CHECKING shows only {"0": {"element":
+            "UNSUPPORTED", ...}}). "Error: ..." (not found -> no device
             matched the selector; ambiguous -> a wildcard host_name matched
             several devices, use the uuid).
         """

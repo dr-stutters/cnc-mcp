@@ -730,6 +730,10 @@ async def test_get_node_markdown_encodes_key_and_renders_details(mcp):
     assert (
         "- pcc 10.0.0.1 -> pce 10.0.0.5 stateful=True sr=True update=True instantiate=True msd=10"
     ) in text
+    # Round 2: the pce address is the SR-PCE feed's own (provider endpoint) address and may
+    # differ from the peer configured on the router — said right under the sessions.
+    assert "(pce = the address the SR-PCE feed identifies itself by" in text
+    assert "may differ from the 'pce address ipv4' peer configured on the router" in text
     assert "Termination points (2):" in text
     assert (
         "- GigabitEthernet0/0/0/0 ip=10.1.1.1 mac=02:42:0a:01:01:01 unnumbered=3 encap=ethernet"
@@ -769,6 +773,7 @@ async def test_get_node_l2_only_says_so(mcp):
     text = await call_tool_text(mcp, "cnc_get_topology_node", {"node_id": "P1"})
     assert "No L3 node attributes" in text and "SR-PCE gRPC feed" in text
     assert "Termination points (2):" in text
+    assert "pce = the address" not in text  # the PCEP note only follows actual sessions
 
 
 @respx.mock

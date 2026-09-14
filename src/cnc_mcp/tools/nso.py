@@ -44,8 +44,17 @@ Two routes reach NSO from this server (both verified live 2026-09-13):
    per-device action.
 2. **The NSO RESTCONF proxy** — ``/crosswork/proxy/nso/restconf`` shows NSO's
    *own* view: the ``tailf-ncs:device`` entries with their NED, authgroup and
-   NSO oper-state (``cnc_list_nso_devices`` / ``cnc_get_nso_device``). A
-   proxy read never changes ``nso_state``.
+   NSO oper-state (``cnc_list_nso_devices`` / ``cnc_get_nso_device``), and
+   each device's ``config`` container — NSO's CDB copy of the device's
+   running configuration in NED YANG (``cnc_get_nso_device_config``, verified
+   live 2026-09-14). That copy is current as of the last sync-from, not a
+   live read; ``cnc_check_nso_device_sync`` says whether it still matches the
+   device. The XR CLI NED models the config under the module
+   ``tailf-ned-cisco-ios-xr`` (``tailf-ned-cisco-ios-xr:router``,
+   ``:interface``, ``:segment-routing``, ...); the prefix is required on the
+   first path segment — ``cisco-ios-xr:router`` answers 404 "uri keypath not
+   found" — so the tool adds it to a bare segment. A proxy read never
+   changes ``nso_state``.
 
 SAFETY RULE for the per-device action tools (verified live): the DLM actions
 do NOT validate their filter. A filter that matches no device (or an unknown
@@ -87,7 +96,8 @@ NOT in scope of this module: ``PUT .../nso/policy`` (policy writes),
 ``POST /crosswork/inventory/v1/onboarding`` (answers 500 NATS for every body
 on this build), ``POST /crosswork/aaa/v1/syncDAGsToNSO`` (not served on this
 build), and raw NSO RESTCONF writes / service provisioning through the proxy
-(a later ``services`` module).
+(a later ``services`` module) — config READS through the proxy are
+``cnc_get_nso_device_config``.
 """
 
 from __future__ import annotations
@@ -107,6 +117,7 @@ from cnc_mcp.restconf import (
     NSO_PROXY,
     YANG_ACCEPT,
     is_not_found,
+    parse_restconf_errors,
     select_key,
     unwrap_list,
 )
@@ -133,6 +144,102 @@ NSO_DEVICES_LIST_URL = f"{NSO_DEVICES_URL}?fields={NSO_DEVICE_FIELDS}"
 def nso_device_url(name: str) -> str:
     """The keyed proxy GET for one ``tailf-ncs:device`` entry, limited to NSO_DEVICE_FIELDS."""
     return f"{NSO_DEVICES_URL}={quote(name, safe='')}?fields={NSO_DEVICE_FIELDS}"
+
+
+# NSO's copy of a device's configuration (verified live 2026-09-14) is the ``config``
+# container of its ``tailf-ncs:device`` entry, modelled in the NED's YANG. The XR CLI NED
+# (ned-id cisco-iosxr-cli-7.70) uses the module ``tailf-ned-cisco-ios-xr``; RESTCONF wants
+# that module prefix on the FIRST path segment of a subtree (children inherit it), and the
+# proxy answers 404 "uri keypath not found" to a wrong one (``cisco-ios-xr:router``) — the
+# same 404 a missing device gets. ``?depth=2`` on the bare ``config`` lists the top
+# containers.
+NSO_XR_NED_MODULE = "tailf-ned-cisco-ios-xr"
+NSO_CONFIG_MAX_DEPTH = 64
+_NSO_CONFIG_HINT = (
+    "Narrow with 'subtree' (e.g. 'router' or 'segment-routing') or set 'depth' (2 lists the "
+    "top-level containers)."
+)
+
+
+def normalize_config_subtree(subtree: str | None) -> str:
+    """The config subtree path as the proxy wants it ('' for the whole ``config``).
+
+    ``'router'`` -> ``'tailf-ned-cisco-ios-xr:router'`` (the XR NED module
+    prefix is added when the first segment carries none); an explicit prefix
+    (``'tailf-ned-cisco-ios-xr:router'``, or another NED's module for a
+    non-XR device) is kept verbatim. Surrounding whitespace and slashes are
+    dropped, as is a leading ``config/`` segment. Segments after the first
+    are sent as given, so list keys must already be percent-encoded
+    (``'interface/GigabitEthernet=0%2F0%2F0%2F0'``).
+
+    Because the result is spliced verbatim into the request URL, a ``?`` would
+    start a query string (bypassing the tool's own ``depth`` parameter), a
+    ``#`` would silently cut the path at that point, and interior whitespace
+    can only be a typo or an unencoded key — all three raise
+    :class:`PlatformError` (the tool returns it as ``Error: ...``) instead of
+    being sent.
+    """
+    text = (subtree or "").strip().strip("/")
+    if text.startswith("config/"):
+        text = text[len("config/") :].lstrip("/")
+    if not text:
+        return ""
+    bad = next((ch for ch in text if ch in "?#" or ch.isspace()), None)
+    if bad is not None:
+        shown = "whitespace" if bad.isspace() else f"'{bad}'"
+        raise PlatformError(
+            f"subtree {text!r} contains {shown}, which is not a RESTCONF path character: "
+            "'?' would start a query string, '#' cuts the path short and spaces are never "
+            "valid unencoded. Give the subtree as a plain path ('router/isis') with list "
+            "keys percent-encoded ('interface/GigabitEthernet=0%2F0%2F0%2F0', a space as "
+            "'%20'); set the depth with the 'depth' parameter, not in the path."
+        )
+    first, sep, rest = text.partition("/")
+    if ":" not in first:
+        first = f"{NSO_XR_NED_MODULE}:{first}"
+    return f"{first}{sep}{rest}"
+
+
+def nso_config_url(name: str, subtree: str) -> str:
+    """``.../device=<name>/config[/<subtree>]`` — the device name percent-encoded as one
+    list key, the (already normalised) subtree verbatim so its module prefix and keys
+    reach the proxy as written."""
+    url = f"{NSO_DEVICES_URL}={quote(name, safe='')}/config"
+    return f"{url}/{subtree}" if subtree else url
+
+
+def _restconf_said(data: Any) -> str:
+    """`` 'uri keypath not found' (error-tag invalid-value)`` — what a RESTCONF error
+    document said, for splicing after a status code; '' when the body carries none.
+
+    Only the first error entry is quoted (the proxy sends one). The message and
+    the tag are each optional, so any combination renders without dangling
+    punctuation.
+    """
+    errors = parse_restconf_errors(data)
+    if not errors:
+        return ""
+    message, tag = errors[0]["message"], errors[0]["tag"]
+    text = f" '{message}'" if message else ""
+    if tag:
+        text += f" (error-tag {tag})"
+    return text
+
+
+def config_top_keys(body: Any) -> list[str]:
+    """The top-level keys of a config GET body, for the headline.
+
+    The bare ``config`` GET wraps its children in ``{"tailf-ncs:config": {...}}``
+    — those children (the device's top-level containers) are listed; a
+    subtree GET answers the subtree's own key (``{"tailf-ned-cisco-ios-xr:
+    router": {...}}``), which is listed as is. A non-dict body lists nothing.
+    """
+    content = body
+    if isinstance(content, dict) and len(content) == 1:
+        (key, value), *_ = content.items()
+        if key == f"{NSO_MODULE}:config" and isinstance(value, dict):
+            content = value
+    return sorted(str(k) for k in content) if isinstance(content, dict) else []
 
 
 # Per-device DLM actions (URL segment == friendly name; underscores accepted on input).
@@ -192,6 +299,11 @@ DEFAULT_WAIT_TARGET = "SYNCED"
 CHECK_SYNC_VERDICTS = {"SYNCED": "in-sync", "NOT_SYNCED": "out-of-sync"}
 CHECK_SYNC_SETTLED = frozenset(CHECK_SYNC_VERDICTS) | NSO_FAILURE_STATES
 DEFAULT_CHECK_SYNC_WAIT = 60
+# What run_action() adds to (or check_job() derives from) the platform's job envelope;
+# cnc_check_nso_device_sync keeps only the platform's own job record under its "job" key.
+_NOT_JOB_KEYS = frozenset(
+    {"pending", "impacted_objects", "filter", "matched_devices", "matched_total", "note", "next"}
+)
 
 NSO_PROVIDER_FAMILY = "ROBOT_PROVIDER_NSO"
 # NSO's device-type choice: exactly one of these containers holds the ned-id.
@@ -760,8 +872,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         The device's ``config`` subtree (its whole running configuration in
         NED YANG, potentially megabytes) is deliberately NOT fetched — the
         same ``fields`` selector as cnc_list_nso_devices limits the GET to
-        the fields above; reading configuration through the proxy is a
-        separate concern (a later ``services`` module).
+        the fields above; read the configuration (whole, a subtree, or the
+        top-level containers) with cnc_get_nso_device_config.
 
         Sends ``GET /crosswork/proxy/nso/restconf/data/tailf-ncs:devices/
         device=<name>?fields=name;address;port;authgroup;device-type;state``
@@ -820,6 +932,201 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json(device), settings)
             return finalize(_nso_device_markdown(device), settings)
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_get_nso_device_config",
+        title="Get NSO Device Config (CDB copy)",
+        read_only=True,
+        idempotent=True,
+    )
+    async def cnc_get_nso_device_config(
+        host_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "NSO device name, exact and case-sensitive (e.g. 'PE1') — the Crosswork "
+                    "host_name for a Crosswork-onboarded device."
+                ),
+                min_length=1,
+                max_length=253,
+            ),
+        ],
+        subtree: Annotated[
+            str,
+            Field(
+                description=(
+                    "Config subtree to read, as a RESTCONF path under the device's config "
+                    "(e.g. 'router', 'segment-routing', 'router/isis' or "
+                    "'tailf-ned-cisco-ios-xr:router'). A bare first segment gets the XR NED "
+                    "module prefix 'tailf-ned-cisco-ios-xr:' added; list keys must be "
+                    "percent-encoded ('interface/GigabitEthernet=0%2F0%2F0%2F0'); '?', '#' "
+                    "and whitespace are refused (set the depth with 'depth', not '?depth='). "
+                    "Empty = the whole config (combine with depth=2 to list its top-level "
+                    "containers)."
+                ),
+                max_length=500,
+            ),
+        ] = "",
+        depth: Annotated[
+            int,
+            Field(
+                description=(
+                    "RESTCONF depth limit (e.g. 2 lists the top-level containers of the "
+                    "selected subtree); 0 = unlimited (the whole subtree)."
+                ),
+                ge=0,
+                le=NSO_CONFIG_MAX_DEPTH,
+            ),
+        ] = 0,
+    ) -> str:
+        """Read NSO's copy of a device's running configuration (its CDB ``config``
+        container) — the whole thing, one subtree, or just the top-level containers.
+
+        Read-only (a proxy GET; nothing on the device, in NSO or in Crosswork
+        changes, and ``nso_state`` is untouched). This is **NSO's CDB copy**,
+        current as of NSO's last sync-from of the device (the automatic one on
+        onboarding, or a later cnc_nso_device_action(action='sync-from')) —
+        not a live read of the router. cnc_check_nso_device_sync (a fresh
+        check-sync) says whether the copy still matches the device;
+        cnc_check_device_nso_state shows when the copy was last refreshed
+        (``nso_timestamp``). Use it to answer "what is configured on PE1"
+        questions without a write: e.g. subtree 'segment-routing' for the
+        SR-TE policies configured on the box (and hence whether an SR policy
+        was created on-device rather than by the PCE or a CNC service),
+        'router' for IS-IS/BGP/static routing ('router/isis', 'router/bgp'),
+        'interface' for interfaces ('interface/Loopback=0'). Verified live
+        2026-09-14 on the lab's XR devices (NED cisco-iosxr-cli-7.70): the
+        depth-2 listing, 'segment-routing' (the on-box SR-TE policy with its
+        PCEP peer 'pcc.pce.address.ipv4'), 'router/isis', 'router/bgp',
+        'interface/Loopback=0', an unconfigured container and the 404 cases.
+
+        Path rules (verified live): the config is modelled in the NED's YANG,
+        NOT the device's native ``Cisco-IOS-XR-*`` models. The XR CLI NED's
+        module is ``tailf-ned-cisco-ios-xr``, and RESTCONF needs that prefix
+        on the FIRST segment of the subtree path (children inherit it): a bare
+        'router' is sent as 'tailf-ned-cisco-ios-xr:router' automatically; an
+        explicit prefix is kept verbatim (pass the right NED module yourself
+        for a non-XR device); 'cisco-ios-xr:router', a native model name or a
+        node the NED does not model answers 404 "uri keypath not found" — the
+        same 404 a missing device gets, and the same 404 a valid list path
+        with a key the device has not configured gets ('interface/Loopback=99'
+        when only Loopback0 exists) — and is reported as an error naming all
+        three causes. A container the NED models but the device has not
+        configured (e.g. 'router/ospf' on the lab) answers 204 and is reported
+        as empty, not as an error: so "container, no config" is 204 while
+        "list entry, no such key" is 404. Some data paths through the same
+        proxy spell not-found as 409 data-missing instead (verified on the CAT
+        vpn-service lists); the error then reports the 409 and NSO's own
+        message rather than the 404 text. The subtree may contain only path
+        characters: '?', '#' or interior whitespace is refused before any
+        request (a '?' would start a query string and bypass 'depth', a '#'
+        would cut the path short) — percent-encode keys instead. Interface
+        references inside the config are
+        objects ('"update-source": {"Loopback": 0}'), not strings, and an
+        empty leaf ('report-all') is rendered ``[null]`` (RFC 7951). Sends
+        ``GET /crosswork/proxy/nso/restconf/data/tailf-ncs:devices/
+        device=<name>/config[/<subtree>][?depth=N]`` with ``Accept:
+        application/yang-data+json``. With no subtree and depth 0 the answer
+        is the device's ENTIRE configuration — tens of kilobytes on a lab
+        router, megabytes in production — and is cut at the response cap;
+        start with depth=2 to see the top-level containers, then read the
+        subtree you need.
+
+        Args:
+            host_name: exact NSO device name (list with cnc_list_nso_devices).
+            subtree: the config subtree path ('' = whole config).
+            depth: RESTCONF depth (0 = unlimited).
+
+        Returns:
+            str: A headline "NSO's CDB copy of <name>'s configuration (subtree
+            <path> | whole config, depth N | full depth): K top-level key(s):
+            ... — as of NSO's last sync-from ..." followed by the JSON body as
+            NSO returns it. Whole config: ``{"tailf-ncs:config":
+            {"tailf-ned-cisco-ios-xr:hostname": "PE1",
+            "tailf-ned-cisco-ios-xr:router": {...}, ...}}`` — with depth=2 the
+            lab device listed 15 keys: the NED containers (grpc, hostname,
+            interface, lldp, logging, mpls, netconf-yang, router,
+            segment-routing, snmp-server, ssh, username, xyzroot) as ``{}`` /
+            leaf values, plus ``ietf-yang-library:modules-state`` and
+            ``ietf-yang-library:yang-library`` (NSO's YANG library, not device
+            config). Subtree: ``{"tailf-ned-cisco-ios-xr:<last segment>":
+            {...}}`` (e.g. 'router/isis' -> ``{"tailf-ned-cisco-ios-xr:isis":
+            {"tag": [...]}}``); ``{}`` with "the subtree is empty in NSO" when
+            the container is modelled but unconfigured (204). "Error: NSO
+            answered <status> '<NSO's message>' (error-tag <tag>) for device
+            '<name>' ..." — 404 'uri keypath not found' (invalid-value), or
+            409 (data-missing) on the paths that spell it so — when NSO has no
+            such device, OR the subtree path is wrong, OR the list entry with
+            that key is not configured (the message explains the prefix rule
+            and the 204-vs-404 distinction); "Error: subtree ... contains
+            '?' ..." when the path carries '?', '#' or whitespace (refused
+            before any request); "Error: ..." on any other API failure (bare
+            404 -> the proxy is not routed, i.e. NSO is not configured; 415 ->
+            media type).
+        """
+        try:
+            key = host_name.strip()
+            if not key:
+                raise PlatformError("host_name must not be empty or whitespace-only.")
+            path = normalize_config_subtree(subtree)
+            response = await client.request(
+                "GET",
+                nso_config_url(key, path),
+                params={"depth": depth} if depth else None,
+                headers=YANG_ACCEPT,
+                raise_on_error=False,
+            )
+            data: Any = None
+            if response.content:
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = None
+            if is_not_found(response.status_code, data):
+                # Built from the response, not a literal: the proxy spells not-found as
+                # 404 invalid-value "uri keypath not found" on device paths (verified), and
+                # 409 data-missing on some other data paths (verified on the CAT vpn-service
+                # lists through the same proxy) — report whichever NSO actually said.
+                status = response.status_code
+                where = f"subtree '{path}'" if path else "its whole config"
+                raise PlatformError(
+                    f"NSO answered {status}{_restconf_said(data)} for device '{key}', {where}. "
+                    f"Either NSO holds no device named '{key}' (names are exact and "
+                    "case-sensitive; list them with cnc_list_nso_devices), or the subtree path "
+                    "is not in NSO's model: the config is in NED YANG, and the XR CLI NED's "
+                    f"module prefix '{NSO_XR_NED_MODULE}:' must lead the first segment (a bare "
+                    "'router' gets it added; 'cisco-ios-xr:router' and the device's native "
+                    "'Cisco-IOS-XR-*' model names do not exist there), or the path is valid "
+                    "but the list entry with that key is not configured on the device (a "
+                    "container with no config answers 204, a missing list key such as "
+                    f"'interface/Loopback=99' answers this {status}). List the valid "
+                    "top-level containers with subtree='' and depth=2, or read the parent "
+                    "list (e.g. 'interface/Loopback') to see which keys exist."
+                )
+            if not response.is_success:
+                raise http_error(response)
+            if response.content and data is None:
+                raise PlatformError(
+                    "The NSO proxy returned a non-JSON response where JSON was expected."
+                )
+            body = data if data is not None else {}
+            keys = config_top_keys(body)
+            listing = ", ".join(keys[:30]) + (", ..." if len(keys) > 30 else "")
+            scope = f"subtree {path}" if path else "whole config"
+            depth_text = f"depth {depth}" if depth else "full depth"
+            head = (
+                f"NSO's CDB copy of {key}'s configuration ({scope}, {depth_text}): "
+                f"{len(keys)} top-level key(s)"
+                + (f": {listing}." if keys else " — the subtree is empty in NSO.")
+                + " This is what NSO holds as of its last sync-from (nso_timestamp in "
+                "cnc_check_device_nso_state), not a live read of the device — "
+                "cnc_check_nso_device_sync tells whether it still matches."
+            )
+            return finalize(f"{head}\n{to_json(body)}", settings, hint=_NSO_CONFIG_HINT)
         except Exception as e:
             return format_error(e)
 
@@ -969,9 +1276,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     ) -> str:
         """Run a FRESH NSO check-sync on the selected device(s) and report, per device,
         whether NSO's copy of its configuration matches the device: in-sync / out-of-sync.
+        Read-only for the device and NSO (a check-sync compares, it never writes), but it
+        leaves a job record in Crosswork's job list and refreshes the device's nso_state.
 
-        Read-only, registered without CNC_MCP_ENABLE_WRITES: NSO's check-sync
-        only COMPARES its CDB copy with the device's running configuration — it
+        Registered without CNC_MCP_ENABLE_WRITES (read_only_hint is true) for
+        that reason: NSO's check-sync only COMPARES its CDB copy with the
+        device's running configuration — it
         changes nothing on the device and nothing in NSO's CDB (that is
         sync-from / sync-to). What it does do on the platform: it creates a job
         record in Crosswork's job list (``POST /crosswork/inventory/v1/nso/
@@ -981,21 +1291,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``nso_timestamp`` moves to now. That refreshed value is exactly what
         cnc_check_device_nso_state then shows, so use this tool whenever the
         cached verdict there is too old to trust ("is NSO in sync with every
-        device?" -> host_name='*'). Re-running it is safe.
+        device?" -> host_name='*'). Re-running it is safe. To see WHAT NSO
+        holds for the device read cnc_get_nso_device_config.
 
-        Verified live (2026-09-13, by raw calls — this tool itself has NOT been
-        run live): the DLM check-sync endpoint, its asynchronous JOB_ACCEPTED
-        answer and the ``*_STARTED`` walk of ``nso_state`` with a moving
-        ``nso_timestamp``; SYNCED as the settled in-sync outcome. NOT_SYNCED
-        is the enum's documented out-of-sync verdict (the lab's devices were
-        in sync, so it was not observed). UNVERIFIED: what a check-sync that
-        NSO cannot run settles to. The enum has no CHECK_SYNC_FAILED value and
-        only ``connect`` was seen to fail (CONNECT_FAILED); if a failed check
-        lands in one of the known failure states (CONNECT_FAILED, ...) it is
-        reported per device as ``failed`` with NsoMsg — the check could not
-        run, which is not the same as out of sync — but it may equally stay
-        CHECK_SYNC_STARTED, which this tool reports as ``pending`` until the
-        wait runs out.
+        Verified live 2026-09-14 (this tool, PE1): ``JOB_ACCEPTED`` with
+        ``type`` "NSO device check sync" (the platform's spelling), settled in
+        ~5 s with the in-sync verdict — nso_state SYNCED, nso_timestamp
+        advanced (03:30:03Z -> 03:40:20Z). NOT_SYNCED is the enum's documented
+        out-of-sync verdict; the lab's devices were in sync, so that path is
+        UNVERIFIED, as is what a check-sync NSO cannot run settles to. The
+        enum has no CHECK_SYNC_FAILED value and only ``connect`` was seen to
+        fail (CONNECT_FAILED); if a failed check lands in one of the known
+        failure states (CONNECT_FAILED, ...) it is reported per device as
+        ``failed`` with NsoMsg — the check could not run, which is not the
+        same as out of sync — but it may equally stay CHECK_SYNC_STARTED,
+        which this tool reports as ``pending`` until the wait runs out.
 
         SAFETY RULE (verified live): the DLM does not validate the filter — a
         filter matching nothing still answers JOB_ACCEPTED and may act on other
@@ -1021,9 +1331,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: A headline "check-sync of N device(s): A in-sync, B
             out-of-sync, C failed, D pending (after Ns)" followed by JSON
-            {"job_id", "state": "JOB_ACCEPTED", "type": "NSO device
-            check-sync", "action": "check-sync", "filter": {...},
-            "matched_total": int, "settled": bool, "elapsed_seconds": int,
+            {"job": {"job_id", "state": "JOB_ACCEPTED", "type": "NSO device
+            check sync"} (Crosswork's job record for the check — its
+            acceptance says nothing about the verdicts, which are below),
+            "action": "check-sync", "filter": {...}, "matched_total": int,
+            "settled": bool (every matched device has a verdict), "elapsed_seconds": int,
             "devices": [{"host_name", "uuid", "verdict": "in-sync" |
             "out-of-sync" | "failed" | "pending", "nso_state",
             "nso_timestamp", "nso_timestamp_iso", "NsoMsg", "errors": [str],
@@ -1038,8 +1350,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         try:
             selector = _selector(uuid, host_name)
             nodes, total = await resolve_devices(selector)
-            payload = await run_action(NSO_CHECK_SYNC_URL, "NSO check-sync", selector, nodes, total)
-            payload["action"] = "check-sync"
+            accepted = await run_action(
+                NSO_CHECK_SYNC_URL, "NSO check-sync", selector, nodes, total
+            )
+            # The job envelope is nested under "job" and its "pending" / empty
+            # "impacted_objects" dropped: a top-level "pending: true" next to
+            # "settled: true" read as a contradiction (the job's acceptance is not
+            # the verdict). A non-empty impacted list is kept in case a build sends one.
+            job = {k: v for k, v in accepted.items() if k not in _NOT_JOB_KEYS}
+            if accepted.get("impacted_objects"):
+                job["impacted_objects"] = accepted["impacted_objects"]
+            payload: dict[str, Any] = {
+                "job": job,
+                "action": "check-sync",
+                "filter": accepted["filter"],
+                "matched_total": accepted["matched_total"],
+            }
+            if "note" in accepted:
+                payload["note"] = accepted["note"]
             before = {
                 str(n.get("uuid")): parse_after_timestamp(n.get("nso_timestamp"))
                 for n in nodes
@@ -1096,7 +1424,6 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 devices = verdicts(fresh)
             else:
                 devices = verdicts([])
-            payload.pop("matched_devices", None)
             payload["settled"] = settled
             payload["elapsed_seconds"] = int(elapsed)
             payload["devices"] = devices
@@ -1113,8 +1440,6 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "(nso_state SYNCED = in sync, NOT_SYNCED = out of sync, newer "
                     "nso_timestamp) or run this tool again."
                 )
-            else:
-                payload.pop("next", None)
             head = (
                 f"check-sync of {len(devices)} device(s): {counts['in-sync']} in-sync, "
                 f"{counts['out-of-sync']} out-of-sync, {counts['failed']} failed, "

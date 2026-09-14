@@ -136,15 +136,66 @@ def _userpass_label(entry: dict[str, Any]) -> str:
     return f"{label} ({user})" if user else label
 
 
+def _snmpv2_label(v2_info: Any) -> str:
+    """``SNMPv2 (read)`` / ``(write)`` / ``(read+write)`` from the (masked) ``v2_info``.
+
+    Says WHICH communities the profile holds without printing them (the API
+    masks them as ``******`` anyway); a ``v2_info`` with neither key renders
+    the bare ``SNMPv2``.
+    """
+    if not isinstance(v2_info, dict):
+        return "SNMPv2"
+    parts = [
+        name
+        for name, key in (("read", "read_community"), ("write", "write_community"))
+        if v2_info.get(key) not in (None, "")
+    ]
+    return f"SNMPv2 ({'+'.join(parts)})" if parts else "SNMPv2"
+
+
+def _snmpv3_label(v3_info: Any) -> str:
+    """``SNMPv3 (<user>, <security level>, <auth>/<priv>)`` from the ``v3_info`` block.
+
+    Built from the 7.2 API document's ``robotapiRobotSnmpV3`` fields (the read
+    shape is NOT verified live — no SNMPv3 profile exists on the lab):
+    ``user_name``, ``security_level`` (``SL_AUTH_PRIV`` -> ``AUTH_PRIV``),
+    ``auth_type`` (``AT_HMAC_SHA`` -> ``HMAC_SHA``) and ``priv_type``
+    (``PT_CFB_AES_128`` -> ``CFB_AES_128``); ``*_UNKNOWN`` values are
+    skipped. The ``auth_password`` / ``priv_password`` secrets are never
+    rendered. A ``v3_info`` with none of the fields renders the bare ``SNMPv3``.
+    """
+    if not isinstance(v3_info, dict):
+        return "SNMPv3"
+
+    def enum_text(key: str, prefix: str) -> str | None:
+        raw = str(v3_info.get(key) or "").strip()
+        if not raw or raw.endswith("_UNKNOWN"):
+            return None
+        return raw[len(prefix) :] if raw.startswith(prefix) else raw
+
+    parts: list[str] = []
+    user = str(v3_info.get("user_name") or "").strip()
+    if user:
+        parts.append(user)
+    level = enum_text("security_level", "SL_")
+    if level:
+        parts.append(level)
+    auth, priv = enum_text("auth_type", "AT_"), enum_text("priv_type", "PT_")
+    if auth or priv:
+        parts.append(f"{auth or '-'}/{priv or '-'}")
+    return f"SNMPv3 ({', '.join(parts)})" if parts else "SNMPv3"
+
+
 def _credential_types(item: dict[str, Any]) -> list[str]:
-    """Human labels for the credential types a profile carries, e.g. ``SSH (cisco)``."""
+    """Human labels for the credential types a profile carries, e.g. ``SSH (cisco)``,
+    ``SNMPv2 (read)``, ``SNMPv3 (v3u, AUTH_PRIV, HMAC_SHA/CFB_AES_128)``."""
     labels = [
         _userpass_label(entry) for entry in item.get("user_pass") or [] if isinstance(entry, dict)
     ]
     if item.get("v2_info"):
-        labels.append("SNMPv2")
+        labels.append(_snmpv2_label(item["v2_info"]))
     if item.get("v3_info"):
-        labels.append("SNMPv3")
+        labels.append(_snmpv3_label(item["v3_info"]))
     return labels
 
 
@@ -546,6 +597,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         profile covers. For one profile's full record use cnc_get_credential_profile.
 
         Secrets are masked by the API ("******"); usernames are returned in clear.
+        The markdown line names each user/password type with its username and
+        says which SNMP credentials exist without a follow-up read: "SNMPv2
+        (read)" / "SNMPv2 (write)" / "SNMPv2 (read+write)" from the masked
+        ``v2_info`` communities, and "SNMPv3 (<user>, <security level>,
+        <auth>/<priv>)" from ``v3_info`` (built from the API document's
+        fields — no SNMPv3 profile exists on the lab, so that read shape is
+        unverified; its passwords are never rendered).
 
         Args:
             profile: name filter (exact, case-insensitive, '*' wildcard; surrounding
@@ -554,8 +612,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             response_format: 'markdown' (default) or 'json'.
 
         Returns:
-            str: Markdown "- **profile** — types: SSH (user), HTTP (user), SNMPv2" lines,
-            or JSON:
+            str: Markdown "- **profile** — types: SSH (user), HTTP (user), SNMPv2 (read)"
+            lines, or JSON:
             {"total": int|null, "count": int, "page": int, "page_size": int,
              "items": [{"profile": str,
                         "user_pass": [{"user_name": str, "password": "******",

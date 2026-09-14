@@ -43,12 +43,14 @@ from cnc_mcp.tools.te_state import (
     key_matches,
     matches_policy_filter,
     node_router_id,
+    node_text,
     normalize_oper_state,
     p2mp_policy_url,
     path_hops,
     pcep_flag_c,
     policy_origin,
     policy_origin_line,
+    router_id_names,
     rsvp_pm_url,
     rsvp_tunnel_url,
     sr_policy_pm_url,
@@ -605,6 +607,24 @@ def test_end_label_shows_both_spellings_only_when_a_name_was_resolved():
     assert end_label("PE2", "10.0.0.3") == "PE2 (10.0.0.3)"
     assert end_label("10.0.0.3", "10.0.0.3") == "10.0.0.3"
     assert end_label(" 10.0.0.3 ", "10.0.0.3") == "10.0.0.3"
+    # With a name map the topology's own node id wins over the caller's spelling, and a
+    # router-id given as such is named too (round 2: names known -> names shown).
+    names = router_id_names(TOPO_NODES)
+    assert end_label("pe2", "10.0.0.3", names) == "PE2 (10.0.0.3)"
+    assert end_label("10.0.0.1", "10.0.0.1", names) == "PE1 (10.0.0.1)"
+    assert end_label("10.0.0.9", "10.0.0.9", names) == "10.0.0.9"
+
+
+def test_router_id_names_and_node_text_come_from_the_topology_nodes_alone():
+    # The node record carries node-id (= host_name) and its router-ids: no inventory call.
+    names = router_id_names(TOPO_NODES)
+    assert names == {"10.0.0.1": "PE1", "10.0.0.2": "P1", "10.0.0.3": "PE2"}
+    assert router_id_names(None) == {} and router_id_names([{"node-id": "SW1"}]) == {}
+    assert node_text("10.0.0.3", names) == "PE2 (10.0.0.3)"
+    assert node_text("10.0.0.9", names) == "10.0.0.9"  # unknown router-id: as is
+    assert node_text("10.0.0.3", None) == "10.0.0.3" and node_text(None, names) == "?"
+    # A node whose router-id equals its id (no separate name) is not doubled up.
+    assert node_text("10.0.0.7", {"10.0.0.7": "10.0.0.7"}) == "10.0.0.7"
 
 
 def test_policy_origin_from_pcep_flag_c_independent_of_pce_controlled():
@@ -674,10 +694,19 @@ async def test_list_sr_policies_filters_by_host_name_through_the_topology(settin
         build(settings), "cnc_list_sr_policies", {"headend": "pe2", "endpoint": "PE1"}
     )
     assert networks.call_count == 1
-    assert "# SR policies (1 of 2, headend=10.0.0.3, endpoint=10.0.0.1)" in text
+    # Round 2: the nodes read to resolve the names double as the router-id -> host name
+    # map, so the header and the rows carry both spellings (the node ids exactly).
+    assert "# SR policies (1 of 2, headend=PE2 (10.0.0.3), endpoint=PE1 (10.0.0.1))" in text
+    assert "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100**" in text
+    assert "10.0.0.1 -> 10.0.0.3 color 100" not in text
+    assert "host names are shown next to the TE router-ids" in text
+    # A router-id filter never reads the topology (the fast path every earlier caller took),
+    # so nothing can be named: the rows stay router-ids only and the footer says how.
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"headend": "10.0.0.3"})
+    assert networks.call_count == 1
+    assert "# SR policies (1 of 2, headend=10.0.0.3)" in text
     assert "- **10.0.0.3 -> 10.0.0.1 color 100**" in text
-    assert "- **10.0.0.1 -> 10.0.0.3 color 100**" not in text
-    # A router-id filter never reads the topology (the fast path every earlier caller took).
+    assert "a host-name filter here shows host names" in text
     text = await call_tool_text(
         build(settings), "cnc_list_sr_policies", {"headend": "10.0.0.3", "response_format": "json"}
     )
@@ -867,15 +896,23 @@ async def test_get_sr_policy_accepts_host_names_and_sends_router_ids(settings):
     assert networks.call_count == 1 and route.call_count == 1
     assert networks.calls[0].request.headers["Accept"] == YANG_JSON
     assert json.loads(text) == PE1_POLICY
-    # Mixed spellings resolve too; the not-found message shows both spellings of a name.
+    # Mixed spellings resolve too; once the topology was read for one name, the not-found
+    # message names BOTH ends from it (round 2: names known -> names shown).
     respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.3,10.0.0.1,300").mock(return_value=DATA_MISSING_409)
     text = await call_tool_text(
         build(settings),
         "cnc_get_sr_policy",
         {"headend": "PE2", "endpoint": "10.0.0.1", "color": 300},
     )
-    assert text.startswith("Error: no SR policy PE2 (10.0.0.3) -> 10.0.0.1 color 300")
+    assert text.startswith("Error: no SR policy PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 300")
     assert "cnc_list_sr_policies" in text
+    # The markdown header carries both spellings too, in the topology's exact node ids.
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "pe1", "endpoint": "10.0.0.3", "color": 100},
+    )
+    assert text.startswith("# SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100")
 
 
 @respx.mock

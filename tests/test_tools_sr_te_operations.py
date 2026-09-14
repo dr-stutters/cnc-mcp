@@ -2102,11 +2102,15 @@ async def test_wait_for_absent_on_a_never_reported_key_does_not_read_as_a_conver
     )
     assert route.call_count == 1
     assert not text.startswith("Error:")
+    # Round 2: this is also the normal success right after a fast delete, so it must read
+    # as a confirmed withdrawal in that case, not as a warning.
     assert text.startswith(
-        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 300 was not reported at any poll "
-        "(ABSENT) — if you expected it to exist, check the key with cnc_list_sr_policies."
+        "SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 300 is ABSENT: not reported at any "
+        "poll after 0s. If this follows a cnc_delete_sr_policy that answered reported: true, "
+        "the policy is confirmed withdrawn (converged); if you expected it to exist, verify "
+        "the key with cnc_list_sr_policies."
     )
-    assert "withdrawn" not in text
+    assert "then withdrawn" not in text
     assert json.loads(text.split("\n", 1)[1]) == {"reported": False, "seen_during_wait": False}
 
 

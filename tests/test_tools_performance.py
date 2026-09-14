@@ -43,6 +43,7 @@ from cnc_mcp.tools.performance import (
     group_list_text,
     hours_or_window,
     interface_key,
+    is_sr_policy_interface,
     keys_label,
     lsp_key,
     lsp_label,
@@ -58,13 +59,19 @@ from cnc_mcp.tools.performance import (
     performance_error,
     performance_time,
     router_id,
+    sample_spacing,
+    series_section,
     series_stats,
+    spacing_text,
     sr_policy_name_parts,
+    statistics_entry,
+    stats_text,
     summary_rows,
     template_units_of,
     time_window,
     unit_unresolved,
 )
+from cnc_mcp.tools.te_state import end_label, router_id_names
 from tests.conftest import BASE_URL, call_tool_text
 
 PERF = f"{BASE_URL}/crosswork/performance/v1"
@@ -604,6 +611,41 @@ NPM_500 = httpx.Response(
 NOW = datetime(2026, 9, 14, 8, 30, 15, 987654, tzinfo=UTC)
 # The last-6-hours window ending at NOW (whole seconds), as the NPM key carries it.
 LAST_6H = {"from": "2026-09-14T02:30:15Z", "to": "2026-09-14T08:30:15Z"}
+# The topology ``networks`` collection the host-name resolver reads (te_state's
+# fetch_topology_nodes — the verified member names, reduced to what name -> router-id
+# resolution needs): PE1 / P1 / PE2 with their router-ids plus an LLDP-only node.
+NETWORKS_URL = f"{BASE_URL}/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+L3_NODE = "ietf-l3-unicast-topology-state:l3-node-attributes"
+
+
+def topo_node(node_id: str, router_id: str) -> dict:
+    return {"node-id": node_id, L3_NODE: {"name": node_id, "router-id": [router_id]}}
+
+
+TOPO_NODES = [
+    topo_node("PE1", "10.0.0.1"),
+    topo_node("P1", "10.0.0.2"),
+    topo_node("PE2", "10.0.0.3"),
+    {"node-id": "SW1"},
+]
+NETWORKS = {
+    "ietf-network-state:networks": {
+        "network": [{"network-id": "Default-network", "node": TOPO_NODES}]
+    }
+}
+# Live spacing (2026-09-14, lsp/utilizations): a 24 h window answers hourly roll-ups on
+# the hour; a 6 h window the raw ~5-minute samples with the odd shorter gap.
+HOURLY = [{"tst": f"2026-09-13T{h:02d}:00:00Z", "util": 0.0} for h in (10, 11, 12)]
+FIVE_MIN_IRREGULAR = [
+    {"tst": "2026-09-13T22:01:13Z", "util": 0.0},
+    {"tst": "2026-09-13T22:02:46Z", "util": 0.0},  # 93 s (collection restart)
+    {"tst": "2026-09-13T22:07:46Z", "util": 0.0},
+    {"tst": "2026-09-13T22:12:46Z", "util": 0.0},
+]
+
+
+def mock_networks(body: dict = NETWORKS) -> respx.Route:
+    return respx.get(NETWORKS_URL).mock(return_value=httpx.Response(200, json=body))
 
 
 @pytest.fixture
@@ -679,17 +721,24 @@ async def test_paging_is_one_based_and_flat(make_settings):
 
 
 async def test_lsp_tools_use_the_shared_te_key_names(make_settings):
-    """headend / endpoint / color / tunnel_id — the names cnc_list_sr_policies and
-    cnc_get_sr_policy_performance_metrics use, so their output chains without remapping.
-    The window is ``hours`` (default 24) or an optional explicit from_time / to_time, as
-    in cnc_get_performance_statistics (deliberate change: from/to used to be required)."""
+    """headend / endpoint / color / tunnel_id / network — the names cnc_list_sr_policies,
+    cnc_get_sr_policy and cnc_get_sr_policy_performance_metrics use, so their output
+    chains without remapping, and headend / endpoint take a host name OR a router-id
+    (deliberate change: a host name used to be refused with "NOT the host name"). The
+    window is ``hours`` (default 24) or an optional explicit from_time / to_time, as in
+    cnc_get_performance_statistics."""
     tools = {t.name: t for t in await build(make_settings()).list_tools()}
     for name in ("cnc_get_lsp_utilization", "cnc_get_lsp_delay"):
         schema = tools[name].input_schema
         props = schema["properties"]
         assert set(schema["required"]) == {"headend", "endpoint"}, name
         assert "headend_router_id" not in props and "endpoint_router_id" not in props, name
-        assert "NOT the host name" in props["headend"]["description"], name
+        for end in ("headend", "endpoint"):
+            text = props[end]["description"]
+            assert "host name" in text and "router-id" in text, (name, end)
+            assert "NOT the host name" not in text, (name, end)
+        assert "cnc_get_sr_policy" in props["headend"]["description"], name
+        assert props["network"]["default"] == "Default-network", name
         assert props["color"]["default"] == 0 and "refused" in props["color"]["description"], name
         assert props["tunnel_id"]["default"] == "", name
     assert set(tools["cnc_get_interface_delay"].input_schema["required"]) == {
@@ -701,11 +750,12 @@ async def test_lsp_tools_use_the_shared_te_key_names(make_settings):
 async def test_every_pm_window_says_either_time_form_is_accepted(make_settings):
     """One time convention across the family: every from_time / to_time description names
     both ISO forms and epoch milliseconds; the hours-or-window tools default hours to 24
-    with from_time / to_time optional, the from/to-only dashboards keep them required."""
+    with from_time / to_time optional (top-N joined them — deliberate change: it used to
+    require from/to), the from/to-only summary dashboard keeps them required."""
     tools = {t.name: t for t in await build(make_settings()).list_tools()}
     windowed = {
         "cnc_get_performance_statistics": True,
-        "cnc_get_performance_top_n": False,
+        "cnc_get_performance_top_n": True,
         "cnc_get_performance_summary": False,
         "cnc_get_lsp_utilization": True,
         "cnc_get_lsp_delay": True,
@@ -840,7 +890,8 @@ def test_parse_schema_and_filters():
         parse_collection_status("polling")
 
 
-def test_router_id_refuses_host_names():
+def test_router_id_is_the_final_guard():
+    """After host-name resolution only an IP reaches the key; anything else is refused."""
     assert router_id(" 10.0.0.1 ", "headend") == "10.0.0.1"
     with pytest.raises(PlatformError, match="headend must be a TE router-id") as info:
         router_id("PE1", "headend")
@@ -853,6 +904,32 @@ def test_lsp_key_is_sr_with_a_string_color_or_rsvp_with_a_tunnel_id():
     assert lsp_key("10.0.0.1", "10.0.0.3", 100, " 11 ", start, end) == LSP_KEY_RSVP
     assert lsp_label(LSP_KEY_SR) == "SR LSP 10.0.0.1 -> 10.0.0.3 color 100"
     assert lsp_label(LSP_KEY_RSVP) == "RSVP LSP 10.0.0.1 -> 10.0.0.3 tunnel 11"
+    # Without a names map (no topology read): the name the caller gave shows next to its
+    # router-id, a name that IS the router-id is printed once (te_state's end_label).
+    assert (
+        lsp_label(LSP_KEY_SR, "PE1", "PE2") == "SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100"
+    )
+    assert (
+        lsp_label(LSP_KEY_SR, " pe1 ", "10.0.0.3") == "SR LSP pe1 (10.0.0.1) -> 10.0.0.3 color 100"
+    )
+    assert lsp_label(LSP_KEY_RSVP, "10.0.0.1", "PE2") == (
+        "RSVP LSP 10.0.0.1 -> PE2 (10.0.0.3) tunnel 11"
+    )
+    # With the names map resolve_policy_ends returns, the topology's own node id wins over
+    # the caller's spelling — the same header cnc_get_sr_policy prints — and a router-id
+    # the map knows is named too.
+    names = router_id_names(TOPO_NODES)
+    assert lsp_label(LSP_KEY_SR, "pe1", "pe2", names) == (
+        "SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100"
+    )
+    assert lsp_label(LSP_KEY_RSVP, "10.0.0.1", "PE2", names) == (
+        "RSVP LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) tunnel 11"
+    )
+    assert lsp_label(LSP_KEY_SR, names={"10.0.0.9": "PE9"}) == (
+        "SR LSP 10.0.0.1 -> 10.0.0.3 color 100"
+    )
+    assert end_label("PE2", "10.0.0.3") == "PE2 (10.0.0.3)"
+    assert end_label("10.0.0.3", "10.0.0.3") == "10.0.0.3"
     # Color 0 is not an SR policy color: refused for SR, irrelevant for RSVP.
     with pytest.raises(PlatformError, match="color is required for an SR policy") as info:
         lsp_key("10.0.0.1", "10.0.0.3", 0, "", start, end)
@@ -860,6 +937,96 @@ def test_lsp_key_is_sr_with_a_string_color_or_rsvp_with_a_tunnel_id():
     assert lsp_key("10.0.0.1", "10.0.0.3", 0, "11", start, end) == LSP_KEY_RSVP
     with pytest.raises(PlatformError, match="endpoint must be a TE router-id"):
         lsp_key("10.0.0.1", "PE3", 100, "", start, end)
+
+
+def test_sample_spacing_is_the_modal_gap():
+    """The observed spacing (verified live 2026-09-14): hourly roll-ups for a window over
+    6 h, ~5-minute samples up to 6 h — with the odd shorter gap around a restart, so the
+    most common gap is reported and the range shown only when the gaps vary."""
+    assert sample_spacing(HOURLY) == {
+        "spacing_seconds": 3600,
+        "gap_min_seconds": 3600,
+        "gap_max_seconds": 3600,
+    }
+    assert spacing_text(sample_spacing(HOURLY)) == "60-minute spacing"
+    assert sample_spacing(FIVE_MIN_IRREGULAR) == {
+        "spacing_seconds": 300,
+        "gap_min_seconds": 93,
+        "gap_max_seconds": 300,
+    }
+    assert spacing_text(sample_spacing(FIVE_MIN_IRREGULAR)) == (
+        "~5-minute spacing, gaps 93 s to 300 s"
+    )
+    assert spacing_text(sample_spacing(UTILIZATIONS)) == "5-minute spacing"
+    assert spacing_text({"spacing_seconds": 90, "gap_min_seconds": 90, "gap_max_seconds": 90}) == (
+        "90-second spacing"
+    )
+    # Fewer than two timestamped samples, bad or unordered stamps: unknown, never an error.
+    empty = {"spacing_seconds": None, "gap_min_seconds": None, "gap_max_seconds": None}
+    assert sample_spacing([]) == empty and sample_spacing(LSP_DELAY) == empty
+    assert sample_spacing([{"tst": "x"}, {"tst": "2026-09-13T12:00:00Z"}, {}]) == empty
+    assert sample_spacing(list(reversed(HOURLY))) == empty
+    assert spacing_text(empty) == "" and spacing_text({}) == ""
+    # It is part of series_stats / stats_text and the section headers.
+    stats = series_stats(HOURLY, "util")
+    assert stats["spacing_seconds"] == 3600 and stats["count"] == 3
+    assert stats_text(stats, "util").startswith(
+        "3 sample(s) (2026-09-13T10:00:00Z to 2026-09-13T12:00:00Z; 60-minute spacing): util avg 0"
+    )
+    assert stats_text(series_stats(FIVE_MIN_IRREGULAR, "util"), "util").startswith(
+        "4 sample(s) (2026-09-13T22:01:13Z to 2026-09-13T22:12:46Z; ~5-minute spacing, gaps "
+        "93 s to 300 s): util avg 0"
+    )
+    assert stats_text(series_stats(LSP_DELAY, "averageDelay"), "averageDelay").startswith(
+        "1 sample(s) (2026-09-13T12:01:36Z to 2026-09-13T12:01:36Z): averageDelay avg 5"
+    )
+    assert series_section("Delay", HOURLY)[1] == "## Delay (3 sample(s); 60-minute spacing)"
+    assert series_section("Loss", [])[1:] == ["## Loss (0 sample(s))", "(no samples)"]
+
+
+def test_sr_policy_interface_rows_and_endpoint_host_names():
+    """CEPMINTERFACE rows whose interfaceName is srte_c_* are the head-end's SR-policy
+    virtual interfaces (verified live 2026-09-14; CEPMCRC was not polled on the lab, so its
+    rows are unverified); an SRPOLICY row's endpoint is named from the topology's
+    router-id -> node-id map (te_state's router_id_names)."""
+    assert is_sr_policy_interface({"hostname": "PE1", "interfaceName": "srte_c_100_ep_10.0.0.3"})
+    assert not is_sr_policy_interface(
+        {"hostname": "PE1", "interfaceName": "GigabitEthernet0/0/0/0"}
+    )
+    assert not is_sr_policy_interface(SRPOLICY_KEYS_PE1)  # an SRPOLICY row keys by name
+    assert not is_sr_policy_interface({})
+    names = router_id_names(TOPO_NODES)
+    assert names == {"10.0.0.1": "PE1", "10.0.0.2": "P1", "10.0.0.3": "PE2"}
+    assert router_id_names([]) == {} and router_id_names([{"node-id": "SW1"}]) == {}
+    entry = statistics_entry(STATISTICS_UNITS["entries"][0], names)
+    assert entry["keys"] == {
+        **SRPOLICY_KEYS_PE1,
+        "color": 100,
+        "endpoint": "10.0.0.3",
+        "endpoint_host_name": "PE2",
+    }
+    assert keys_label(entry["keys"]) == (
+        "PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3 (PE2)"
+    )
+    assert keys_label(SRPOLICY_KEYS_PE1, names) == (
+        "PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3 (PE2)"
+    )
+    # Unknown router-id, no map, or a plain interface row: nothing is added.
+    unknown = {"keys": {"name": "srte_c_5_ep_10.9.9.9", "endpoint": ""}, "metrics": {}}
+    assert statistics_entry(unknown, names)["keys"] == {
+        "name": "srte_c_5_ep_10.9.9.9",
+        "color": 5,
+        "endpoint": "10.9.9.9",
+    }
+    assert statistics_entry(STATISTICS_UNITS["entries"][0])["keys"] == {
+        **SRPOLICY_KEYS_PE1,
+        "color": 100,
+        "endpoint": "10.0.0.3",
+    }
+    assert statistics_entry(STATISTICS["entries"][0], names) == STATISTICS["entries"][0]
+    assert keys_label(SRPOLICY_KEYS_PE1, {}) == (
+        "PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3"
+    )
 
 
 def test_interface_key_needs_a_real_inventory_uuid():
@@ -935,12 +1102,22 @@ def test_rendering_helpers():
         "count": 2,
         "first_at": "2026-09-13T12:01:36Z",
         "last_at": "2026-09-13T12:06:36Z",
+        "spacing_seconds": 300,
+        "gap_min_seconds": 300,
+        "gap_max_seconds": 300,
         "average": 1.25,
         "minimum": 0.0,
         "maximum": 2.5,
         "last": 2.5,
     }
-    assert series_stats([], "util") == {"count": 0, "first_at": None, "last_at": None}
+    assert series_stats([], "util") == {
+        "count": 0,
+        "first_at": None,
+        "last_at": None,
+        "spacing_seconds": None,
+        "gap_min_seconds": None,
+        "gap_max_seconds": None,
+    }
     assert max_text(MAX_UTIL, "maxUtilization", "max utilization") == (
         "max utilization (platform): 2.5 — Successfully found Maximum Utilization"
     )
@@ -1468,9 +1645,11 @@ async def test_get_statistics_by_hours(settings):
 @respx.mock
 async def test_get_statistics_window_metrics_device_and_units(settings):
     """The SRPOLICY shape verified live 2026-09-14: color 0 / endpoint "" are filled from
-    the name, and the NUMBER unit is annotated from one policy-templates GET."""
+    the name, the endpoint is named from one topology GET ("(PE2)"), and the NUMBER unit
+    is annotated from one policy-templates GET."""
     route = get(STATISTICS_URL, STATISTICS_UNITS)
     templates = get(TEMPLATES_URL, TEMPLATES)
+    networks = mock_networks()
     text = await call_tool_text(
         build(settings),
         "cnc_get_performance_statistics",
@@ -1495,14 +1674,14 @@ async def test_get_statistics_window_metrics_device_and_units(settings):
         "pageSize": "2",
         "page": "1",
     }
-    assert templates.call_count == 1
+    assert templates.call_count == 1 and networks.call_count == 1
     assert text == (
         "# SRPOLICY statistics — 2026-09-13T00:00:00.000Z to 2026-09-13T12:00:00.000Z, page 1 "
         f"(2 rows; metrics outBitRate, outPktsRate; device {PE1_UUID})\n\n"
-        "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3: outBitRate=12.5 NUMBER "
+        "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3 (PE2): outBitRate=12.5 NUMBER "
         "(template unit BITS_PER_SECOND), outPktsRate=0 NUMBER (template unit "
         "PACKETS_PER_SECOND)\n"
-        "- PE2 srte_c_100_ep_10.0.0.1 color=100 endpoint=10.0.0.1: outBitRate=0 NUMBER "
+        "- PE2 srte_c_100_ep_10.0.0.1 color=100 endpoint=10.0.0.1 (PE1): outBitRate=0 NUMBER "
         "(template unit BITS_PER_SECOND), outPktsRate=0 NUMBER (template unit "
         "PACKETS_PER_SECOND)\n\n"
         "(unit NUMBER where the template says otherwise = the platform did not resolve the "
@@ -1516,6 +1695,7 @@ async def test_get_statistics_window_metrics_device_and_units(settings):
 async def test_get_statistics_srpolicy_json_fills_color_and_endpoint(settings):
     get(STATISTICS_URL, STATISTICS_UNITS)
     templates = get(TEMPLATES_URL, TEMPLATES)
+    networks = mock_networks()
     text = await call_tool_text(
         build(settings),
         "cnc_get_performance_statistics",
@@ -1527,13 +1707,15 @@ async def test_get_statistics_srpolicy_json_fills_color_and_endpoint(settings):
         "outPktsRate": "PACKETS_PER_SECOND",
     }
     assert data["records"] == 2 and data["count"] == 2 and data["only_nonzero"] is False
+    assert data["sr_policy_interface_rows"] == 0  # SRPOLICY rows key by name, not interface
     assert [e["keys"] for e in data["entries"]] == [
-        {**SRPOLICY_KEYS_PE1, "color": 100, "endpoint": "10.0.0.3"},
-        {**SRPOLICY_KEYS_PE2, "color": 100, "endpoint": "10.0.0.1"},
+        {**SRPOLICY_KEYS_PE1, "color": 100, "endpoint": "10.0.0.3", "endpoint_host_name": "PE2"},
+        {**SRPOLICY_KEYS_PE2, "color": 100, "endpoint": "10.0.0.1", "endpoint_host_name": "PE1"},
     ]
     assert data["entries"][0]["metrics"] == STATISTICS_UNITS["entries"][0]["metrics"]
-    assert templates.call_count == 1
-    # A resolved unit (CEPMINTERFACE) or no units at all: no template lookup.
+    assert templates.call_count == 1 and networks.call_count == 1
+    # A resolved unit (CEPMINTERFACE) or no units at all: no template lookup, and no
+    # topology lookup either (only SRPOLICY rows carry an endpoint to name).
     get(STATISTICS_URL, STATISTICS)
     text = await call_tool_text(
         build(settings),
@@ -1541,6 +1723,118 @@ async def test_get_statistics_srpolicy_json_fills_color_and_endpoint(settings):
         {"schema": "CEPMINTERFACE", "with_units": True, "response_format": "json"},
     )
     assert json.loads(text)["template_units"] is None and templates.call_count == 1
+    assert networks.call_count == 1
+
+
+@respx.mock
+async def test_get_statistics_srpolicy_endpoint_names_are_best_effort(make_settings):
+    """The topology lookup names the endpoint; when it fails (500) or does not know the
+    router-id, the rows render without a name and nothing else changes."""
+    get(STATISTICS_URL, STATISTICS_UNITS)
+    networks = respx.get(NETWORKS_URL).mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        "cnc_get_performance_statistics",
+        {"schema": "SRPOLICY"},
+    )
+    assert networks.call_count == 1
+    assert text == (
+        "# SRPOLICY statistics — last 24 h, page 1 (2 rows)\n\n"
+        "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3: outBitRate=12.5 NUMBER, "
+        "outPktsRate=0 NUMBER\n"
+        "- PE2 srte_c_100_ep_10.0.0.1 color=100 endpoint=10.0.0.1: outBitRate=0 NUMBER, "
+        "outPktsRate=0 NUMBER"
+    )
+    # A topology that knows only PE1: PE2's endpoint stays bare, PE1's is named.
+    mock_networks(
+        {
+            "ietf-network-state:networks": {
+                "network": [
+                    {"network-id": "Default-network", "node": [topo_node("PE1", "10.0.0.1")]}
+                ]
+            }
+        }
+    )
+    text = await call_tool_text(
+        build(make_settings()), "cnc_get_performance_statistics", {"schema": "SRPOLICY"}
+    )
+    assert "endpoint=10.0.0.3:" in text and "endpoint=10.0.0.1 (PE1):" in text
+    # No rows: no topology read at all.
+    get(STATISTICS_URL, STATISTICS_EMPTY)
+    networks = mock_networks()
+    reads = networks.call_count
+    text = await call_tool_text(
+        build(make_settings()), "cnc_get_performance_statistics", {"schema": "SRPOLICY"}
+    )
+    assert text.startswith("No SRPOLICY statistics") and networks.call_count == reads
+
+
+@respx.mock
+async def test_get_statistics_counts_sr_policy_interfaces_separately(settings):
+    """CEPMINTERFACE rows include the head-end's srte_c_* policy interfaces (verified live
+    2026-09-14: 32 rows, of which 2): the header and the JSON count them so an interface
+    tally is not inflated; the rows themselves are unchanged."""
+    with_policies = {
+        **STATISTICS,
+        "records": 4,
+        "entries": STATISTICS["entries"]
+        + [
+            {
+                "keys": {
+                    "hostname": "PE1",
+                    "interfaceName": "srte_c_100_ep_10.0.0.3",
+                    "device": PE1_UUID,
+                },
+                "metrics": {"ifInBitsRate": 0, "ifOutBitsRate": 0},
+            },
+            {
+                "keys": {
+                    "hostname": "PE2",
+                    "interfaceName": "srte_c_100_ep_10.0.0.1",
+                    "device": PE2_UUID,
+                },
+                "metrics": {"ifInBitsRate": 0, "ifOutBitsRate": 0},
+            },
+        ],
+    }
+    get(STATISTICS_URL, with_policies)
+    networks = mock_networks()
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "CEPMINTERFACE"}
+    )
+    assert networks.call_count == 0  # only SRPOLICY rows are named from the topology
+    assert text == (
+        "# CEPMINTERFACE statistics — last 24 h, page 1 (4 rows, of which 2 are srte_c_* "
+        "SR-policy interfaces)\n\n"
+        "- PE1 GigabitEthernet0/0/0/0: ifInBitsRate=1234.5, ifOutBitsRate=0\n"
+        "- PE1 GigabitEthernet0/0/0/1: ifInBitsRate=42, ifOutBitsRate=7.25\n"
+        "- PE1 srte_c_100_ep_10.0.0.3: ifInBitsRate=0, ifOutBitsRate=0\n"
+        "- PE2 srte_c_100_ep_10.0.0.1: ifInBitsRate=0, ifOutBitsRate=0"
+    )
+    # The count is over the platform's rows on the page, so it survives only_nonzero.
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "CEPMINTERFACE", "only_nonzero": True},
+    )
+    assert text.startswith(
+        "# CEPMINTERFACE statistics — last 24 h, page 1 (4 rows, of which 2 are srte_c_* "
+        "SR-policy interfaces, 2 shown after dropping 2 all-zero)\n"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "CEPMINTERFACE", "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["sr_policy_interface_rows"] == 2 and data["records"] == 4
+    assert data["entries"] == with_policies["entries"]  # rows untouched
+    # No policy interfaces on the page: the header says nothing about them.
+    get(STATISTICS_URL, STATISTICS)
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "CEPMINTERFACE"}
+    )
+    assert text.startswith("# CEPMINTERFACE statistics — last 24 h, page 1 (2 rows)\n")
 
 
 @respx.mock
@@ -1578,15 +1872,16 @@ async def test_get_statistics_unresolved_unit_survives_a_failed_template_lookup(
     """The unit annotation is a nicety: if policy-templates fails the row still renders."""
     get(STATISTICS_URL, STATISTICS_UNITS)
     respx.get(TEMPLATES_URL).mock(return_value=httpx.Response(500, text="boom"))
+    mock_networks()
     text = await call_tool_text(
         build(make_settings(max_retries=0)),
         "cnc_get_performance_statistics",
         {"schema": "SRPOLICY", "with_units": True},
     )
     assert text.startswith("# SRPOLICY statistics — last 24 h, page 1 (2 rows)\n\n")
-    assert "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3: outBitRate=12.5 NUMBER, " in (
-        text
-    )
+    assert (
+        "- PE1 srte_c_100_ep_10.0.0.3 color=100 endpoint=10.0.0.3 (PE2): outBitRate=12.5 NUMBER, "
+    ) in text
     assert "template unit" not in text
 
 
@@ -1614,7 +1909,9 @@ async def test_get_statistics_only_nonzero(settings):
     assert data["only_nonzero"] is True and data["records"] == 3 and data["count"] == 1
     assert data["has_more"] is False
     assert data["entries"] == [STATISTICS_ZEROS["entries"][1]]
-    # Every row zero: a non-error answer that says so (and keeps the paging hint).
+    # Every row zero: a non-error answer that says so AND whether the page was the whole
+    # collection (a full page keeps the paging hint; a short page 1 IS the collection, a
+    # short later page is the last one) — no confirmation call needed.
     all_zero = {**STATISTICS_ZEROS, "records": 2, "entries": STATISTICS_ZEROS["entries"][::2]}
     get(STATISTICS_URL, all_zero)
     text = await call_tool_text(
@@ -1624,6 +1921,19 @@ async def test_get_statistics_only_nonzero(settings):
         "All 2 rows of CEPMINTERFACE statistics for last 6 h (page 1; metrics ifInErrorsRate, "
         "ifOutErrorsRate) are zero: no non-zero value on this page.\n"
         "(page full: more may exist, call again with page=2)"
+    )
+    text = await call_tool_text(build(settings), "cnc_get_performance_statistics", args)
+    assert text == (
+        "All 2 rows of CEPMINTERFACE statistics for last 6 h (page 1; metrics ifInErrorsRate, "
+        "ifOutErrorsRate) are zero: no non-zero value on this page. 2 rows < page_size 100: "
+        "this page is the whole collection, so no object had a non-zero value in the window."
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {**args, "page": 3}
+    )
+    assert text.endswith(
+        "are zero: no non-zero value on this page. 2 rows < page_size 100: this is the last "
+        "page (earlier pages were not re-checked)."
     )
     text = await call_tool_text(
         build(settings),
@@ -1782,6 +2092,68 @@ async def test_get_top_n_json_and_empty(settings):
     assert text.startswith(
         "No top-N entries for CPU_cpuUtilization between 2026-09-13T00:00:00.000Z and "
         "2026-09-13T12:00:00.000Z on page 2:"
+    )
+
+
+@respx.mock
+async def test_get_top_n_hours_window(settings, fixed_now):
+    """hours (default 24) replaces an explicit window, as in the sibling tools: the
+    dashboard has no timeInterval, so the tool computes from/to itself (whole seconds,
+    .SSSZ form); from_time / to_time win when both are given, one alone is refused."""
+    route = get(TOPN_URL, TOPN)
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_top_n", {"metric": "CEPMINTERFACE_ifInUtilization"}
+    )
+    assert params_of(route) == {
+        "metric": "CEPMINTERFACE_ifInUtilization",
+        "from": "2026-09-13T08:30:15.000Z",
+        "to": "2026-09-14T08:30:15.000Z",
+        "pageSize": "10",
+        "page": "1",
+    }
+    assert text.startswith(
+        "# Top 10 CEPMINTERFACE_ifInUtilization (last 24 h: 2026-09-13T08:30:15.000Z to "
+        "2026-09-14T08:30:15.000Z)\n\n- PE1 GigabitEthernet0/0/0/0: avg 0.5"
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_top_n",
+        {"metric": "CEPMINTERFACE_ifInUtilization", "hours": 6, "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["hours"] == 6 and data["from"] == "2026-09-14T02:30:15.000Z"
+    assert data["to"] == "2026-09-14T08:30:15.000Z" and data["count"] == 2
+    # An explicit window beats hours (and is reported without "last N h").
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_top_n",
+        {
+            "metric": "CEPMINTERFACE_ifInUtilization",
+            "hours": 6,
+            "from_time": "2026-09-13T02:00:00+02:00",
+            "to_time": "1789300800000",
+            "response_format": "json",
+        },
+    )
+    data = json.loads(text)
+    assert data["hours"] is None and data["from"] == "2026-09-13T00:00:00.000Z"
+    assert data["to"] == "2026-09-13T12:00:00.000Z"
+    assert route.call_count == 3
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_top_n",
+        {"metric": "CEPMINTERFACE_ifInUtilization", "from_time": "2026-09-13T00:00:00Z"},
+    )
+    assert text.startswith("Error: pass both from_time and to_time") and "Nothing was sent" in text
+    assert route.call_count == 3
+    # An empty answer for the default window says which window that was.
+    get(TOPN_URL, [])
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_top_n", {"metric": "CPU_cpuUtilization"}
+    )
+    assert text.startswith(
+        "No top-N entries for CPU_cpuUtilization between 2026-09-13T08:30:15.000Z and "
+        "2026-09-14T08:30:15.000Z (the last 24 h):"
     )
 
 
@@ -1969,12 +2341,37 @@ async def test_get_lsp_utilization_sr(settings):
         "# Utilization of SR LSP 10.0.0.1 -> 10.0.0.3 color 100, 2026-09-13T12:00:00Z to "
         "2026-09-13T18:00:00Z\n\n"
         "- max utilization (platform): 2.5 — Successfully found Maximum Utilization\n"
-        "- 2 sample(s) (2026-09-13T12:01:36Z to 2026-09-13T12:06:36Z): util avg 1.25, min 0, "
-        "max 2.5, last 2.5\n\n"
-        "## Samples (2 sample(s))\n"
+        "- 2 sample(s) (2026-09-13T12:01:36Z to 2026-09-13T12:06:36Z; 5-minute spacing): "
+        "util avg 1.25, min 0, max 2.5, last 2.5\n\n"
+        "## Samples (2 sample(s); 5-minute spacing)\n"
         "- 2026-09-13T12:01:36Z: util 0\n"
         "- 2026-09-13T12:06:36Z: util 2.5"
     )
+
+
+@respx.mock
+async def test_get_lsp_utilization_reports_the_hourly_roll_up(settings, fixed_now):
+    """A window over 6 h answers hourly samples (verified live 2026-09-14: 18 for 24 h):
+    the summary says so, so an agent never reports 5-minute resolution it does not have."""
+    post(f"{NPM_BASE}/lsp/utilizations", HOURLY)
+    post(f"{NPM_BASE}/lsp/max/utilization", MAX_UTIL_ZERO)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100},
+    )
+    assert (
+        "\n- 3 sample(s) (2026-09-13T10:00:00Z to 2026-09-13T12:00:00Z; 60-minute spacing): "
+        "util avg 0, min 0, max 0, last 0\n\n## Samples (3 sample(s); 60-minute spacing)\n"
+    ) in text
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "color": 100, "response_format": "json"},
+    )
+    stats = json.loads(text)["stats"]
+    assert stats["spacing_seconds"] == 3600
+    assert stats["gap_min_seconds"] == 3600 and stats["gap_max_seconds"] == 3600
 
 
 @respx.mock
@@ -1996,6 +2393,7 @@ async def test_get_lsp_utilization_rsvp_json(settings):
     assert sent(samples) == LSP_KEY_RSVP
     data = json.loads(text)
     assert data["lsp"] == LSP_KEY_RSVP and data["max"] == MAX_UTIL
+    assert data["label"] == "RSVP LSP 10.0.0.1 -> 10.0.0.3 tunnel 11"
     assert data["samples"] == UTILIZATIONS and data["stats"]["count"] == 2
 
 
@@ -2075,19 +2473,110 @@ async def test_get_lsp_utilization_hours_window(settings, fixed_now):
 
 
 @respx.mock
-async def test_get_lsp_utilization_host_name_and_api_error(make_settings):
+async def test_get_lsp_utilization_resolves_host_names(settings):
+    """headend / endpoint host names are resolved to router-ids through ONE topology GET,
+    as the SR-policy tools do (deliberate change: a host name used to be refused); the
+    key on the wire is the router-id and the header prints the topology's node id next to
+    each router-id (te_state's end_label), whatever spelling was given. Router-ids cost
+    no topology read; an unknown name is refused before any NPM POST; color 0 is refused
+    before even the topology is read."""
     samples = post(f"{NPM_BASE}/lsp/utilizations", UTILIZATIONS)
+    maximum = post(f"{NPM_BASE}/lsp/max/utilization", MAX_UTIL)
+    networks = mock_networks()
     text = await call_tool_text(
-        build(make_settings()),
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": "PE1", "endpoint": "pe2", "color": 100, "from_time": FROM, "to_time": TO},
+    )
+    assert networks.call_count == 1
+    assert sent(samples) == LSP_KEY_SR and sent(maximum) == LSP_KEY_SR  # router-ids on the wire
+    assert text.startswith(
+        "# Utilization of SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100, "
+        "2026-09-13T12:00:00Z to 2026-09-13T18:00:00Z\n"
+    )
+    # Mixed: one name, one router-id — still one GET, and the topology read for the name
+    # names the router-id too (as cnc_get_sr_policy does).
+    text = await call_tool_text(
+        build(settings),
         "cnc_get_lsp_utilization",
         {
-            "headend": "PE1",
+            "headend": "10.0.0.1",
+            "endpoint": "PE2",
+            "color": 100,
+            "from_time": FROM,
+            "to_time": TO,
+            "response_format": "json",
+        },
+    )
+    data = json.loads(text)
+    assert (
+        data["lsp"] == LSP_KEY_SR
+        and data["label"] == "SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100"
+    )
+    assert networks.call_count == 2
+    # Two router-ids: no topology read at all (the fast path).
+    await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {
+            "headend": "10.0.0.1",
             "endpoint": "10.0.0.3",
+            "color": 100,
             "from_time": FROM,
             "to_time": TO,
         },
     )
-    assert text.startswith("Error: headend must be a TE router-id")
+    assert networks.call_count == 2 and samples.call_count == 3
+    # An unknown host name, or a node without SR data, is refused before any NPM POST.
+    for bad, message in (
+        ("PE9", "Error: no node 'PE9' in the topology"),
+        ("SW1", "Error: node 'SW1' has no TE router-id in the topology"),
+    ):
+        text = await call_tool_text(
+            build(settings),
+            "cnc_get_lsp_utilization",
+            {"headend": bad, "endpoint": "PE2", "color": 100, "from_time": FROM, "to_time": TO},
+        )
+        assert text.startswith(message), bad
+    assert samples.call_count == 3 and networks.call_count == 4
+    # Color 0 for SR is refused before the topology is read; blank names likewise.
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": "PE1", "endpoint": "PE2", "from_time": FROM, "to_time": TO},
+    )
+    assert text.startswith("Error: color is required for an SR policy")
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": " ", "endpoint": "PE2", "color": 100, "from_time": FROM, "to_time": TO},
+    )
+    assert text.startswith("Error: headend and endpoint must not be blank")
+    assert networks.call_count == 4 and samples.call_count == 3
+    # The empty answer names the ends the same way.
+    post(f"{NPM_BASE}/lsp/utilizations", [])
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_lsp_utilization",
+        {"headend": "PE2", "endpoint": "PE1", "color": 100, "hours": 6},
+    )
+    assert text.startswith(
+        "No LSP utilization samples for SR LSP PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100 between "
+    )
+
+
+@respx.mock
+async def test_get_lsp_utilization_topology_failure_and_api_error(make_settings):
+    """A failed topology read (needed only for a host name) is an error before any NPM
+    POST; an NPM failure is an error, not an empty answer."""
+    samples = post(f"{NPM_BASE}/lsp/utilizations", UTILIZATIONS)
+    respx.get(NETWORKS_URL).mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        "cnc_get_lsp_utilization",
+        {"headend": "PE1", "endpoint": "10.0.0.3", "color": 100, "from_time": FROM, "to_time": TO},
+    )
+    assert text.startswith("Error: API request failed with status 500.")
     assert samples.call_count == 0
     respx.post(f"{NPM_BASE}/lsp/utilizations").mock(return_value=NPM_500)
     respx.post(f"{NPM_BASE}/lsp/max/utilization").mock(return_value=NPM_500)
@@ -2172,6 +2661,7 @@ async def test_get_lsp_delay_all_empty_and_json(settings):
     )
     assert json.loads(text) == {
         "lsp": LSP_KEY_RSVP,
+        "label": "RSVP LSP 10.0.0.1 -> 10.0.0.3 tunnel 11",
         "max_delay": MAX_DELAY_NONE,
         "delay": [],
         "delay_variance": [],
@@ -2208,29 +2698,50 @@ async def test_get_lsp_delay_hours_window(settings, fixed_now):
 
 
 @respx.mock
-async def test_get_lsp_delay_host_name_color_0_and_api_error(make_settings):
+async def test_get_lsp_delay_host_names_color_0_and_api_error(make_settings):
     routes = [
         post(f"{NPM_BASE}/lsp/delay", LSP_DELAY),
         post(f"{NPM_BASE}/lsp/max/delay", MAX_DELAY),
         post(f"{NPM_BASE}/lsp/delayVariance", DELAY_VARIANCE),
         post(f"{NPM_BASE}/lsp/loss", []),
     ]
+    networks = mock_networks()
     good = {"headend": "10.0.0.1", "endpoint": "10.0.0.3", "from_time": FROM, "to_time": TO}
-    # A host name is refused before any of the four POSTs is sent.
+    # Host names are resolved through one topology GET (deliberate change: they used to be
+    # refused) and the header shows both spellings; the wire key is the router-ids.
     text = await call_tool_text(
-        build(make_settings()), "cnc_get_lsp_delay", {**good, "headend": "PE1", "color": 100}
+        build(make_settings()),
+        "cnc_get_lsp_delay",
+        {**good, "headend": "PE1", "endpoint": "PE2", "color": 100},
     )
-    assert text.startswith("Error: headend must be a TE router-id")
-    assert "cnc_list_sr_policies" in text
+    assert networks.call_count == 1
+    for route in routes:
+        assert sent(route) == LSP_KEY_SR
+    assert text.startswith(
+        "# Delay and loss of SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100, "
+        "2026-09-13T12:00:00Z to 2026-09-13T18:00:00Z\n"
+    )
+    text = await call_tool_text(
+        build(make_settings()),
+        "cnc_get_lsp_delay",
+        {**good, "endpoint": "PE2", "color": 100, "response_format": "json"},
+    )
+    # A router-id next to a host name is named too: the topology was read for the name.
+    assert json.loads(text)["label"] == "SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100"
+    # An unknown host name is refused before any of the four POSTs is sent.
     text = await call_tool_text(
         build(make_settings()), "cnc_get_lsp_delay", {**good, "endpoint": "PE3", "color": 100}
     )
-    assert text.startswith("Error: endpoint must be a TE router-id")
-    # So is the default color 0 without a tunnel_id.
-    text = await call_tool_text(build(make_settings()), "cnc_get_lsp_delay", good)
+    assert text.startswith("Error: no node 'PE3' in the topology")
+    assert "cnc_list_topology_nodes" in text
+    # So is the default color 0 without a tunnel_id — before the topology is even read.
+    text = await call_tool_text(
+        build(make_settings()), "cnc_get_lsp_delay", {**good, "headend": "PE1"}
+    )
     assert text.startswith("Error: color is required for an SR policy")
+    assert networks.call_count == 3
     for route in routes:
-        assert route.call_count == 0
+        assert route.call_count == 2
     # An NPM failure (the problem+json 500) is an error, not an empty answer.
     for route in routes:
         route.mock(return_value=NPM_500)
@@ -2239,6 +2750,7 @@ async def test_get_lsp_delay_host_name_color_0_and_api_error(make_settings):
     )
     assert text.startswith("Error: API request failed with status 500.")
     assert "Failed to map json" in text
+    assert networks.call_count == 3  # router-ids: no topology read
 
 
 # --- cnc_get_interface_delay -----------------------------------------------------

@@ -70,9 +70,18 @@ def build_instructions(settings: Settings) -> str:
         "- Objects are identified by 'uuid' (devices, providers) or by name (credential "
         "profiles by 'profile', tags by 'name'). List tools return the identifiers; get "
         "tools take exactly one selector.",
-        "- List tools page with page_size/page (page is 0-based) and return an envelope "
+        "- Most list tools page with page_size/page (page is 0-based) and return an envelope "
         "{total, count, page, page_size, has_more, next_page, items}. 'total' counts matches "
-        "for the filter; 'collection_total' is the size of the whole collection.",
+        "for the filter; 'collection_total' is the size of the whole collection. Tools over "
+        "the alarm/event, EMF, CAT service, notification and application-manager APIs "
+        "(cnc_list_alarms, cnc_list_events, cnc_list_device_alarms, cnc_list_ems_nodes, "
+        "cnc_list_services, cnc_list_notification_subscriptions, cnc_list_app_manager_jobs, "
+        "...) take 'limit' instead of page_size — with 'page' where the platform pages "
+        "(alarms, events), 'offset' where it is offset-based (EMF, CAT, notifications), or "
+        "on its own — the collection-service tools (cnc_list_sensor_templates, "
+        "cnc_get_collection_job_summary) page with page_size/page_token and "
+        "cnc_list_config_templates with page/size; read each list tool's input schema for "
+        "its own paging argument names.",
         "- Filters are exact-match, case-insensitive, and accept '*' as a wildcard "
         "(host_name='PE*'). There is no substring match without '*'.",
         "- response_format='markdown' (default) is a curated summary; 'json' is complete data.",

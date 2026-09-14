@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 import respx
 from mcp.server.mcpserver import MCPServer
 
@@ -163,6 +164,71 @@ def test_unsupported_credential_types_names_what_the_put_would_drop():
 # --- cnc_list_credential_profiles -----------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        ({"v2_info": {"read_community": "******"}}, ["SNMPv2 (read)"]),
+        ({"v2_info": {"write_community": "******"}}, ["SNMPv2 (write)"]),
+        (
+            {"v2_info": {"read_community": "******", "write_community": "******"}},
+            ["SNMPv2 (read+write)"],
+        ),
+        ({"v2_info": {"read_community": ""}}, ["SNMPv2"]),
+        ({"v2_info": "?"}, ["SNMPv2"]),
+        # SNMPv3 from the API document's robotapiRobotSnmpV3 fields (read shape unverified
+        # live); the passwords are never part of the label.
+        (
+            {
+                "v3_info": {
+                    "user_name": "v3u",
+                    "security_level": "SL_AUTH_PRIV",
+                    "auth_type": "AT_HMAC_SHA",
+                    "auth_password": "******",
+                    "priv_type": "PT_CFB_AES_128",
+                    "priv_password": "******",
+                }
+            },
+            ["SNMPv3 (v3u, AUTH_PRIV, HMAC_SHA/CFB_AES_128)"],
+        ),
+        (
+            {
+                "v3_info": {
+                    "user_name": "v3u",
+                    "security_level": "SL_AUTH_NO_PRIV",
+                    "auth_type": "AT_HMAC_MD5",
+                }
+            },
+            ["SNMPv3 (v3u, AUTH_NO_PRIV, HMAC_MD5/-)"],
+        ),
+        (
+            {
+                "v3_info": {
+                    "security_level": "SL_UNKNOWN",
+                    "auth_type": "AT_UNKNOWN",
+                    "priv_type": "PT_UNKNOWN",
+                }
+            },
+            ["SNMPv3"],
+        ),
+        ({"v3_info": {"user_name": "v3u"}}, ["SNMPv3 (v3u)"]),
+        (
+            {
+                "user_pass": [
+                    {"user_name": "cisco", "password": "******", "type": "ROBOT_USERPASS_SSH"}
+                ],
+                "v2_info": {"read_community": "******"},
+                "v3_info": {"user_name": "v3u", "security_level": "SL_AUTH_PRIV"},
+            },
+            ["SSH (cisco)", "SNMPv2 (read)", "SNMPv3 (v3u, AUTH_PRIV)"],
+        ),
+    ],
+)
+def test_credential_types_name_the_snmp_communities_and_v3_parameters(item, expected):
+    labels = credentials._credential_types(item)
+    assert labels == expected
+    assert "******" not in " ".join(labels) and "password" not in " ".join(labels)
+
+
 @respx.mock
 async def test_list_profiles_markdown_and_query_body(settings):
     route = respx.post(QUERY_URL).mock(return_value=httpx.Response(200, json=LISTING))
@@ -173,8 +239,9 @@ async def test_list_profiles_markdown_and_query_body(settings):
         "filter": {"profile": "*"},
         "filterData": {"PageSize": 2, "PageNum": 0, "Criteria": ""},
     }
-    assert "**nso** — types: SSH (admin), HTTP (admin), HTTPS (admin)" in text
-    assert "**cml-xrd** — types: SSH (cisco), SNMPv2" in text
+    assert "**nso** — types: SSH (admin), HTTP (admin), HTTPS (admin)\n" in text
+    # The SNMPv2 label says which communities exist (here a read community only).
+    assert "**cml-xrd** — types: SSH (cisco), SNMPv2 (read)\n" in text
     assert "page=1" in text  # has_more: 2 of 3 shown
     # Markdown never prints secret fields: neither the API's mask nor the
     # clear-text-looking fixture values, nor the field names themselves.
@@ -353,7 +420,7 @@ async def test_create_profile_refuses_existing_name_and_sends_nothing(make_setti
         {"profile": "CML-XRD", "ssh_username": "cisco", "ssh_password": SECRET},
     )
     assert text.startswith("Error:") and "'cml-xrd' already exists" in text
-    assert "SSH (cisco), HTTP (cisco), GRPC (cisco), GNMI (cisco), SNMPv2" in text
+    assert "SSH (cisco), HTTP (cisco), GRPC (cisco), GNMI (cisco), SNMPv2 (read)" in text
     assert "nothing was sent" in text and "cnc_update_credential_profile" in text
     assert SECRET not in text and "******" not in text
     assert json.loads(lookup.calls[0].request.content)["filter"] == {"profile": "CML-XRD"}

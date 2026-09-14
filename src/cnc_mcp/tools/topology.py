@@ -141,6 +141,16 @@ NO_NETWORKS_NOTE = (
     "(L3 nodes and links). Check onboarding with cnc_list_devices and the SR-PCE provider "
     "with cnc_list_providers."
 )
+# A PCEP session's pce-address as the SR-PCE feed reports it (verified live 2026-09-14): the
+# address the PCE identifies itself by towards Crosswork = the SR-PCE provider's endpoint
+# address (cnc_list_providers), NOT necessarily the 'pce address ipv4 <loopback>' peer the
+# router is configured with — on the lab the two differ (provider management address vs the
+# PCE's loopback), and the feed never carries the router-side peer address.
+PCE_ADDRESS_NOTE = (
+    "  (pce = the address the SR-PCE feed identifies itself by, i.e. the SR-PCE provider's "
+    "endpoint address in cnc_list_providers; it may differ from the 'pce address ipv4' peer "
+    "configured on the router, which only the device configuration / backup shows)"
+)
 
 
 class FetchedNetwork(NamedTuple):
@@ -711,6 +721,8 @@ def _node_markdown(network_id: str, node: dict[str, Any]) -> str:
                 f"update={field(s, 'capability-update', '?')} "
                 f"instantiate={field(s, 'capability-instantiate', '?')} msd={field(s, 'msd', '?')}"
             )
+        if sessions:
+            lines.append(PCE_ADDRESS_NOTE)
     tps = node_termination_points(node)
     lines.append(f"Termination points ({len(tps)}):")
     if not tps:
@@ -1116,6 +1128,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         L3 attributes — the markdown says so. Interfaces alone:
         cnc_list_node_interfaces; adjacency: cnc_list_topology_links with
         node=<node-id>.
+
+        PCEP session addresses (verified live 2026-09-14): ``pcc-address`` is
+        the router's TE router-id (loopback); ``pce-address`` is the address
+        the SR-PCE feed identifies itself by — the SR-PCE provider's endpoint
+        address as shown by cnc_list_providers (on the lab the PCE's
+        management address), NOT necessarily the ``pce address ipv4
+        <loopback>`` peer configured on the router (the PCE's loopback on the
+        lab). A mismatch between the two is therefore normal and is not a
+        misconfigured peer; the router-side peer address is only visible in
+        the device configuration / backup (cnc_get_device_backup).
 
         Args:
             node_id: exact node-id (no wildcards).

@@ -65,6 +65,11 @@ Timestamps: app-manager ``start_time`` / ``completion_time`` / ``event_time``
 are epoch-millisecond strings (rendered via ``formatting.epoch_iso``);
 microservice ``up_time`` ("207d 11h 30m 10s") and certificate
 ``expiration_date`` ("Sun, 16 Feb 2031 23:47:42 UTC") are already text.
+``up_time`` is the pod's CONTAINER AGE (time since it was last created or
+restarted), not time-since-healthy: observed live 2026-09-14, cwm-api-service /
+optima-lcm / optima-ddm read 208d although Major alarms recorded them down 37
+days earlier — a health=down episode does not reset it; only a restart /
+re-creation does (the replaced cwm-worker read 1d).
 """
 
 from __future__ import annotations
@@ -151,6 +156,9 @@ CAPP_MAX_PAGES = 20
 # response cap; markdown lines are ~100 characters.
 MICROSERVICE_PAGE_SIZE = 40
 MICROSERVICE_MAX_PAGE_SIZE = 500
+# Offset-style keys crosswork.page_envelope() inherits from the template envelope; the
+# microservice list pages by page/page_size only, so its JSON drops them.
+_OFFSET_KEYS = ("offset", "next_offset")
 
 # Truncation advice for the tools whose full answer can exceed the response cap
 # (finalize() otherwise gives a generic hint that names no parameter).
@@ -862,13 +870,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
-        """List Crosswork microservices (pods) with health, uptime and version —
+        """List Crosswork microservices (pods) with health, container age and version —
         for one application, for one node, or for the whole platform — paged.
 
         Read-only. Use it to find the unhealthy pod behind a degraded
-        application (health='degraded' or 'down'), to check a pod's uptime
-        after a restart, or to learn the exact ``Name`` that
-        cnc_restart_microservice takes. Scope:
+        application (health='degraded' or 'down'), to confirm a pod came back
+        after a restart (its ``up_time`` restarts from zero), or to learn the
+        exact ``Name`` that cnc_restart_microservice takes. ``up_time`` is the
+        pod's CONTAINER AGE — time since the container was last created or
+        restarted — NOT time since it was last healthy (observed live
+        2026-09-14: cwm-api-service, optima-lcm and optima-ddm read 208d while
+        Major alarms recorded them down 37 days earlier; the replaced
+        cwm-worker read 1d). A health=down episode therefore leaves
+        ``up_time`` untouched; use the alarm history (cnc_list_alarms /
+        cnc_search_alarms) for when a pod was unhealthy, and ``up_time`` only
+        for when it was last (re)started. Scope:
         - app_id: POST cluster/microservice/list/query {"req_id": app_id};
           an unknown app answers {} which reads as "no microservices".
         - node_id: POST cluster/dc/node/details/query {"node_id"} and its
@@ -894,12 +910,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: Markdown, one line per microservice:
             "**Name** app=<app> health=<health_state> up=<up_time> version=<Version>"
-            plus "— recommendation: ..." when the platform has one; or JSON:
+            plus "— recommendation: ..." when the platform has one; or JSON
+            (page-based — exactly these keys, no offset/next_offset):
             {"total": <matching microservices>, "count": <on this page>,
              "page": int, "page_size": int, "has_more": bool, "next_page": int|null,
              "collection_total": <fetched before the health filter>,
              "items": [{"app": str|null, "Name", "health_state": "Healthy"|...,
-                        "up_time": "207d 11h 30m 10s", "recommendation",
+                        "up_time": "207d 11h 30m 10s" (container age), "recommendation",
                         "description", "is_dynamic", "Version", "version_history",
                         "micro_service_action": {"actions": [{"action_name",
                                                               "action_id"}]}}]}
@@ -949,6 +966,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 page_size=page_size,
                 page=page,
             )
+            # The paging here is page/page_size (client-side); the offset-style keys the
+            # shared envelope also carries are dropped so the JSON matches the documented
+            # schema and offers no second, unsupported way to page.
+            for key in _OFFSET_KEYS:
+                envelope.pop(key, None)
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json(envelope), settings, hint=_MICROSERVICES_HINT)
             suffix = f", health={wanted}" if wanted else ""
@@ -2047,7 +2069,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         the body is the documented one and the answer is returned as the
         platform gives it (documented as {"resp_value": "R_SUCCESS"|
         "R_FAILURE", "resp_error", "description"}). Watch the pod come back
-        with cnc_list_microservices (up_time resets).
+        with cnc_list_microservices: ``up_time`` is the container's age, so a
+        restarted pod reads seconds/minutes again (a mere health=down episode
+        never resets it).
 
         Returns:
             str: "Restart requested for microservice <name>." followed by the

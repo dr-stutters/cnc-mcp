@@ -16,7 +16,12 @@ Crosswork:
   ``{"application_summary_list": [...]}`` (verified live).
 - ``POST alarms/v1/query`` takes a SQL-like ``criteria`` string
   (``select * from alarm limit N page M``), not a JSON filter body
-  (verified live).
+  (verified live). ``cnc_list_alarms`` therefore names its page size ``limit``
+  (the criteria's own word) plus ``page`` — unlike the ``page_size``/``page``
+  pair of the other list tools here; the name is kept stable for agents'
+  schemas. An alarm's ``Description`` is its newest event's text, so a Cleared
+  alarm's is the clearing event's — :func:`cnc_mcp.tools.fault.alarm_line`
+  renders the fault text in front of it (verified live 2026-09-14).
 - ``POST inventory/v1/jobs/query`` is *assumed* to follow the inventory
   query grammar and answer ``{"jobs": [...]}``; it is NOT yet verified live
   (only the job envelope every inventory write returns is). A ``job_id``
@@ -444,7 +449,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             bool,
             Field(description="True (default) for open alarms only; False to include cleared."),
         ] = True,
-        limit: Annotated[int, Field(description="Alarms per page (e.g. 20).", ge=1, le=200)] = 20,
+        limit: Annotated[
+            int,
+            Field(
+                description="Alarms per page — this tool's page size (e.g. 20); 'page' selects "
+                "the page.",
+                ge=1,
+                le=200,
+            ),
+        ] = 20,
         page: Annotated[int, Field(description="0-based page number (e.g. 0).", ge=0)] = 0,
         sort: Annotated[
             str,
@@ -480,21 +493,38 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         flagged as possibly stale (Crosswork does not auto-clear pod-health
         alarms — confirm with cnc_get_cluster_health / cnc_list_microservices
         before reporting an outage).
+        CLEARED ALARMS (open_only=False; verified live 2026-09-14 on all 105
+        lab alarms): the platform overwrites an alarm's top-level Description
+        with its NEWEST event's text, so for a Cleared alarm Description is the
+        CLEARING event's text ("NSO device is in sync.", "<pod> is healthy.")
+        and says nothing about the fault. The markdown line of a Cleared alarm
+        therefore shows the newest fault-severity event (Critical/Major/Minor/
+        Warning — Info rows such as "Node was onboarded on NSO." are skipped;
+        an Info event is used only when the alarm has no fault-severity event
+        at all) as the fault, then the clear
+        text: "[Clear] NSO Provider nso — [Major] Unable to connect to NSO nso
+        service pack. | cleared: Was able to connect to NSO nso service pack.
+        (...)" ("cleared: (same text)" when both texts are equal; "<text> |
+        original fault not recorded (0 events)" for cleared pod-health alarms,
+        which carry no Events). In JSON the items are raw: read Events[]
+        (newest first) for the fault text.
 
         Args:
             open_only: True for open alarms only (default), False for all.
-            limit / page: page size and 0-based page number.
+            limit (this tool's page size) / page (0-based page number): the
+                platform's own paging ('select * from alarm limit N page M').
             sort: per-page order: updated_desc (default) | created_desc | platform.
 
         Returns:
             str: Markdown with one line per alarm ([State] object — description,
             id, ack, events, created, updated, age), a stale-alarm note when
             any qualifies, or JSON (items in the requested order):
-            {"total": null, "count": int, "page": int, "page_size": int,
-             "items": [{"AlarmId": str, "AlarmCategory": str, "Description": str,
+            {"total": null, "count": int, "page": int, "page_size": int (= limit),
+             "items": [{"AlarmId": str, "AlarmCategory": str, "State": str,
+                        "Description": str (the newest event's text),
                         "Created": str, "Updated": str, "Acknowledge": bool,
                         "object_id": str, "origin_app_id": str, "events_count": int,
-                        "Events": [...]}, ...],
+                        "Events": [...] (newest first; absent when none)}, ...],
              "has_more": bool, "next_page": int|null}
             On failure: "Error: <actionable message>".
         """

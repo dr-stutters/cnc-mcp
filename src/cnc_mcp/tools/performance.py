@@ -67,9 +67,11 @@ Object model (performance):
   the form each service was verified with — so
   ``2026-09-13T12:00:00Z``, ``2026-09-13T12:00:00.000Z``,
   ``2026-09-13T14:00:00+02:00`` and ``1789300800000`` are all the same
-  instant to every tool. The NPM tools also take ``hours`` (default 24) like
-  the statistics dashboard, so a "last N hours" question needs no explicit
-  window. Retention (``GET dataretention/all|default``): raw 24 h, hourly
+  instant to every tool. The top-N and NPM tools also take ``hours``
+  (default 24) like the statistics dashboard — the tool computes ``from`` /
+  ``to`` itself where the wire has no ``timeInterval`` — so a "last N hours"
+  question needs no explicit window; only ``summary`` still needs both
+  bounds. Retention (``GET dataretention/all|default``): raw 24 h, hourly
   168 h, daily 744 h, weekly 9072 h by default — a window older than the
   raw retention only has aggregated data. How long NPM keeps its samples is
   not documented and was not verified.
@@ -78,27 +80,47 @@ Object model (performance):
   in every row's keys; the ``name`` (``srte_c_100_ep_10.0.0.3`` — the
   IOS-XR policy name the CFP renders as ``srte_c_<color>_ep_<tail-end>``)
   is what carries them, so the tool fills both from the name
-  (:func:`sr_policy_name_parts`). With ``units=true`` the same rows report
+  (:func:`sr_policy_name_parts`) and, best effort, names the endpoint's
+  host from one topology GET (``endpoint=10.0.0.3 (PE2)``; te_state's
+  ``router_id_names``). With ``units=true`` the same rows report
   ``unit "NUMBER"`` for outBitRate and outPktsRate, whereas the template
   catalogue says BITS_PER_SECOND / PACKETS_PER_SECOND (and CEPMINTERFACE
   rows do carry their real units). NUMBER is also a genuine template unit
   (OTUCONTROLLERSINFO uc is a count; 27 metrics have no unitType at all),
   so the tool annotates a NUMBER unit with the catalogue's unit only where
   the catalogue says otherwise (:func:`unit_unresolved`).
+- **CEPMINTERFACE rows** (verified live 2026-09-14) include the head-end's
+  SR-policy virtual interfaces — ``interfaceName srte_c_<color>_ep_<tail>``,
+  one per policy the node hosts (32 rows on the lab, of which 2) — as
+  ordinary interfaces; the tool counts them separately in the header
+  (:func:`is_sr_policy_interface`) so an interface tally is not inflated.
+  CEPMCRC presumably shares the interface key set, but the lab's default
+  interface policy polls it at interval 0, so its rows were never
+  observed (unverified).
 
 Object model (NPM): an **LSP** is keyed by TE router-ids — ``peerAddress``
 the head-end router-id (the loopback the PCE knows the node by, e.g.
-``10.0.0.1``, NOT the host name), ``destAddress`` the tail-end router-id,
-plus ``color`` (a STRING on the wire) for ``lspType SR`` or ``tunnelId`` for
-``lspType RSVP``; cnc_list_sr_policies / cnc_list_rsvp_te_tunnels show them.
-Because NPM never validates, the tools refuse before sending whatever would
-only ever produce a silent ``[]``: a host name where a router-id is needed
-(:func:`router_id`), color 0 for an SR key (no SR policy has color 0;
-:func:`lsp_key`) and anything but a uuid as an interface's ``device_uuid``
+``10.0.0.1``), ``destAddress`` the tail-end router-id, plus ``color`` (a
+STRING on the wire) for ``lspType SR`` or ``tunnelId`` for ``lspType
+RSVP``; cnc_list_sr_policies / cnc_list_rsvp_te_tunnels show them. The LSP
+tools take a host name OR a router-id for ``headend`` / ``endpoint`` and
+resolve a host name to its router-id through the topology NBI with the
+SR-policy tools' own resolver (te_state's ``resolve_policy_ends``: one
+``networks`` GET, issued only when a name is not an IP literal; an unknown
+name is refused before anything is sent; the header then prints the
+topology's node id next to each router-id, ``end_label``). Because NPM never
+validates, the tools refuse before sending whatever would only ever produce
+a silent ``[]``: an unresolvable name (:func:`router_id` is the final
+guard), color 0 for an SR key (no SR policy has color 0; :func:`lsp_key`)
+and anything but a uuid as an interface's ``device_uuid``
 (:func:`device_uuid_key`). An **interface** is keyed by the inventory
 ``device_uuid`` (cnc_list_devices) and ``int_name``
-(``GigabitEthernet0/0/0/0``). Samples are 5-minute
-``{"tst": "<ISO>", ...}`` rows; the ``max`` endpoints answer ``{"max...",
+(``GigabitEthernet0/0/0/0``). Samples are ``{"tst": "<ISO>", ...}`` rows
+whose spacing depends on the window (verified live 2026-09-14 on
+``lsp/utilizations``): a window of at most 6 h answers the raw ~5-minute
+samples (73 for 6 h), a longer one — even 6 h 1 min — answers hourly
+roll-ups stamped on the hour (18 for 24 h); the tools print the observed
+spacing (:func:`sample_spacing`). The ``max`` endpoints answer ``{"max...",
 "success", "message"}`` where ``success false`` means "no data" (still HTTP
 200). Delay / loss series need the corresponding SR-PM / Y.1731 probes on the
 devices; a lab without them answers ``[]`` everywhere.
@@ -129,6 +151,13 @@ from cnc_mcp.crosswork import REACHABILITY_STATES
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, pagination_envelope, to_json
 from cnc_mcp.safety import AppContext, register_tool
+from cnc_mcp.tools.te_state import (
+    end_label,
+    fetch_topology_nodes,
+    resolve_policy_ends,
+    router_id_names,
+)
+from cnc_mcp.tools.topology import DEFAULT_NETWORK
 
 logger = logging.getLogger(__name__)
 
@@ -220,14 +249,23 @@ NPM_EMPTY_CAVEAT = (
     "object with no data in the window, so check the key and the time window before "
     "concluding there is no data."
 )
-# The NPM LSP key parameters use the same names and wording as the sibling TE tools
-# (te_state cnc_list_sr_policies / cnc_get_sr_policy_performance_metrics, sr_te_operations)
-# so an agent can chain them without remapping.
-_HEADEND_DESC = (
-    "Head-end TE router-id — the loopback address the PCE knows the node by (e.g. "
-    "'10.0.0.1'), NOT the host name; cnc_list_sr_policies shows it."
+# The NPM LSP key parameters use the same names, wording and host-name resolution as the
+# sibling TE tools (te_state cnc_get_sr_policy / cnc_get_sr_policy_performance_metrics,
+# sr_te_operations) so an agent can chain them without remapping.
+_NODE_HELP = (
+    "a host name (the topology node id, case-insensitive, e.g. 'PE1') or its TE router-id "
+    "(the loopback, e.g. '10.0.0.1')"
 )
-_ENDPOINT_DESC = "Tail-end TE router-id, the policy's endpoint loopback (e.g. '10.0.0.3')."
+_HEADEND_DESC = (
+    f"Head-end of the LSP: {_NODE_HELP}. A host name is resolved to the router-id through "
+    "the topology (one GET, as cnc_get_sr_policy does); a router-id is sent as given — the "
+    "NPM key is always the router-id, and cnc_list_sr_policies shows it."
+)
+_ENDPOINT_DESC = f"Endpoint (tail-end) of the LSP: {_NODE_HELP}; e.g. 'PE2' or '10.0.0.3'."
+_NETWORK_DESC = (
+    f"Topology network id host names are resolved against (e.g. '{DEFAULT_NETWORK}', the "
+    "only network on a standard deployment). Not read when both names are router-ids."
+)
 _COLOR_DESC = (
     "SR policy color (e.g. 100; cnc_list_sr_policies shows it) — required for an SR policy "
     "(0, the default, is refused: no SR policy has color 0); ignored when tunnel_id is given."
@@ -409,15 +447,19 @@ def parse_collection_status(text: str | None) -> str | None:
 
 
 def router_id(text: str | None, what: str) -> str:
-    """A TE router-id (an IP address) for an NPM LSP key; a host name is refused because NPM
-    would silently answer an empty list for it."""
+    """A TE router-id (an IP address) for an NPM LSP key — the final guard after host-name
+    resolution (te_state's resolve_policy_ends turns a host name into its router-id and
+    refuses an unknown one, so only a value that is neither reaches here); anything that
+    is not an IP
+    is refused because NPM would silently answer an empty list for it."""
     value = (text or "").strip()
     try:
         return str(ipaddress.ip_address(value))
     except ValueError:
         raise PlatformError(
-            f"{what} must be a TE router-id (an IP address such as 10.0.0.1), not a host name "
-            f"— got '{text}'. cnc_list_sr_policies / cnc_list_topology_nodes show the router-ids."
+            f"{what} must be a TE router-id (an IP address such as 10.0.0.1) or a host name "
+            f"the topology knows — got '{text}'. cnc_list_sr_policies / cnc_list_topology_nodes "
+            "show the router-ids."
         ) from None
 
 
@@ -798,11 +840,21 @@ def fill_sr_policy_keys(keys: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def keys_label(keys: dict[str, Any]) -> str:
+def is_sr_policy_interface(keys: dict[str, Any]) -> bool:
+    """True for a CEPMINTERFACE row whose ``interfaceName`` is an SR policy's virtual
+    interface (``srte_c_<color>_ep_<tail-end>``) — the head-end's policies appear among its
+    interfaces (verified live 2026-09-14: 32 CEPMINTERFACE rows, of which 2), so an
+    interface tally over-counts ports by their number. CEPMCRC presumably shares the
+    interface key set but was not polled on the lab (interval 0), so it is unverified."""
+    return sr_policy_name_parts(keys.get("interfaceName")) is not None
+
+
+def keys_label(keys: dict[str, Any], host_names: dict[str, str] | None = None) -> str:
     """'PE1 GigabitEthernet0/0/0/0' / 'PE1 srte_c_100_ep_10.0.0.3 color=100
-    endpoint=10.0.0.3' — hostname, then the interface/object name, then any other
+    endpoint=10.0.0.3 (PE2)' — hostname, then the interface/object name, then any other
     populated key as key=value (an SRPOLICY row's color / endpoint come from its name when
-    the platform sends 0 / ""; a color of 0 is never printed, no SR policy has it); the
+    the platform sends 0 / ""; a color of 0 is never printed, no SR policy has it; the
+    endpoint is followed by its host name when ``host_names`` knows the router-id); the
     device uuid is left to the JSON form."""
     keys = fill_sr_policy_keys(keys)
     parts: list[str] = []
@@ -817,11 +869,18 @@ def keys_label(keys: dict[str, Any]) -> str:
     ordered = ["color", "endpoint"] + [k for k in keys if k not in ("color", "endpoint")]
     for key in ordered:
         value = keys.get(key)
-        if key in ("hostname", "interfaceName", "name", "device") or value in (None, ""):
+        if key in ("hostname", "interfaceName", "name", "device", "endpoint_host_name"):
+            continue
+        if value in (None, ""):
             continue
         if key == "color" and value in (0, "0"):
             continue
-        parts.append(f"{key}={value}")
+        text = f"{key}={value}"
+        if key == "endpoint":
+            name = (host_names or {}).get(str(value)) or keys.get("endpoint_host_name")
+            if name:
+                text += f" ({name})"
+        parts.append(text)
     return " ".join(parts) or "?"
 
 
@@ -871,9 +930,17 @@ def entry_is_all_zero(entry: dict[str, Any]) -> bool:
     return all(n is None or n == 0 for n in numbers)
 
 
-def statistics_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """A statistics row as returned, with its keys passed through fill_sr_policy_keys."""
-    return {**entry, "keys": fill_sr_policy_keys(_dict(entry.get("keys")))}
+def statistics_entry(
+    entry: dict[str, Any], host_names: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """A statistics row as returned, with its keys passed through fill_sr_policy_keys and,
+    when ``host_names`` knows the (filled) endpoint router-id, an ``endpoint_host_name``
+    key added ("PE2")."""
+    keys = fill_sr_policy_keys(_dict(entry.get("keys")))
+    name = (host_names or {}).get(str(keys.get("endpoint") or ""))
+    if name:
+        keys["endpoint_host_name"] = name
+    return {**entry, "keys": keys}
 
 
 def statistics_line(entry: dict[str, Any], template_units: dict[str, str] | None = None) -> str:
@@ -964,6 +1031,7 @@ def lsp_key(
     tunnel_id is given. An SR key needs a real color: no SR policy has color 0 (IOS-XR
     colors are 1-4294967295) and NPM would silently answer ``[]`` for it, so color 0 without
     a tunnel_id is refused before anything is sent."""
+    check_sr_color(color, tunnel_id)
     head = router_id(headend, "headend")
     tail = router_id(endpoint, "endpoint")
     tunnel = (tunnel_id or "").strip()
@@ -972,24 +1040,44 @@ def lsp_key(
     if tunnel:
         key["tunnelId"] = tunnel
     else:
-        if color < 1:
-            raise PlatformError(
-                "color is required for an SR policy (no SR policy has color 0, and NPM would "
-                "silently answer an empty list for it): pass the policy's color — "
-                "cnc_list_sr_policies shows it — or tunnel_id for an RSVP-TE tunnel. Nothing "
-                "was sent."
-            )
         key["color"] = str(color)
     key["from"] = npm_time(start)
     key["to"] = npm_time(end)
     return key
 
 
-def lsp_label(key: dict[str, str]) -> str:
-    """'SR LSP 10.0.0.1 -> 10.0.0.3 color 100' / 'RSVP LSP 10.0.0.1 -> 10.0.0.3 tunnel 11'."""
+def check_sr_color(color: int, tunnel_id: str | None) -> None:
+    """Refuse color 0 for an SR key (no tunnel_id) — checked before any host name is
+    resolved, so the refusal costs no request at all."""
+    if (tunnel_id or "").strip():
+        return
+    if color < 1:
+        raise PlatformError(
+            "color is required for an SR policy (no SR policy has color 0, and NPM would "
+            "silently answer an empty list for it): pass the policy's color — "
+            "cnc_list_sr_policies shows it — or tunnel_id for an RSVP-TE tunnel. Nothing "
+            "was sent."
+        )
+
+
+def lsp_label(
+    key: dict[str, str],
+    headend: str = "",
+    endpoint: str = "",
+    names: dict[str, str] | None = None,
+) -> str:
+    """'SR LSP 10.0.0.1 -> 10.0.0.3 color 100' / 'RSVP LSP 10.0.0.1 -> 10.0.0.3 tunnel 11';
+    each end through te_state's ``end_label`` exactly as cnc_get_sr_policy prints it: the
+    topology's node id when the ``names`` map (router-id -> node-id, from
+    ``resolve_policy_ends``) knows the router-id ('SR LSP PE1 (10.0.0.1) -> PE2 (10.0.0.3)
+    color 100', whatever spelling the caller gave), else the name the caller gave next to
+    its router-id, and a name that IS the router-id (or no name) printed once."""
     kind = key.get("lspType")
     tail = f"tunnel {key['tunnelId']}" if kind == "RSVP" else f"color {key.get('color')}"
-    return f"{kind} LSP {key.get('peerAddress')} -> {key.get('destAddress')} {tail}"
+    head_id, end_id = str(key.get("peerAddress")), str(key.get("destAddress"))
+    head = end_label(headend.strip() or head_id, head_id, names)
+    end = end_label(endpoint.strip() or end_id, end_id, names)
+    return f"{kind} LSP {head} -> {end} {tail}"
 
 
 def device_uuid_key(text: str | None) -> str:
@@ -1041,8 +1129,48 @@ def sample_line(sample: dict[str, Any]) -> str:
     return f"- {sample.get('tst') or '?'}: {values or '(no values)'}"
 
 
+def _sample_epoch(sample: dict[str, Any]) -> float | None:
+    """The ``tst`` of an NPM sample as epoch seconds; None when absent or unparseable."""
+    try:
+        return parse_iso_time(str(sample.get("tst") or ""), "tst").timestamp()
+    except PlatformError:
+        return None
+
+
+def sample_spacing(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """The observed spacing of an NPM series: ``{"spacing_seconds": <the most common gap
+    between consecutive samples>, "gap_min_seconds", "gap_max_seconds"}`` (all None with
+    fewer than two timestamped samples). NPM rolls up with the window (verified live
+    2026-09-14): a window of at most 6 h answers ~5-minute samples (300 s, with the odd
+    shorter gap around a collection restart), a longer one hourly samples (3600 s) — so a
+    24 h answer has hourly, not 5-minute, resolution."""
+    stamps = [t for t in (_sample_epoch(s) for s in samples) if t is not None]
+    gaps = [int(round(b - a)) for a, b in zip(stamps, stamps[1:], strict=False) if b > a]
+    if not gaps:
+        return {"spacing_seconds": None, "gap_min_seconds": None, "gap_max_seconds": None}
+    counts: dict[int, int] = {}
+    for gap in gaps:
+        counts[gap] = counts.get(gap, 0) + 1
+    modal = max(counts, key=lambda g: (counts[g], g))
+    return {"spacing_seconds": modal, "gap_min_seconds": min(gaps), "gap_max_seconds": max(gaps)}
+
+
+def spacing_text(spacing: dict[str, Any]) -> str:
+    """'60-minute spacing' / '~5-minute spacing, gaps 93 s to 300 s' / '90-second spacing';
+    '' when the spacing is unknown."""
+    seconds = spacing.get("spacing_seconds")
+    if not isinstance(seconds, int) or seconds <= 0:
+        return ""
+    unit = f"{seconds // 60}-minute" if seconds % 60 == 0 else f"{seconds}-second"
+    low, high = spacing.get("gap_min_seconds"), spacing.get("gap_max_seconds")
+    if low == high:
+        return f"{unit} spacing"
+    return f"~{unit} spacing, gaps {low} s to {high} s"
+
+
 def series_stats(samples: list[dict[str, Any]], field: str) -> dict[str, Any]:
-    """count / first_at / last_at / average / minimum / maximum / last of a numeric field."""
+    """count / first_at / last_at / spacing_seconds / gap_min_seconds / gap_max_seconds /
+    average / minimum / maximum / last of a numeric field."""
     values = [
         s[field]
         for s in samples
@@ -1053,6 +1181,7 @@ def series_stats(samples: list[dict[str, Any]], field: str) -> dict[str, Any]:
         "count": len(samples),
         "first_at": stamps[0] if stamps else None,
         "last_at": stamps[-1] if stamps else None,
+        **sample_spacing(samples),
     }
     if values:
         stats.update(
@@ -1067,10 +1196,15 @@ def series_stats(samples: list[dict[str, Any]], field: str) -> dict[str, Any]:
 
 
 def stats_text(stats: dict[str, Any], field: str) -> str:
-    """'72 samples (2026-... to 2026-...): util avg 0, min 0, max 0, last 0'."""
+    """'18 sample(s) (2026-... to 2026-...; 60-minute spacing): util avg 0, min 0, max 0,
+    last 0' — the observed spacing says which resolution the window got (5-minute up to
+    6 h, hourly beyond)."""
     text = f"{stats['count']} sample(s)"
+    spacing = spacing_text(stats)
     if stats.get("first_at"):
-        text += f" ({stats['first_at']} to {stats['last_at']})"
+        text += f" ({stats['first_at']} to {stats['last_at']}" + (
+            f"; {spacing})" if spacing else ")"
+        )
     if "average" in stats:
         text += (
             f": {field} avg {num_text(stats['average'])}, min {num_text(stats['minimum'])}, "
@@ -1093,7 +1227,11 @@ def max_text(data: Any, field: str, what: str) -> str:
 
 
 def series_section(title: str, samples: list[dict[str, Any]]) -> list[str]:
-    lines = ["", f"## {title} ({len(samples)} sample(s))"]
+    """'## Delay (73 sample(s); ~5-minute spacing, gaps 93 s to 300 s)' and one sample_line
+    per sample."""
+    spacing = spacing_text(sample_spacing(samples))
+    head = f"{len(samples)} sample(s)" + (f"; {spacing}" if spacing else "")
+    lines = ["", f"## {title} ({head})"]
     lines.extend(sample_line(s) for s in samples)
     if not samples:
         lines.append("(no samples)")
@@ -1758,7 +1896,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         0`` and ``endpoint ""`` in every row and only the ``name``
         (``srte_c_100_ep_10.0.0.3`` = color 100, endpoint 10.0.0.3) carries
         them, so the tool fills color / endpoint from the name in both output
-        forms and never prints "color=0". With with_units=true the same rows
+        forms and never prints "color=0". The endpoint router-id is then
+        named, best effort, from one topology ``networks`` GET (the same
+        node list cnc_get_sr_policy resolves host names in, Default-network):
+        "endpoint=10.0.0.3 (PE2)" in markdown and ``keys.endpoint_host_name``
+        in JSON — omitted, never an error, when the topology cannot be read
+        or does not know the router-id. With with_units=true the same rows
         report ``unit "NUMBER"`` (the platform did not resolve the unit; the
         template catalogue says outBitRate BITS_PER_SECOND, outPktsRate
         PACKETS_PER_SECOND, and CEPMINTERFACE rows do carry BITS_PER_SECOND /
@@ -1770,6 +1913,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         whenever a row reports NUMBER) and the JSON carries the schema's
         template units as ``template_units``; a NUMBER row whose template
         unit is NUMBER (or unknown) prints plainly, with no footer.
+
+        CEPMINTERFACE rows (verified live 2026-09-14) include the head-end's
+        SR-policy virtual interfaces as ordinary interfaces — ``interfaceName``
+        ``srte_c_<color>_ep_<tail-end>``, one per policy the node hosts
+        (32 CEPMINTERFACE rows on the lab, of which 2 are ``srte_c_*``; their
+        counters were 0 while SRPOLICY reported the same policies). CEPMCRC
+        presumably shares the interface key set but was not polled on the lab
+        (the default interface policy sets its interval to 0), so its rows are
+        unverified. An interface tally therefore over-counts physical /
+        logical ports by the number of SR policies: the header says "(R
+        rows, of which N are srte_c_* SR-policy interfaces)" and the JSON
+        carries ``sr_policy_interface_rows`` — subtract them, or read the
+        policies' traffic from schema SRPOLICY instead.
 
         Time window: ``hours`` (default 24, sent as ``timeInterval``) or both
         ``from_time`` and ``to_time`` — ISO-8601 with or without milliseconds,
@@ -1793,24 +1949,30 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Returns:
             str: Markdown "# <SCHEMA> statistics — last N h | <from> to <to>,
-            page P (R rows[, N shown after dropping all-zero rows])" and one
-            "- <hostname> <interface|name color=C endpoint=E>: metric=value[
-            UNIT[ (template unit U)]], ..." line per row, a "(unit NUMBER
-            where the template says otherwise = ...)" footer only when a row
-            was annotated, plus a "(more ...)" note when the page is full; or
+            page P (R rows[, of which N are srte_c_* SR-policy interfaces][, N
+            shown after dropping all-zero rows])" and one "- <hostname>
+            <interface|name color=C endpoint=E[ (host)]>: metric=value[ UNIT[
+            (template unit U)]], ..." line per row, a "(unit NUMBER where the
+            template says otherwise = ...)" footer only when a row was
+            annotated, plus a "(more ...)" note when the page is full; or
             JSON {"schema", "window": {"hours" | "from", "to"}, "metrics",
             "device", "only_nonzero", "page", "page_size", "records"
-            (platform rows on the page), "count" (rows returned), "has_more",
+            (platform rows on the page), "count" (rows returned),
+            "sr_policy_interface_rows" (srte_c_* rows on the page), "has_more",
             "next_page", "template_units": {metric: unit} (the schema's
             template units, looked up only when a row reports NUMBER) | null,
-            "entries": [...] (as the platform returns them,
-            except that SRPOLICY color / endpoint are filled from the name
-            when the platform left them 0 / "")}. "No <SCHEMA> statistics
+            "entries": [...] (as the platform returns them, except that
+            SRPOLICY color / endpoint are filled from the name when the
+            platform left them 0 / "" and ``keys.endpoint_host_name`` is added
+            when the topology names the endpoint)}. "No <SCHEMA> statistics
             ..." (non-error) when records is 0, and "All R rows of ... are
-            zero" (non-error) when only_nonzero drops every row; "Error:
-            unknown performance schema '<x>' (INVALID_SCHEMA). ..." listing
-            the known schemas; "Error: from_time must be ..." (nothing sent)
-            for a bad time; "Error: ..." on an API failure.
+            zero ..." (non-error) when only_nonzero drops every row — it ends
+            with whether this page was the whole collection ("R rows <
+            page_size P: this page is the whole collection") or the paging
+            hint, so no confirmation call is needed; "Error: unknown
+            performance schema '<x>' (INVALID_SCHEMA). ..." listing the known
+            schemas; "Error: from_time must be ..." (nothing sent) for a bad
+            time; "Error: ..." on an API failure.
         """
         try:
             schema_name = parse_schema(schema)
@@ -1843,7 +2005,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 ),
             }
             data = _dict(await perf_get(STATISTICS_URL, params=params, hints=hints))
-            entries = [statistics_entry(e) for e in _list_of_dicts(data.get("entries"))]
+            raw_entries = _list_of_dicts(data.get("entries"))
+            host_names: dict[str, str] | None = None
+            if schema_name == "SRPOLICY" and raw_entries:
+                # Best effort: naming the endpoint must never sink the statistics themselves.
+                try:
+                    host_names = router_id_names(
+                        await fetch_topology_nodes(client, DEFAULT_NETWORK)
+                    )
+                except Exception as lookup_error:
+                    logger.warning(
+                        "topology lookup for SRPOLICY endpoint names failed: %s", lookup_error
+                    )
+            entries = [statistics_entry(e, host_names) for e in raw_entries]
             records = data.get("records")
             records = (
                 records
@@ -1851,6 +2025,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 else len(entries)
             )
             has_more = records >= page_size and records > 0
+            policy_rows = sum(1 for e in entries if is_sr_policy_interface(_dict(e.get("keys"))))
             shown = [e for e in entries if not entry_is_all_zero(e)] if only_nonzero else entries
             template_units: dict[str, str] | None = None
             if with_units and any(
@@ -1882,6 +2057,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "page_size": page_size,
                     "records": records,
                     "count": len(shown),
+                    "sr_policy_interface_rows": policy_rows,
                     "has_more": has_more,
                     "next_page": page + 1 if has_more else None,
                     "template_units": template_units,
@@ -1902,10 +2078,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 filters.append(f"device {device_uuid.strip()}")
             more = f"\n(page full: more may exist, call again with page={page + 1})"
             if not shown:
+                # Say whether the page was the whole collection, so no confirmation call is
+                # needed: a short page is the last one (has_more is inferred from a full page).
+                if has_more:
+                    whole = more
+                elif page == 1:
+                    whole = (
+                        f" {records} rows < page_size {page_size}: this page is the whole "
+                        "collection, so no object had a non-zero value in the window."
+                    )
+                else:
+                    whole = (
+                        f" {records} rows < page_size {page_size}: this is the last page (earlier "
+                        "pages were not re-checked)."
+                    )
                 return finalize(
                     f"All {records} rows of {schema_name} statistics for {window_text} (page "
                     f"{page}{'; ' + '; '.join(filters) if filters else ''}) are zero: no "
-                    "non-zero value on this page." + (more if has_more else ""),
+                    "non-zero value on this page." + whole,
                     settings,
                 )
             dropped = (
@@ -1913,10 +2103,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 if only_nonzero
                 else ""
             )
+            policy_text = (
+                f", of which {policy_rows} are srte_c_* SR-policy interfaces" if policy_rows else ""
+            )
             lines = [
-                f"# {schema_name} statistics — {window_text}, page {page} ({records} rows{dropped}"
-                + (f"; {'; '.join(filters)}" if filters else "")
-                + ")",
+                f"# {schema_name} statistics — {window_text}, page {page} ({records} rows"
+                f"{policy_text}{dropped}" + (f"; {'; '.join(filters)}" if filters else "") + ")",
                 "",
             ]
             lines.extend(statistics_line(e, template_units) for e in shown)
@@ -1955,8 +2147,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=120,
             ),
         ],
-        from_time: Annotated[str, Field(description=_FROM_DESC, max_length=40)],
-        to_time: Annotated[str, Field(description=_TO_DESC, max_length=40)],
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
         page_size: Annotated[
             int, Field(description="Entries per page — the N (e.g. 10).", ge=1, le=500)
         ] = 10,
@@ -2019,12 +2212,20 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         cnc_get_performance_health_settings. For SR policy traffic use
         cnc_get_performance_statistics(schema='SRPOLICY').
 
+        Time window: ``hours`` (default 24, the last N hours ending now —
+        the dashboard has no ``timeInterval`` here, so the tool computes
+        ``from`` / ``to`` itself) or both ``from_time`` and ``to_time`` —
+        ISO-8601 with or without milliseconds, 'Z' or a UTC offset, or epoch
+        milliseconds; either form is accepted and normalised to the
+        ``.SSSZ`` form the dashboard takes (the same convention as
+        cnc_get_performance_statistics: an explicit window wins over
+        ``hours``, one bound without the other is refused).
+
         Args:
             metric: the <SCHEMA>_<metric> token (schema upper-cased before sending).
-            from_time / to_time: the window (both required) — ISO-8601 with
-                or without milliseconds, 'Z' or a UTC offset, or epoch
-                milliseconds; either form is accepted and normalised to the
-                ``.SSSZ`` form the dashboard takes.
+            hours: window length when from_time / to_time are not given.
+            from_time / to_time: explicit window (both or neither; either
+                time form accepted).
             page_size / page: the N and the 1-based page.
             sort / severity / device_groups: optional, passed as given
                 (``sort`` upper/lower-case as documented: average | minimum |
@@ -2032,19 +2233,22 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             response_format: markdown or json.
 
         Returns:
-            str: Markdown "# Top N <token> (<from> to <to>[, sort ..][,
-            severity ..])" and one "- <hostname> <object>: avg A, min B, max C
-            UNIT, SEVERITY" line per entry; or JSON {"metric", "from", "to",
-            "page", "page_size", "sort", "severity", "device_groups", "count",
-            "results": [...] (the platform's list)}. "No top-N entries for
-            <token> ..." (non-error) for an empty answer; "Error: '<token>' is
-            not a top-N schema/metric — ..." (nothing sent, or from the
-            platform's 400 INVALID_SCHEMA_METRIC_COMBO); "Error: from_time must
-            be ..." for a bad time; "Error: ..." on an API failure.
+            str: Markdown "# Top N <token> (last H h: <from> to <to> | <from>
+            to <to>[, sort ..][, severity ..])" and one "- <hostname>
+            <object>: avg A, min B, max C UNIT, SEVERITY" line per entry; or
+            JSON {"metric", "hours" (null for an explicit window), "from",
+            "to", "page", "page_size", "sort", "severity", "device_groups",
+            "count", "results": [...] (the platform's list)}. "No top-N
+            entries for <token> ..." (non-error) for an empty answer; "Error:
+            '<token>' is not a top-N schema/metric — ..." (nothing sent, or
+            from the platform's 400 INVALID_SCHEMA_METRIC_COMBO); "Error:
+            from_time must be ..." or "Error: pass both from_time and
+            to_time ..." (nothing sent) for a bad window; "Error: ..." on an
+            API failure.
         """
         try:
             token = parse_metric_token(metric, top_n=True)
-            start, end = time_window(from_time, to_time)
+            start, end, explicit = hours_or_window(hours, from_time, to_time)
             params: dict[str, Any] = {
                 "metric": token,
                 "from": performance_time(start),
@@ -2067,15 +2271,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 ),
                 CODE_MISSING_TIME_DETAILS: (
                     "the platform needs a time window",
-                    "Pass both from_time and to_time.",
+                    "Pass hours, or both from_time and to_time.",
                 ),
             }
             data = await perf_get(TOPN_URL, params=params, hints=hints)
             results = _list_of_dicts(data)
             entries = [e for r in results for e in _list_of_dicts(r.get("entries"))]
+            window_text = (
+                f"{params['from']} to {params['to']}"
+                if explicit
+                else f"last {hours} h: {params['from']} to {params['to']}"
+            )
             if response_format is ResponseFormat.JSON:
                 payload = {
                     "metric": token,
+                    "hours": None if explicit else hours,
                     "from": params["from"],
                     "to": params["to"],
                     "page": page,
@@ -2090,6 +2300,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if not entries:
                 return finalize(
                     f"No top-N entries for {token} between {params['from']} and {params['to']}"
+                    f"{'' if explicit else f' (the last {hours} h)'}"
                     f"{' on page ' + str(page) if page > 1 else ''}: no data was collected for "
                     "that metric in the window (is a policy polling its schema? "
                     "cnc_list_performance_policies), or the severity / device-group filter "
@@ -2104,7 +2315,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if groups:
                 extras.append(f"device groups {', '.join(groups)}")
             lines = [
-                f"# Top {page_size} {token} ({params['from']} to {params['to']}"
+                f"# Top {page_size} {token} ({window_text}"
                 + (f", {', '.join(extras)}" if extras else "")
                 + (f", page {page}" if page > 1 else "")
                 + ")",
@@ -2285,8 +2496,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         idempotent=True,
     )
     async def cnc_get_lsp_utilization(
-        headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=64)],
-        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=64)],
+        headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=253)],
+        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=253)],
         hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
         from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
         to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
@@ -2301,6 +2512,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=40,
             ),
         ] = "",
+        network: Annotated[str, Field(description=_NETWORK_DESC, max_length=200)] = DEFAULT_NETWORK,
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
@@ -2315,17 +2527,34 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         "destAddress": <tail-end router-id>, "color": "<color as a STRING>",
         "from", "to"}`` (or ``{"lspType": "RSVP", ..., "tunnelId"}`` when
         tunnel_id is given; times sent as ``2026-09-13T12:00:00Z``). Answers:
-        ``[{"tst": "<ISO>", "util": <number>}, ...]`` (5-minute samples) and
-        ``{"maxUtilization", "success", "message"}``. Keys are TE router-ids
-        (IP addresses — a host name is refused here because NPM would
-        silently answer an empty list), and an SR key needs the policy's
-        real color: color 0 (the default) without a tunnel_id is refused for
-        the same reason (no SR policy has color 0). NPM never validates: an
+        ``[{"tst": "<ISO>", "util": <number>}, ...]`` and
+        ``{"maxUtilization", "success", "message"}``.
+
+        headend / endpoint take a host name OR a TE router-id, as
+        cnc_get_sr_policy does: a host name is resolved to its router-id
+        through the topology NBI (one ``networks`` GET, only when a name is
+        not an IP literal; verified live 2026-09-14 — PE2 -> 10.0.0.3) and
+        the header prints the topology's node id next to each router-id,
+        "PE2 (10.0.0.3) -> PE1 (10.0.0.1)" (whatever spelling was given); an
+        unknown name is refused before anything is sent ("Error: no node
+        ..."), because NPM would silently answer ``[]`` for it. The key on
+        the wire is always the router-id. An SR key needs the policy's real
+        color: color 0 (the default) without a tunnel_id is refused for the
+        same reason (no SR policy has color 0). NPM never validates: an
         unknown key, a wrong color or a window with no data all answer ``[]``,
-        so an empty answer is reported as such with that caveat. The lab's PCE-delegated
-        policy answered zeros. Related: cnc_get_lsp_delay for delay / loss;
-        cnc_get_performance_statistics(schema='SRPOLICY') for the PM
-        policy's outBitRate.
+        so an empty answer is reported as such with that caveat. The lab's
+        PCE-delegated policy answered zeros. Related: cnc_get_lsp_delay for
+        delay / loss; cnc_get_performance_statistics(schema='SRPOLICY') for
+        the PM policy's outBitRate.
+
+        Sample spacing depends on the window (verified live 2026-09-14): a
+        window of at most 6 h answers the raw ~5-minute samples (73 for 6 h;
+        the odd shorter gap around a collection restart), a longer window —
+        even 6 h 1 min — answers hourly roll-ups stamped on the hour (18 for
+        24 h, hourly history starting when collection began). The summary
+        line prints the observed spacing ("18 sample(s) (... to ...;
+        60-minute spacing)"), so report the resolution you actually got; for 5-minute
+        detail over a long period, page through it in 6 h windows.
 
         Time window: ``hours`` (default 24, the last N hours ending now) or
         both ``from_time`` and ``to_time`` — ISO-8601 with or without
@@ -2336,32 +2565,40 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         (cnc_get_performance_retention) does not govern NPM.
 
         Args:
-            headend / endpoint: TE router-ids (the same names and values as
-                cnc_list_sr_policies / cnc_get_sr_policy_performance_metrics).
+            headend / endpoint: host name or TE router-id (the same names
+                and values as cnc_list_sr_policies / cnc_get_sr_policy /
+                cnc_get_sr_policy_performance_metrics).
             hours: window length when from_time / to_time are not given.
             from_time / to_time: explicit window (both or neither; either
                 time form accepted).
             color: the SR policy color (required for SR; 0 is refused).
             tunnel_id: an RSVP-TE tunnel id (switches to lspType RSVP).
+            network: topology network id host names are resolved in.
             response_format: markdown or json.
 
         Returns:
             str: Markdown "# Utilization of SR LSP <head> -> <tail> color C,
-            <from> to <to>", "- max utilization (platform): M — <message>",
-            "- N sample(s) (<first> to <last>): util avg A, min B, max C, last
-            D" and one "- <tst>: util V" line per sample; or JSON {"lsp": <the
-            key>, "max": {"maxUtilization", "success", "message"}, "stats":
-            {"count", "first_at", "last_at", "average", "minimum", "maximum",
-            "last"}, "samples": [{"tst", "util"}]}. "No LSP utilization samples
-            for ..." (non-error, with the unknown-key caveat) for an empty
-            list; "Error: headend must be a TE router-id ...", "Error: color
-            is required for an SR policy ..." or "Error: pass both from_time
-            and to_time ..." (nothing sent); "Error: ..." on an API failure.
+            <from> to <to>" (each end as "PE2 (10.0.0.3)" when a host name was
+            given), "- max utilization (platform): M — <message>", "- N
+            sample(s) (<first> to <last>; <spacing>): util avg A, min B, max
+            C, last D" and one "- <tst>: util V" line per sample; or JSON
+            {"lsp": <the key>, "label": "SR LSP PE2 (10.0.0.3) -> ...",
+            "max": {"maxUtilization", "success", "message"}, "stats":
+            {"count", "first_at", "last_at", "spacing_seconds" (the most
+            common gap, e.g. 300 or 3600), "gap_min_seconds",
+            "gap_max_seconds", "average", "minimum", "maximum", "last"},
+            "samples": [{"tst", "util"}]}. "No LSP utilization samples for
+            ..." (non-error, with the unknown-key caveat) for an empty list;
+            "Error: no node '<name>' in the topology ...", "Error: color is
+            required for an SR policy ..." or "Error: pass both from_time and
+            to_time ..." (nothing sent); "Error: ..." on an API failure.
         """
         try:
             start, end, _ = hours_or_window(hours, from_time, to_time)
-            key = lsp_key(headend, endpoint, color, tunnel_id, start, end)
-            label = lsp_label(key)
+            check_sr_color(color, tunnel_id)
+            head_id, end_id, names = await resolve_policy_ends(client, network, headend, endpoint)
+            key = lsp_key(head_id, end_id, color, tunnel_id, start, end)
+            label = lsp_label(key, headend, endpoint, names)
             samples_data, max_data = await asyncio.gather(
                 npm_post(NPM_LSP_UTILIZATIONS_URL, key),
                 npm_post(NPM_LSP_MAX_UTILIZATION_URL, key),
@@ -2369,7 +2606,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             samples = samples_of(samples_data)
             stats = series_stats(samples, "util")
             if response_format is ResponseFormat.JSON:
-                payload = {"lsp": key, "max": _dict(max_data), "stats": stats, "samples": samples}
+                payload = {
+                    "lsp": key,
+                    "label": label,
+                    "max": _dict(max_data),
+                    "stats": stats,
+                    "samples": samples,
+                }
                 return finalize(to_json(payload), settings)
             if not samples:
                 return finalize(
@@ -2399,8 +2642,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         idempotent=True,
     )
     async def cnc_get_lsp_delay(
-        headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=64)],
-        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=64)],
+        headend: Annotated[str, Field(description=_HEADEND_DESC, max_length=253)],
+        endpoint: Annotated[str, Field(description=_ENDPOINT_DESC, max_length=253)],
         hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
         from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
         to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
@@ -2415,6 +2658,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=40,
             ),
         ] = "",
+        network: Annotated[str, Field(description=_NETWORK_DESC, max_length=200)] = DEFAULT_NETWORK,
         response_format: Annotated[
             ResponseFormat,
             Field(description="'markdown' for human-readable output, 'json' for complete data."),
@@ -2430,14 +2674,28 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         data), ``lsp/delayVariance`` -> ``[{delayVariance, tst}]`` and
         ``lsp/loss`` -> ``[{..., tst}]``, all with the same LSP key as
         cnc_get_lsp_utilization (``lspType`` SR + ``color`` as a string, or
-        RSVP + ``tunnelId``; TE router-ids, not host names). Delay data needs
-        SR-PM / performance-measurement probes on the head-end: a lab without
-        them answers ``[]`` on every series, and NPM answers the same ``[]``
-        for an unknown key — every empty section says so. (The ``delay-us``
-        of cnc_get_sr_policy_performance_metrics is a PCE-side figure that is
+        RSVP + ``tunnelId``). headend / endpoint take a host name OR a TE
+        router-id exactly as there (and as cnc_get_sr_policy): a host name
+        is resolved through the topology NBI with one ``networks`` GET (only
+        when a name is not an IP literal; verified live 2026-09-14), the
+        header prints "PE2 (10.0.0.3) -> PE1 (10.0.0.1)", and an unknown
+        name is refused before anything is sent because NPM would silently
+        answer ``[]`` for it. Delay data needs SR-PM / performance-measurement
+        probes on the head-end: a lab without them answers ``[]`` on every
+        series, and NPM answers the same ``[]`` for an unknown key — every
+        empty section says so. (The ``delay-us`` of
+        cnc_get_sr_policy_performance_metrics is a PCE-side figure that is
         present even when this tool has no samples — seen live: delay-us 20
         with no NPM delay series and no SR-PM probes — so treat THIS tool as
         the measured series and that one as computed.)
+
+        Sample spacing depends on the window, as for cnc_get_lsp_utilization
+        (verified live 2026-09-14 on the utilisation series; the delay
+        series were empty on the lab): a window of at most 6 h answers the
+        raw ~5-minute samples, a longer one hourly roll-ups stamped on the
+        hour. Every section header and the delay summary line print the
+        observed spacing ("73 sample(s) (... to ...; ~5-minute spacing, gaps
+        93 s to 300 s)"), so report the resolution you actually got.
 
         Time window: ``hours`` (default 24, the last N hours ending now) or
         both ``from_time`` and ``to_time`` — ISO-8601 with or without
@@ -2447,31 +2705,38 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         documented and was not verified.
 
         Args:
-            headend / endpoint: TE router-ids (the same names and values as
-                cnc_list_sr_policies / cnc_get_sr_policy_performance_metrics).
+            headend / endpoint: host name or TE router-id (the same names
+                and values as cnc_list_sr_policies / cnc_get_sr_policy /
+                cnc_get_sr_policy_performance_metrics).
             hours: window length when from_time / to_time are not given.
             from_time / to_time: explicit window (both or neither; either
                 time form accepted).
             color / tunnel_id: SR color (required for SR; 0 is refused), or an
                 RSVP-TE tunnel id.
+            network: topology network id host names are resolved in.
             response_format: markdown or json.
 
         Returns:
-            str: Markdown "# Delay and loss of SR LSP ... , <from> to <to>",
-            "- max average delay (platform): ...", then "## Delay (N
-            sample(s))", "## Delay variance (...)" and "## Loss (...)" with
-            one "- <tst>: field value, ..." line per sample; or JSON {"lsp":
-            <the key>, "max_delay": {...}, "delay": [...], "delay_variance":
-            [...], "loss": [...]}. "No LSP delay, delay-variance or loss
-            samples for ..." (non-error, with the caveat) when every series is
-            empty; "Error: headend must be ...", "Error: color is required
-            for an SR policy ..." or "Error: pass both from_time and to_time
-            ..." (nothing sent); "Error: ..." on an API failure.
+            str: Markdown "# Delay and loss of SR LSP ... , <from> to <to>"
+            (each end as "PE2 (10.0.0.3)" when a host name was given), "- max
+            average delay (platform): ...", "- delay: N sample(s) (...;
+            <spacing>): averageDelay avg ...", then "## Delay (N sample(s)[;
+            <spacing>])", "## Delay variance (...)" and "## Loss
+            (...)" with one "- <tst>: field value, ..." line per sample; or
+            JSON {"lsp": <the key>, "label": "SR LSP PE2 (10.0.0.3) -> ...",
+            "max_delay": {...}, "delay": [...], "delay_variance": [...],
+            "loss": [...]}. "No LSP delay, delay-variance or loss samples for
+            ..." (non-error, with the caveat) when every series is empty;
+            "Error: no node '<name>' in the topology ...", "Error: color is
+            required for an SR policy ..." or "Error: pass both from_time and
+            to_time ..." (nothing sent); "Error: ..." on an API failure.
         """
         try:
             start, end, _ = hours_or_window(hours, from_time, to_time)
-            key = lsp_key(headend, endpoint, color, tunnel_id, start, end)
-            label = lsp_label(key)
+            check_sr_color(color, tunnel_id)
+            head_id, end_id, names = await resolve_policy_ends(client, network, headend, endpoint)
+            key = lsp_key(head_id, end_id, color, tunnel_id, start, end)
+            label = lsp_label(key, headend, endpoint, names)
             delay_data, max_data, variance_data, loss_data = await asyncio.gather(
                 npm_post(NPM_LSP_DELAY_URL, key),
                 npm_post(NPM_LSP_MAX_DELAY_URL, key),
@@ -2484,6 +2749,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if response_format is ResponseFormat.JSON:
                 payload = {
                     "lsp": key,
+                    "label": label,
                     "max_delay": _dict(max_data),
                     "delay": delay,
                     "delay_variance": variance,
@@ -2583,9 +2849,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Returns:
             str: Markdown "# Delay and loss of <interface> on <uuid>, <from> to
-            <to>", "- max average delay (platform): ...", then "## Delay (N
-            sample(s))" and "## Loss (...)" with one "- <tst>: field value,
-            ..." line per sample; or JSON {"interface": <the key>,
+            <to>", "- max average delay (platform): ...", "- delay: N
+            sample(s) (...[; <observed spacing>])", then "## Delay (N
+            sample(s)[; <spacing>])" and "## Loss (...)" with one "- <tst>:
+            field value, ..." line per sample; or JSON {"interface": <the key>,
             "max_delay": {...}, "delay": [...], "loss": [...]}. "No delay or
             loss samples for ..." (non-error, with the caveat) when both series
             are empty; "Error: device_uuid ... and interface ... are both

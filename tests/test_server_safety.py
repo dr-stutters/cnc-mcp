@@ -146,6 +146,45 @@ def test_instructions_state_write_mode(make_settings):
     assert "ENABLED" in build_instructions(make_settings(enable_writes=True))
 
 
+async def test_instructions_paging_claims_match_the_tool_schemas(make_settings):
+    """Round 2: the instructions said every list tool pages with page_size/page while the
+    alarm tools take 'limit'. The sentence must name the exceptions and stay true to the
+    schemas; the unknown-argument hint is stated once (not duplicated)."""
+    text = build_instructions(make_settings(enable_writes=False))
+    assert "Most list tools page with page_size/page" in text
+    assert "take 'limit' instead of page_size" in text
+    assert text.count("unknown argument name is rejected by name") == 1
+    mcp = build_server(make_settings(enable_writes=False))
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    for name in ("cnc_list_alarms", "cnc_list_events", "cnc_list_device_alarms"):
+        assert name in text, name
+        props = tools[name].input_schema["properties"]
+        assert "limit" in props and "page_size" not in props, name
+    assert "page" in tools["cnc_list_alarms"].input_schema["properties"]
+    assert "offset" in tools["cnc_list_device_alarms"].input_schema["properties"]
+    assert "page_size" in tools["cnc_list_microservices"].input_schema["properties"]
+    # Round 3: the exception clause names the offset-based, limit-only and token-paged
+    # tools too — each named tool must actually take what the sentence says it takes.
+    for name in (
+        "cnc_list_ems_nodes",
+        "cnc_list_services",
+        "cnc_list_notification_subscriptions",
+    ):
+        assert name in text, name
+        props = tools[name].input_schema["properties"]
+        assert "limit" in props and "offset" in props and "page_size" not in props, name
+    assert "cnc_list_app_manager_jobs" in text
+    props = tools["cnc_list_app_manager_jobs"].input_schema["properties"]
+    assert "limit" in props and "offset" not in props and "page" not in props
+    for name in ("cnc_list_sensor_templates", "cnc_get_collection_job_summary"):
+        assert name in text, name
+        props = tools[name].input_schema["properties"]
+        assert "page_token" in props and "page_size" in props, name
+    assert "cnc_list_config_templates" in text
+    props = tools["cnc_list_config_templates"].input_schema["properties"]
+    assert "page" in props and "size" in props and "page_size" not in props
+
+
 def test_http_client_loggers_never_log_request_urls():
     """The CAS leg-2 URL carries the TGT; httpx must not log it even at DEBUG."""
     logging.getLogger("httpx").setLevel(logging.DEBUG)

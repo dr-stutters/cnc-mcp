@@ -1580,6 +1580,74 @@
       "expect_error": true
     },
     {
+      "tool": "cnc_get_nso_device_config",
+      "args": {
+        "host_name": "PE1",
+        "subtree": "router",
+        "depth": 2
+      }
+    },
+    {
+      "tool": "cnc_get_nso_device_config",
+      "args": {
+        "host_name": "PE1",
+        "subtree": "tailf-ned-cisco-ios-xr:mpls"
+      }
+    },
+    {
+      "tool": "cnc_get_nso_device_config",
+      "args": {
+        "host_name": "PE1",
+        "subtree": "cisco-ios-xr:router"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_nso_device_config",
+      "args": {
+        "host_name": "NOPE"
+      },
+      "expect_error": true
+    },
+    {
+      "tool": "cnc_get_lsp_utilization",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100,
+        "hours": 6
+      }
+    },
+    {
+      "tool": "cnc_get_lsp_delay",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100,
+        "hours": 24
+      }
+    },
+    {
+      "tool": "cnc_get_performance_top_n",
+      "args": {
+        "metric": "CEPMINTERFACE_ifInUtilization",
+        "hours": 24,
+        "page_size": 3
+      }
+    },
+    {
+      "tool": "cnc_search_alarms",
+      "args": {
+        "open_only": false,
+        "text": "failed to onboard",
+        "limit": 5
+      }
+    },
+    {
+      "tool": "cnc_list_credential_profiles",
+      "args": {}
+    },
+    {
       "phase": "write",
       "tool": "cnc_create_credential_profile",
       "args": {

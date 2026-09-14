@@ -28,9 +28,11 @@ from cnc_mcp.tools import nso
 from cnc_mcp.tools.nso import (
     NSO_FAILURE_STATES,
     NSO_STATES,
+    config_top_keys,
     is_stale,
     ned_id_of,
     normalize_action,
+    normalize_config_subtree,
     nso_summary,
     parse_after_timestamp,
     parse_targets,
@@ -56,6 +58,12 @@ YANG_JSON = "application/yang-data+json"
 def proxy_device_url(encoded_name: str) -> str:
     """The keyed proxy GET the get tool must send: same ``fields`` selector as the list."""
     return f"{PROXY_DEVICES_URL}={encoded_name}?fields={PROXY_DEVICE_FIELDS}"
+
+
+def proxy_config_url(encoded_name: str, subtree: str = "") -> str:
+    """The config GET cnc_get_nso_device_config sends (subtree verbatim, prefix included)."""
+    url = f"{PROXY_DEVICES_URL}={encoded_name}/config"
+    return f"{url}/{subtree}" if subtree else url
 
 
 PE1_UUID = "2a9b7c1e-0f3d-4b8a-9c6e-1d2f3a4b5c6d"
@@ -192,6 +200,42 @@ NSO_P1 = {
 }
 NSO_DEVICES = {"tailf-ncs:device": [NSO_PE1, NSO_P1]}
 
+# Verified live 2026-09-14: GET .../device=PE1/config?depth=2 lists the top-level containers
+# as {} / leaf values under the tailf-ncs:config wrapper, plus NSO's YANG-library keys.
+NSO_CONFIG_DEPTH2 = {
+    "tailf-ncs:config": {
+        "tailf-ned-cisco-ios-xr:hostname": "PE1",
+        "tailf-ned-cisco-ios-xr:interface": {},
+        "tailf-ned-cisco-ios-xr:router": {},
+        "tailf-ned-cisco-ios-xr:segment-routing": {},
+        "tailf-ned-cisco-ios-xr:xyzroot": 0,
+        "ietf-yang-library:modules-state": {},
+    }
+}
+# Verified live 2026-09-14: GET .../config/tailf-ned-cisco-ios-xr:segment-routing.
+NSO_CONFIG_SR = {
+    "tailf-ned-cisco-ios-xr:segment-routing": {
+        "traffic-eng": {
+            "policy": [
+                {
+                    "name": "CNC-DYN-100",
+                    "color": {"value": 100, "end-point": {"ipv4": "10.0.0.3"}},
+                    "candidate-paths": {
+                        "preference": [
+                            {"id": 100, "dynamic": {"pcep": {}, "metric": {"type": "igp"}}}
+                        ]
+                    },
+                }
+            ],
+            "pcc": {
+                "source-address": {"ipv4": "10.0.0.1"},
+                "pce": {"address": {"ipv4": [{"address": "10.0.0.5"}]}},
+                "report-all": [None],
+            },
+        }
+    }
+}
+
 # Verified: a missing device on the proxy is 404 WITH a RESTCONF error document.
 PROXY_404 = httpx.Response(
     404,
@@ -272,6 +316,7 @@ READ_TOOLS = {
     "cnc_get_nso_policy",
     "cnc_list_nso_devices",
     "cnc_get_nso_device",
+    "cnc_get_nso_device_config",
     "cnc_check_device_nso_state",
     "cnc_check_nso_device_sync",  # check-sync changes no configuration: a read
     "cnc_wait_for_device_nso_state",
@@ -304,17 +349,35 @@ async def test_annotations(make_settings):
     assert tools["cnc_sync_inventory_with_nso"].input_schema.get("properties", {}) == {}
     # The wait tool exposes the stale-reading guard.
     assert "after_timestamp" in tools["cnc_wait_for_device_nso_state"].input_schema["properties"]
-    # The read-only check-sync says what it does and does not change.
+    # The read-only check-sync says what it does and does not change — in its FIRST
+    # paragraph, so the read_only_hint is understood as "read-only for the device and
+    # NSO" although a job record is left behind.
     check = tools["cnc_check_nso_device_sync"]
     assert check.annotations.destructive_hint is False
-    assert "changes nothing on the device and nothing in NSO's CDB" in (check.description or "")
-    assert "What it does do on the platform: it creates a job" in (check.description or "")
-    # The failure outcome of a check-sync was never observed (no CHECK_SYNC_FAILED in the
-    # enum) and the tool itself has not been run live: the docstring must say so.
-    assert "this tool itself has NOT been" in (check.description or "")
-    assert "UNVERIFIED: what a check-sync that" in (check.description or "")
-    assert "may equally stay" in (check.description or "")
+    description = check.description or ""
+    first_paragraph = description.split("\n\n", 1)[0]
+    assert "Read-only for the device and NSO" in first_paragraph
+    assert "leaves a job record in Crosswork's job list" in first_paragraph
+    assert "changes nothing on the device and nothing in NSO's CDB" in description
+    assert "What it does do on the platform: it creates a job" in description
+    # Verified live 2026-09-14 (in-sync verdict in ~5 s, nso_timestamp advanced); the
+    # NOT_SYNCED path and the failure outcome (no CHECK_SYNC_FAILED in the enum) were not.
+    assert "Verified live 2026-09-14 (this tool, PE1)" in description
+    assert "this tool itself has NOT been" not in description
+    assert '"NSO device check sync" (the platform\'s spelling)' in description
+    # Whitespace-normalised so a reflow of the prose cannot break the assertion.
+    assert "so that path is UNVERIFIED" in " ".join(description.split())
+    assert "may equally stay" in description
     assert check.input_schema["properties"]["wait_seconds"]["default"] == 60
+    # The CDB config read declares itself a copy, not a live read, and names the prefix rule.
+    config = tools["cnc_get_nso_device_config"]
+    assert config.annotations.destructive_hint is False
+    assert "NSO's CDB copy" in (config.description or "")
+    assert "tailf-ned-cisco-ios-xr" in (config.description or "")
+    assert set(config.input_schema["properties"]) == {"host_name", "subtree", "depth"}
+    assert config.input_schema["required"] == ["host_name"]
+    assert config.input_schema["properties"]["depth"]["default"] == 0
+    assert config.input_schema["properties"]["subtree"]["default"] == ""
     # The cached-verdict tool says its verdict is a cache and how to refresh it.
     cached = tools["cnc_check_device_nso_state"].description or ""
     assert "THE VERDICT IS A CACHE, NOT A LIVE CHECK" in cached
@@ -610,6 +673,310 @@ async def test_get_nso_device_415_is_error_with_media_type(make_settings):
     assert text.startswith("Error:") and "415" in text and "application/yang-data+json" in text
 
 
+# --- cnc_get_nso_device_config ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", ""),
+        ("   ", ""),
+        ("/", ""),
+        ("router", "tailf-ned-cisco-ios-xr:router"),
+        (" /router/isis/ ", "tailf-ned-cisco-ios-xr:router/isis"),
+        ("config/router\n", "tailf-ned-cisco-ios-xr:router"),  # surrounding whitespace only
+        ("config/segment-routing", "tailf-ned-cisco-ios-xr:segment-routing"),
+        (
+            "interface/GigabitEthernet=0%2F0%2F0%2F0",
+            "tailf-ned-cisco-ios-xr:interface/GigabitEthernet=0%2F0%2F0%2F0",
+        ),
+        ("tailf-ned-cisco-ios-xr:router", "tailf-ned-cisco-ios-xr:router"),
+        # An explicit (even wrong) prefix is sent as given: the 404 then explains the rule.
+        ("cisco-ios-xr:router", "cisco-ios-xr:router"),
+        ("tailf-ned-cisco-ios:router", "tailf-ned-cisco-ios:router"),
+    ],
+)
+def test_normalize_config_subtree(value, expected):
+    assert normalize_config_subtree(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        # Reproduced with httpx: '?' starts a query string (bypassing the depth constraint),
+        # '#' silently cuts the path at that point, a space can only be an unencoded key.
+        ("router?depth=999", "'?'"),
+        ("router#x", "'#'"),
+        ("router isis", "whitespace"),
+        ("interface/GigabitEthernet=0/0/0/0\tdescription", "whitespace"),
+    ],
+)
+def test_normalize_config_subtree_rejects_url_breaking_characters(value, shown):
+    with pytest.raises(PlatformError) as excinfo:
+        normalize_config_subtree(value)
+    text = str(excinfo.value)
+    assert text.startswith(f"subtree {value.strip().strip('/')!r} contains {shown}")
+    assert "percent-encoded" in text and "'depth' parameter" in text
+
+
+@respx.mock
+@pytest.mark.parametrize("subtree", ["router?depth=999", "router#x", "router isis"])
+async def test_get_nso_device_config_bad_subtree_is_error_before_any_call(settings, subtree):
+    # No route is mocked: any request would fail loudly under respx.
+    text = await call_tool_text(
+        build(settings), "cnc_get_nso_device_config", {"host_name": "PE1", "subtree": subtree}
+    )
+    assert text.startswith("Error: subtree ") and "not a RESTCONF path character" in text
+    assert respx.calls.call_count == 0
+
+
+def test_config_top_keys_unwraps_the_config_container_only():
+    assert config_top_keys(NSO_CONFIG_DEPTH2) == sorted(NSO_CONFIG_DEPTH2["tailf-ncs:config"])
+    assert config_top_keys(NSO_CONFIG_SR) == ["tailf-ned-cisco-ios-xr:segment-routing"]
+    assert config_top_keys({}) == [] and config_top_keys(None) == []
+    assert config_top_keys({"tailf-ncs:config": "?"}) == ["tailf-ncs:config"]
+    assert config_top_keys([1, 2]) == []
+
+
+@respx.mock
+async def test_get_nso_device_config_depth_lists_top_containers(settings):
+    route = respx.get(proxy_config_url("PE1"), params={"depth": "2"}).mock(
+        return_value=httpx.Response(200, json=NSO_CONFIG_DEPTH2)
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_nso_device_config", {"host_name": "PE1", "depth": 2}
+    )
+    request = route.calls[0].request
+    assert request.url.raw_path.decode() == (
+        "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device=PE1/config?depth=2"
+    )
+    assert request.headers["Accept"] == YANG_JSON
+    head, body = text.split("\n", 1)
+    assert head.startswith(
+        "NSO's CDB copy of PE1's configuration (whole config, depth 2): 6 top-level key(s): "
+        "ietf-yang-library:modules-state, tailf-ned-cisco-ios-xr:hostname, "
+        "tailf-ned-cisco-ios-xr:interface, tailf-ned-cisco-ios-xr:router, "
+        "tailf-ned-cisco-ios-xr:segment-routing, tailf-ned-cisco-ios-xr:xyzroot."
+    )
+    assert "not a live read of the device" in head and "cnc_check_nso_device_sync" in head
+    assert json.loads(body) == NSO_CONFIG_DEPTH2
+
+
+@respx.mock
+async def test_get_nso_device_config_subtree_gets_the_ned_prefix_and_no_depth(settings):
+    route = respx.get(proxy_config_url("PE1", "tailf-ned-cisco-ios-xr:segment-routing")).mock(
+        return_value=httpx.Response(200, json=NSO_CONFIG_SR)
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1", "subtree": "segment-routing"},
+    )
+    request = route.calls[0].request
+    # The prefix is added, the module ':' is not encoded, and depth=0 sends no query.
+    assert request.url.raw_path.decode().endswith(
+        "/device=PE1/config/tailf-ned-cisco-ios-xr:segment-routing"
+    )
+    assert request.url.query == b""
+    head, body = text.split("\n", 1)
+    assert head.startswith(
+        "NSO's CDB copy of PE1's configuration (subtree tailf-ned-cisco-ios-xr:segment-routing, "
+        "full depth): 1 top-level key(s): tailf-ned-cisco-ios-xr:segment-routing."
+    )
+    assert json.loads(body) == NSO_CONFIG_SR
+
+
+@respx.mock
+async def test_get_nso_device_config_encodes_the_name_and_keeps_keys_verbatim(settings):
+    # The device name is one percent-encoded list key; a caller-encoded interface key and a
+    # nested path go through untouched (only the first segment gets the prefix).
+    route = respx.get(
+        proxy_config_url(
+            "PE%201%2Fa", "tailf-ned-cisco-ios-xr:interface/GigabitEthernet=0%2F0%2F0%2F0"
+        )
+    ).mock(
+        return_value=httpx.Response(
+            200, json={"tailf-ned-cisco-ios-xr:GigabitEthernet": [{"id": "0/0/0/0"}]}
+        )
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE 1/a", "subtree": "/interface/GigabitEthernet=0%2F0%2F0%2F0/", "depth": 4},
+    )
+    request = route.calls[0].request
+    assert request.url.raw_path.decode().endswith(
+        "/device=PE%201%2Fa/config/tailf-ned-cisco-ios-xr:interface/GigabitEthernet=0%2F0%2F0%2F0"
+        "?depth=4"
+    )
+    assert "1 top-level key(s): tailf-ned-cisco-ios-xr:GigabitEthernet." in text
+    assert "depth 4" in text
+
+
+@respx.mock
+async def test_get_nso_device_config_explicit_prefix_is_sent_verbatim(settings):
+    route = respx.get(proxy_config_url("PE1", "tailf-ned-cisco-ios-xr:router/isis")).mock(
+        return_value=httpx.Response(200, json={"tailf-ned-cisco-ios-xr:isis": {"tag": []}})
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1", "subtree": "tailf-ned-cisco-ios-xr:router/isis"},
+    )
+    assert route.call_count == 1
+    assert "subtree tailf-ned-cisco-ios-xr:router/isis" in text
+    assert json.loads(text.split("\n", 1)[1]) == {"tailf-ned-cisco-ios-xr:isis": {"tag": []}}
+
+
+@respx.mock
+async def test_get_nso_device_config_unconfigured_container_is_empty_not_error(settings):
+    # Verified live: a container the NED models but the device has not configured -> 204.
+    respx.get(proxy_config_url("PE1", "tailf-ned-cisco-ios-xr:router/ospf")).mock(
+        return_value=httpx.Response(204)
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_nso_device_config", {"host_name": "PE1", "subtree": "router/ospf"}
+    )
+    assert not text.startswith("Error")
+    head, body = text.split("\n", 1)
+    assert "0 top-level key(s) — the subtree is empty in NSO." in head
+    assert json.loads(body) == {}
+
+
+@respx.mock
+async def test_get_nso_device_config_404_document_names_the_prefix_rule(settings):
+    # Verified live: 'cisco-ios-xr:router' (wrong prefix), an unmodelled node and a missing
+    # device all answer the same 404 + ietf-restconf:errors 'uri keypath not found'.
+    respx.get(proxy_config_url("PE1", "cisco-ios-xr:router")).mock(return_value=PROXY_404)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1", "subtree": "cisco-ios-xr:router"},
+    )
+    assert text.startswith(
+        "Error: NSO answered 404 'uri keypath not found' (error-tag invalid-value) for device "
+        "'PE1', subtree 'cisco-ios-xr:router'."
+    )
+    assert "'tailf-ned-cisco-ios-xr:' must lead the first segment" in text
+    assert "cnc_list_nso_devices" in text and "depth=2" in text
+    respx.get(proxy_config_url("ghost"), params={"depth": "2"}).mock(return_value=PROXY_404)
+    text = await call_tool_text(
+        build(settings), "cnc_get_nso_device_config", {"host_name": "ghost", "depth": 2}
+    )
+    assert "for device 'ghost', its whole config." in text
+    assert "NSO holds no device named 'ghost'" in text
+
+
+@respx.mock
+async def test_get_nso_device_config_missing_list_key_names_the_third_cause(settings):
+    # Verified live: a modelled list with a key the device has not configured
+    # ('interface/Loopback=99' when only Loopback0 exists) answers the SAME 404 as a wrong
+    # prefix — so the message must not claim a valid path "is not in NSO's model" only.
+    respx.get(proxy_config_url("PE1", "tailf-ned-cisco-ios-xr:interface/Loopback=99")).mock(
+        return_value=PROXY_404
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1", "subtree": "interface/Loopback=99"},
+    )
+    assert text.startswith(
+        "Error: NSO answered 404 'uri keypath not found' (error-tag invalid-value) for device "
+        "'PE1', subtree 'tailf-ned-cisco-ios-xr:interface/Loopback=99'."
+    )
+    assert "the list entry with that key is not configured on the device" in text
+    assert "a container with no config answers 204" in text
+    assert "answers this 404" in text
+    assert "read the parent list (e.g. 'interface/Loopback')" in text
+
+
+@respx.mock
+async def test_get_nso_device_config_409_data_missing_reports_the_409_not_a_404(settings):
+    # is_not_found() also fires on 409 data-missing, which the NSO proxy verifiably answers
+    # for some data paths (the CAT vpn-service lists) — the message must carry the real
+    # status and NSO's own error-message, not the literal 404 text.
+    respx.get(proxy_config_url("PE1", "tailf-ned-cisco-ios-xr:router/bgp")).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "ietf-restconf:errors": {
+                    "error": [
+                        {
+                            "error-type": "application",
+                            "error-tag": "data-missing",
+                            "error-message": "Data does not exist",
+                        }
+                    ]
+                }
+            },
+        )
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1", "subtree": "router/bgp"},
+    )
+    assert text.startswith(
+        "Error: NSO answered 409 'Data does not exist' (error-tag data-missing) for device "
+        "'PE1', subtree 'tailf-ned-cisco-ios-xr:router/bgp'."
+    )
+    assert "404" not in text and "uri keypath not found" not in text
+    assert "answers this 409" in text
+    assert "NSO holds no device named 'PE1'" in text
+    assert "'tailf-ned-cisco-ios-xr:' must lead the first segment" in text
+
+
+@respx.mock
+async def test_get_nso_device_config_not_found_without_message_or_tag_still_reads(settings):
+    # A 404 error document with neither error-message nor error-tag renders without
+    # dangling quotes or brackets.
+    respx.get(proxy_config_url("PE1")).mock(
+        return_value=httpx.Response(
+            404, json={"ietf-restconf:errors": {"error": [{"error-type": "application"}]}}
+        )
+    )
+    text = await call_tool_text(build(settings), "cnc_get_nso_device_config", {"host_name": "PE1"})
+    assert text.startswith("Error: NSO answered 404 for device 'PE1', its whole config.")
+
+
+@respx.mock
+async def test_get_nso_device_config_bare_404_is_a_routing_error(settings):
+    respx.get(proxy_config_url("PE1")).mock(
+        return_value=httpx.Response(404, text="404 page not found")
+    )
+    text = await call_tool_text(build(settings), "cnc_get_nso_device_config", {"host_name": "PE1"})
+    assert text.startswith("Error:") and "404" in text
+    assert "uri keypath not found" not in text
+
+
+@respx.mock
+async def test_get_nso_device_config_415_and_non_json_are_errors(make_settings):
+    respx.get(proxy_config_url("PE1")).mock(return_value=PROXY_415)
+    mcp = build(make_settings(max_retries=0))
+    text = await call_tool_text(mcp, "cnc_get_nso_device_config", {"host_name": "PE1"})
+    assert text.startswith("Error:") and "415" in text and "application/yang-data+json" in text
+    respx.get(proxy_config_url("PE1")).mock(return_value=httpx.Response(200, text="<html>"))
+    text = await call_tool_text(mcp, "cnc_get_nso_device_config", {"host_name": "PE1"})
+    assert text == "Error: The NSO proxy returned a non-JSON response where JSON was expected."
+
+
+async def test_get_nso_device_config_blank_name_is_error_before_any_call(settings):
+    text = await call_tool_text(build(settings), "cnc_get_nso_device_config", {"host_name": "  "})
+    assert text == "Error: host_name must not be empty or whitespace-only."
+
+
+@respx.mock
+async def test_get_nso_device_config_oversized_answer_names_subtree_and_depth(make_settings):
+    big = {"tailf-ncs:config": {"tailf-ned-cisco-ios-xr:router": {"x": ["y" * 100] * 100}}}
+    respx.get(proxy_config_url("PE1")).mock(return_value=httpx.Response(200, json=big))
+    text = await call_tool_text(
+        build(make_settings(max_response_chars=2_000)),
+        "cnc_get_nso_device_config",
+        {"host_name": "PE1"},
+    )
+    assert "[Truncated:" in text and "'subtree'" in text and "'depth'" in text
+
+
 # --- cnc_check_device_nso_state ----------------------------------------------
 
 
@@ -709,7 +1076,7 @@ async def test_check_nso_device_sync_is_a_read_that_posts_check_sync_and_waits(
         },
     )
     action = respx.post(CHECK_SYNC_URL).mock(
-        return_value=httpx.Response(200, json={**JOB_ACCEPTED, "type": "NSO device check-sync"})
+        return_value=httpx.Response(200, json={**JOB_ACCEPTED, "type": "NSO device check sync"})
     )
     text = await call_tool_text(
         build(settings),  # writes disabled: the tool must still be there
@@ -725,10 +1092,17 @@ async def test_check_nso_device_sync_is_a_read_that_posts_check_sync_and_waits(
     )
     assert "compare-config" in head  # an out-of-sync device gets the reconcile hint
     data = json.loads(body)
-    assert data["job_id"] == JOB_ACCEPTED["job_id"] and data["state"] == "JOB_ACCEPTED"
+    # The platform's job record is nested under "job" (exactly what it sent, its live
+    # "type" spelling included); the derived "pending" and the empty "impacted_objects"
+    # are dropped so nothing at the top level can contradict "settled".
+    assert data["job"] == {**JOB_ACCEPTED, "type": "NSO device check sync"}
+    assert "job_id" not in data and "state" not in data and "type" not in data
+    assert "pending" not in data and "impacted_objects" not in data
+    assert "pending" not in data["job"] and "impacted_objects" not in data["job"]
     assert data["action"] == "check-sync" and data["filter"] == {"host_name": "P*"}
     assert data["settled"] is True and data["elapsed_seconds"] == 10
     assert data["matched_total"] == 2 and "next" not in data and "matched_devices" not in data
+    assert list(data)[:2] == ["job", "action"]
     by_name = {d["host_name"]: d for d in data["devices"]}
     assert by_name["PE1"]["verdict"] == "in-sync" and by_name["PE1"]["nso_state"] == "SYNCED"
     assert by_name["PE1"]["nso_timestamp"] == "1757772008"
@@ -751,7 +1125,8 @@ async def test_check_nso_device_sync_wait_zero_returns_pending_with_a_follow_up(
         == "check-sync of 1 device(s): 0 in-sync, 0 out-of-sync, 0 failed, 1 pending (after 0s)."
     )
     data = json.loads(body)
-    assert data["settled"] is False
+    assert data["settled"] is False and data["job"]["state"] == "JOB_ACCEPTED"
+    assert "pending" not in data  # the job's acceptance is not a verdict
     assert data["devices"][0]["verdict"] == "pending"
     assert data["devices"][0]["nso_state"] == "SYNCED"  # the pre-check (cached) reading
     assert data["next"].startswith("Still pending: PE1.")

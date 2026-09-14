@@ -4,8 +4,9 @@ The module is registered directly (not through build_server) so the test does
 not depend on tools/__init__.py's module list. All HTTP is mocked with respx.
 Fixtures mirror the shapes verified live on Crosswork 7.2 (2026-09-13 and
 2026-09-14, see the platform notes "Fault APIs" / "Alarm ordering"): the
-alarms/v1 alarm with AckHist (date-only timestamps) and Notes (epoch ms), the
-event, the lifecycle {state, Message} answers, the alarm/v1 settings,
+alarms/v1 alarm with AckHist (date-only, unordered) and Notes (epoch ms), the
+Cleared alarm whose Description is the clearing event's text (Events newest
+first), the event, the lifecycle {state, Message} answers, the alarm/v1 settings,
 severity-config items, recommended-action and suppression-policy documents,
 and the EMPTY rtm:alarm envelope (com.lastIndex -1, no com.data).
 """
@@ -28,23 +29,29 @@ from cnc_mcp.errors import PlatformError
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import fault
 from cnc_mcp.tools.fault import (
+    ACK_HIST_NOTE,
     ALARM_FETCH_PAGE,
     ALARM_SORTS,
     ALARM_STATES,
     STALE_ALARM_DAYS,
+    ack_hist_lines,
     age_text,
     alarm_criteria,
     alarm_line,
     alarm_markdown,
+    alarm_text,
     canonical,
     check_lifecycle,
     check_query,
     event_count,
+    fault_event,
+    fault_event_label,
     filter_alarms,
     filter_event_types,
     filter_events,
     find_alarm,
     history_stamp,
+    is_cleared,
     is_stale,
     sort_alarms,
     stale_alarm_footer,
@@ -110,9 +117,9 @@ ALARM = {
             "Flagging": False,
         },
     ],
-    # AckHist timestamps are DATE-ONLY strings on the wire (verified live 2026-09-14);
-    # the platform lists the newest day first with same-day entries in chronological
-    # order. Notes carry epoch ms and are listed newest first.
+    # AckHist timestamps are DATE-ONLY strings on the wire and the entries come back
+    # in no stable order (verified live 2026-09-14) — the renderer shows per-day
+    # counts. Notes carry epoch ms and are listed newest first.
     "AckHist": [
         {"CreatedBy": "admin", "Description": "Ack", "Timestamp": "2025-09-13 00:00:00.0"},
         {"CreatedBy": "admin", "Description": "UnAck", "Timestamp": "2025-09-13 00:00:00.0"},
@@ -162,12 +169,15 @@ ALARM_STALE = {
     "Created": "1754580624000",
     "Updated": "1754582426000",
 }
+# A cleared alarm as the platform sends it (verified live 2026-09-14 on all 105 lab
+# alarms): Events newest first, and the top-level Description is the NEWEST event's
+# text — here the CLEARING event's — so the fault lives only in the Major event.
 ALARM_CLEARED = {
     "AlarmId": "a-3",
     "AlarmCategory": "System",
     "State": "Clear",
     "Acknowledge": False,
-    "Description": "Device P1 is unreachable",
+    "Description": "Device P1 is reachable",
     "object_id": "p1",
     "object_description": "Device P1 (p1)",
     "origin_app_id": "capp-infra:DLM",
@@ -176,7 +186,138 @@ ALARM_CLEARED = {
     "events_count": 2,
     "Created": "1757700000000",
     "Updated": "1757760000000",
-    "Events": [],
+    "Events": [
+        {
+            "EventId": "e-9",
+            "EventSeverity": "Clear",
+            "Description": "Device P1 is reachable",
+            "Timestamp": "1757760000000",
+            "EventCategory": "System",
+            "alarm_id": "a-3",
+            "Flagging": False,
+        },
+        {
+            "EventId": "e-8",
+            "EventSeverity": "Major",
+            "Description": "Device P1 is unreachable",
+            "Timestamp": "1757700000000",
+            "EventCategory": "System",
+            "alarm_id": "a-3",
+            "Flagging": False,
+        },
+    ],
+    "AckHist": [],
+    "Notes": [],
+}
+# A cleared pod-health alarm as seen live: events_count 0, no "Events" key, and a
+# Description ("<pod> is healthy.") that no longer says what the fault was.
+ALARM_CLEARED_NO_EVENTS = {
+    "AlarmId": "a-4",
+    "AlarmCategory": "System",
+    "State": "Clear",
+    "Acknowledge": False,
+    "Description": "cwm-solutions-automation-0 is healthy.",
+    "object_id": "cwm-solutions-automation",
+    "object_description": "cwm-solutions-automation-0 health is down.",
+    "origin_app_id": "capp-cwm-solutions",
+    "origin_service_id": "cwm-solutions-automation-0",
+    "event_type": 0,
+    "events_count": 0,
+    "Created": "1754580624000",
+    "Updated": "1754582426000",
+}
+PE2_UUID = "ec35be58-de93-49e5-891b-a1c4a11c72e4"
+# The live NSO-onboarding shape (alarm 6ddc88ed on PE2, read 2026-09-14; dates shifted
+# to the fixture year): Major fault -> Info progress row -> Clear -> Clear (re-clear).
+# The newest NON-Clear event is the Info row "Node was onboarded on NSO.", which is not
+# the fault — the renderers must show the Major text.
+ALARM_CLEARED_INFO = {
+    "AlarmId": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+    "AlarmCategory": "System",
+    "State": "Clear",
+    "Acknowledge": False,
+    "Description": "NSO device is in sync.",
+    "object_id": PE2_UUID,
+    "object_description": f"Device PE2 ({PE2_UUID})",
+    "origin_app_id": "capp-infra:DLM",
+    "origin_service_id": "dlm",
+    "event_type": 1002,
+    "events_count": 4,
+    "Created": "1757751000000",
+    "Updated": "1757825000000",
+    "Events": [
+        {
+            "EventId": "e-14",
+            "EventSeverity": "Clear",
+            "Description": "NSO device is in sync.",
+            "Timestamp": "1757825000000",
+            "EventCategory": "System",
+            "alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+            "Flagging": False,
+        },
+        {
+            "EventId": "e-13",
+            "EventSeverity": "Clear",
+            "Description": "NSO device is in sync.",
+            "Timestamp": "1757751033000",
+            "EventCategory": "System",
+            "alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+            "Flagging": False,
+        },
+        {
+            "EventId": "e-12",
+            "EventSeverity": "Info",
+            "Description": "Node was onboarded on NSO.",
+            "Timestamp": "1757751023000",
+            "EventCategory": "System",
+            "alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+            "Flagging": False,
+        },
+        {
+            "EventId": "e-11",
+            "EventSeverity": "Major",
+            "Description": "Failed to onboard the node on NSO. NSO Reported Error: Node does "
+            "not have a software type yet.",
+            "Timestamp": "1757751000000",
+            "EventCategory": "System",
+            "alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+            "Flagging": False,
+        },
+    ],
+    "AckHist": [],
+    "Notes": [],
+}
+# A cleared alarm with Info events only (live: the "pipeline" alarm d74ea1a5, Info
+# "pipeline health updating: HEALTHY" x13 -> Clear "confirm health"): with no
+# fault-severity event the newest Info event is the best available fault text.
+ALARM_CLEARED_INFO_ONLY = {
+    "AlarmId": "a-info",
+    "AlarmCategory": "System",
+    "State": "Clear",
+    "Acknowledge": False,
+    "Description": "confirm health",
+    "object_id": "pipeline",
+    "object_description": "pipeline",
+    "origin_app_id": "capp-infra",
+    "origin_service_id": "pipeline",
+    "event_type": 0,
+    "events_count": 2,
+    "Created": "1757751100000",
+    "Updated": "1757751200000",
+    "Events": [
+        {
+            "EventId": "e-22",
+            "EventSeverity": "Clear",
+            "Description": "confirm health",
+            "Timestamp": "1757751200000",
+        },
+        {
+            "EventId": "e-21",
+            "EventSeverity": "Info",
+            "Description": "pipeline health updating: HEALTHY",
+            "Timestamp": "1757751100000",
+        },
+    ],
     "AckHist": [],
     "Notes": [],
 }
@@ -474,6 +615,164 @@ def test_alarm_line_and_stale_footer():
     assert two[1].startswith("Stale-alarm check: 2 of the alarms shown have 0 events")
 
 
+def test_fault_event_is_the_newest_fault_severity_event_by_timestamp():
+    """The platform keeps the NEWEST event's text in Description (verified live
+    2026-09-14 on all 105 lab alarms), so a Cleared alarm's fault is the newest
+    fault-severity event — chosen by Timestamp, not list position."""
+    assert fault_event(ALARM_CLEARED)["EventId"] == "e-8"
+    shuffled = {**ALARM_CLEARED, "Events": list(reversed(ALARM_CLEARED["Events"]))}
+    assert fault_event(shuffled)["EventId"] == "e-8"
+    # Several non-Clear events (live: "Fetch ssh keys failed" then "NSO connect ... failed"
+    # then the clear): the newest fault wins, whatever the list order.
+    older_fault = {
+        "EventId": "e-7",
+        "EventSeverity": "Major",
+        "Description": "Fetch ssh keys failed.",
+        "Timestamp": "1757690000000",
+    }
+    many = {**ALARM_CLEARED, "Events": [older_fault, *ALARM_CLEARED["Events"]]}
+    assert fault_event(many)["EventId"] == "e-8"
+    assert fault_event(ALARM_CLEARED_NO_EVENTS) is None
+    only_clear = {**ALARM_CLEARED, "Events": ALARM_CLEARED["Events"][:1]}
+    assert fault_event(only_clear) is None
+    assert fault_event({**ALARM, "Events": [{}, "junk"]}) == {}  # tolerant of odd rows
+    assert is_cleared(ALARM_CLEARED) and is_cleared({"State": " clear "})
+    assert not is_cleared(ALARM) and not is_cleared({})
+
+
+def test_fault_event_skips_info_events():
+    """Live (2026-09-14, alarms 6ddc88ed PE2 / 72395fe4 PCE): Major "Failed to onboard
+    ..." -> Info "Node was onboarded on NSO." -> Clear. The Info row is the newest
+    non-Clear event but NOT the fault — the Major event must win, whatever the list
+    order and whichever severity case the platform uses."""
+    assert fault_event(ALARM_CLEARED_INFO)["EventId"] == "e-11"
+    shuffled = {**ALARM_CLEARED_INFO, "Events": list(reversed(ALARM_CLEARED_INFO["Events"]))}
+    assert fault_event(shuffled)["EventId"] == "e-11"
+    lowered = {
+        **ALARM_CLEARED_INFO,
+        "Events": [
+            {**e, "EventSeverity": e["EventSeverity"].lower()} for e in ALARM_CLEARED_INFO["Events"]
+        ],
+    }
+    assert fault_event(lowered)["EventId"] == "e-11"
+    # Every fault severity beats a newer Info row; the newest fault-severity event wins.
+    for severity in ("Critical", "Minor", "Warning"):
+        alarm = {
+            **ALARM_CLEARED_INFO,
+            "Events": [
+                {**ALARM_CLEARED_INFO["Events"][3], "EventSeverity": severity},
+                *ALARM_CLEARED_INFO["Events"][:3],
+            ],
+        }
+        assert fault_event(alarm)["EventSeverity"] == severity
+    newer_fault = {
+        "EventId": "e-15",
+        "EventSeverity": "Warning",
+        "Description": "Still onboarding.",
+        "Timestamp": "1757751030000",
+    }
+    assert (
+        fault_event({**ALARM_CLEARED_INFO, "Events": [newer_fault, *ALARM_CLEARED_INFO["Events"]]})[
+            "EventId"
+        ]
+        == "e-15"
+    )
+    assert fault_event_label(ALARM_CLEARED_INFO["Events"][3]) == "newest fault-severity event"
+    # Fallback: with no fault-severity event at all (live: Info -> Clear alarms such as
+    # "pipeline health updating: HEALTHY"), the newest Info event is the best there is.
+    assert fault_event(ALARM_CLEARED_INFO_ONLY)["EventId"] == "e-21"
+    assert fault_event_label(ALARM_CLEARED_INFO_ONLY["Events"][1]) == (
+        "newest non-Clear event — no Critical/Major/Minor/Warning event recorded"
+    )
+
+
+def test_alarm_text_renders_the_fault_of_a_cleared_alarm():
+    # Open alarm: Description verbatim (it IS the newest event's text).
+    assert alarm_text(ALARM) == "Device P2 is unreachable"
+    # Cleared with events: "[sev] fault | cleared: <Description>".
+    assert alarm_text(ALARM_CLEARED) == (
+        "[Major] Device P1 is unreachable | cleared: Device P1 is reachable"
+    )
+    # The clearing event repeats the fault text (live: the gluster volume alarms).
+    same = {**ALARM_CLEARED, "Description": "Device P1 is unreachable"}
+    assert alarm_text(same) == "[Major] Device P1 is unreachable | cleared: (same text)"
+    # Cleared pod-health alarm: no Events at all, so the fault is unrecoverable.
+    assert alarm_text(ALARM_CLEARED_NO_EVENTS) == (
+        "cwm-solutions-automation-0 is healthy. | original fault not recorded (0 events)"
+    )
+    only_clear = {**ALARM_CLEARED, "Events": ALARM_CLEARED["Events"][:1], "events_count": 1}
+    assert alarm_text(only_clear) == (
+        "Device P1 is reachable | original fault not recorded (no non-Clear event among 1)"
+    )
+    assert alarm_line(ALARM_CLEARED, NOW) == (
+        "- [Clear] Device P1 (p1) — [Major] Device P1 is unreachable | cleared: Device P1 is "
+        "reachable (a-3, ack=False, events=2, created=2025-09-12T18:00:00Z, "
+        "updated=2025-09-13T10:40:00Z, age=1d)"
+    )
+
+
+def test_alarm_text_names_the_major_fault_not_the_info_row():
+    """The live NSO-onboarding alarms (Major -> Info -> Clear) must render the Major
+    fault: "[Info] Node was onboarded on NSO." hid the real fault before."""
+    assert alarm_text(ALARM_CLEARED_INFO) == (
+        "[Major] Failed to onboard the node on NSO. NSO Reported Error: Node does not have a "
+        "software type yet. | cleared: NSO device is in sync."
+    )
+    assert alarm_line(ALARM_CLEARED_INFO, NOW) == (
+        f"- [Clear] Device PE2 ({PE2_UUID}) — [Major] Failed to onboard the node on NSO. NSO "
+        "Reported Error: Node does not have a software type yet. | cleared: NSO device is in "
+        "sync. (6ddc88ed-d679-4d4d-9c9a-a9f879550fee, ack=False, events=4, "
+        "created=2025-09-13T08:10:00Z, updated=2025-09-14T04:43:20Z, age=1d)"
+    )
+    assert "[Info]" not in alarm_line(ALARM_CLEARED_INFO, NOW)
+    # Detail view: the Fault line is the Major event, labelled as the fault-severity pick.
+    text = alarm_markdown(ALARM_CLEARED_INFO, NOW)
+    assert (
+        "- Fault: [Major] Failed to onboard the node on NSO. NSO Reported Error: Node does "
+        "not have a software type yet. (newest fault-severity event, 2025-09-13T08:10:00Z)"
+    ) in text
+    assert "- Fault: [Info]" not in text
+    # The text filter matches the Major text (cnc_search_alarms text='failed to onboard').
+    assert filter_alarms([ALARM_CLEARED_INFO, ALARM_CLEARED], text="failed to onboard") == [
+        ALARM_CLEARED_INFO
+    ]
+    assert filter_alarms([ALARM_CLEARED_INFO], text="software type yet") == [ALARM_CLEARED_INFO]
+    # Info-only cleared alarm: the Info row is all there is, and the detail view says so.
+    assert alarm_text(ALARM_CLEARED_INFO_ONLY) == (
+        "[Info] pipeline health updating: HEALTHY | cleared: confirm health"
+    )
+    assert (
+        "- Fault: [Info] pipeline health updating: HEALTHY (newest non-Clear event — no "
+        "Critical/Major/Minor/Warning event recorded, 2025-09-13T08:11:40Z)"
+    ) in alarm_markdown(ALARM_CLEARED_INFO_ONLY, NOW)
+
+
+def test_ack_hist_lines_are_per_day_counts_whatever_the_platform_order():
+    """AckHist rows come back in no stable order (verified live 2026-09-14: the same
+    alarm answered UnAck, UnAck, Ack, Ack, UnAck, Ack — two consecutive UnAcks are
+    impossible), so the rendering is a per-day tally that cannot imply a sequence."""
+    rows = [
+        {"CreatedBy": "mcp-admin", "Description": "UnAck", "Timestamp": "2026-09-14 00:00:00.0"},
+        {"CreatedBy": "mcp-admin", "Description": "UnAck", "Timestamp": "2026-09-14 00:00:00.0"},
+        {"CreatedBy": "mcp-admin", "Description": "Ack", "Timestamp": "2026-09-14 00:00:00.0"},
+        {"CreatedBy": "ops", "Description": "Ack", "Timestamp": "2026-09-14 00:00:00.0"},
+        {"CreatedBy": "mcp-admin", "Description": "UnAck", "Timestamp": "2026-09-13 00:00:00.0"},
+        {"CreatedBy": "mcp-admin", "Description": "Ack", "Timestamp": "2026-09-13 00:00:00.0"},
+    ]
+    expected = [
+        "- 2026-09-14 (date only): 2 Ack, 2 UnAck — by mcp-admin, ops",
+        "- 2026-09-13 (date only): 1 Ack, 1 UnAck — by mcp-admin",
+    ]
+    # Identical text whatever order the platform used: newest day first, Ack before UnAck.
+    assert ack_hist_lines(rows) == expected
+    assert ack_hist_lines(list(reversed(rows))) == expected
+    # An epoch-ms stamp (never seen live) is rendered ISO; missing fields degrade to '?'.
+    assert ack_hist_lines([{"Timestamp": "1757753000000"}]) == [
+        "- 2025-09-13T08:43:20Z: 1 ? — by ?"
+    ]
+    assert ack_hist_lines([]) == []
+
+
 def test_canonical_is_case_insensitive_and_blank_is_none():
     assert canonical("critical", ALARM_STATES, "alarm state") == "Critical"
     assert canonical("  MAJOR ", ALARM_STATES, "alarm state") == "Major"
@@ -544,15 +843,24 @@ async def test_get_alarm_pages_open_alarms_first_and_renders_history(settings):
     assert "- Events: 2" in text and "[Major] SNMP timeout (e-1, 2025-09-13T08:00:00Z)" in text
     assert "Stale-alarm check" not in text  # it has events
     assert "## Acknowledgement history (2)" in text
-    assert "(AckHist timestamps are date-only on this platform;" in text
+    assert "(AckHist is a per-day tally only:" in text
+    assert "no stable order" in text and "verified live 2026-09-14" in text
     assert (
         "a note-less ack/un-ack writes the platform note 'Alarm acknowledged' / "
         "'Alarm unacknowledged', an ack with a note stores that note instead."
     ) in text
-    # Date-only stamps are rendered as such (never as a bogus ISO time), list order kept.
-    assert text.index("- 2025-09-13 (date only) admin: Ack") < text.index(
-        "- 2025-09-13 (date only) admin: UnAck"
-    )
+    # The Notes are NOT sold as a complete ack timeline: an accepted ack was observed
+    # live (e564077d, 2026-09-14 03:31Z) leaving no note, so the note says the AckHist
+    # count may exceed the ack notes and that the mechanism is unverified.
+    assert "NOT guaranteed complete" in text
+    assert "alarm e564077d, 2026-09-14 03:31Z" in text
+    assert "AckHist count may exceed its ack notes" in text and "unverified" in text
+    for claim in ("exact and complete", "every accepted", "the ack/un-ack timeline"):
+        assert claim not in text
+    # AckHist is rendered as per-day COUNTS (date-only stamps, never a bogus ISO time),
+    # not as rows: the platform's row order is meaningless (verified live 2026-09-14).
+    assert "- 2025-09-13 (date only): 1 Ack, 1 UnAck — by admin" in text
+    assert "admin: Ack" not in text and "admin: UnAck" not in text
     assert "## Notes (2, newest first, permanent)" in text
     assert text.index("- 2025-09-13T08:45:00Z admin: Alarm unacknowledged") < text.index(
         "- 2025-09-13T08:43:20Z admin: checked by ops"
@@ -578,6 +886,116 @@ def test_alarm_markdown_sorts_notes_newest_first_and_flags_stale_alarms():
     ) in text
     assert "## Acknowledgement history (0)\n- none" in text
     assert "## Notes (0, newest first, permanent)\n- none" in text
+
+
+def test_alarm_markdown_ack_tally_exceeding_the_notes_is_explained():
+    """The live e564077d shape (read 2026-09-14 03:56Z): 3 Ack + 3 UnAck on 09-14 in
+    AckHist against only 2 ack-time notes ('agent test', 'agent2 test') plus 3 'Alarm
+    unacknowledged' — the 03:31:53Z ack (accepted, sent with a note) left no note. The
+    renderer must show both lists as they are and say the Notes may be short."""
+    alarm = {
+        **ALARM,
+        "AlarmId": "e564077d-91ca-49ad-bd29-42701ba9400c",
+        "AckHist": [
+            {"CreatedBy": "mcp-admin", "Description": what, "Timestamp": "2026-09-14 00:00:00.0"}
+            for what in ("UnAck", "UnAck", "Ack", "Ack", "UnAck", "Ack")
+        ],
+        "Notes": [
+            {"CreatedBy": "mcp-admin", "Description": "agent test", "Timestamp": "1789352160494"},
+            {
+                "CreatedBy": "mcp-admin",
+                "Description": "Alarm unacknowledged",
+                "Timestamp": "1789352177848",
+            },
+            {
+                "CreatedBy": "mcp-admin",
+                "Description": "cnc-mcp smoke note",
+                "Timestamp": "1789356713308",
+            },
+            {
+                "CreatedBy": "mcp-admin",
+                "Description": "Alarm unacknowledged",
+                "Timestamp": "1789356713407",
+            },
+            {"CreatedBy": "mcp-admin", "Description": "agent2 test", "Timestamp": "1789357701613"},
+            {
+                "CreatedBy": "mcp-admin",
+                "Description": "Alarm unacknowledged",
+                "Timestamp": "1789357727723",
+            },
+        ],
+    }
+    text = alarm_markdown(alarm, NOW)
+    assert "- 2026-09-14 (date only): 3 Ack, 3 UnAck — by mcp-admin" in text
+    assert "## Notes (6, newest first, permanent)" in text
+    assert text.count("Alarm unacknowledged") == 3 + ACK_HIST_NOTE.count("Alarm unacknowledged")
+    assert "Alarm acknowledged'" in ACK_HIST_NOTE  # the note-less ack fact stays
+    assert "cnc-mcp smoke ack" not in text  # the ack that left nothing
+    # Nothing in the rendering claims the Notes are the complete ack timeline.
+    assert "NOT guaranteed complete" in text
+    assert "exact and complete" not in text and "the ack/un-ack timeline" not in text
+
+
+@respx.mock
+async def test_get_alarm_markdown_shows_the_fault_of_a_cleared_alarm(settings):
+    """A Cleared alarm's Description is the clearing event's text, so the detail view
+    names the fault (newest fault-severity event) on its own line."""
+    mock_all_alarms()
+    text = await call_tool_text(build(settings), "cnc_get_alarm", {"alarm_id": "a-3"})
+    assert "- State: Clear (category System)" in text
+    assert (
+        "- Description: Device P1 is reachable (the clearing event's text — the platform's "
+        "Description is always the newest event's)"
+    ) in text
+    assert (
+        "- Fault: [Major] Device P1 is unreachable (newest fault-severity event, "
+        "2025-09-12T18:00:00Z)"
+    ) in text
+    # Events are listed as sent (newest first).
+    assert text.index("[Clear] Device P1 is reachable (e-9,") < text.index(
+        "[Major] Device P1 is unreachable (e-8,"
+    )
+    assert "Stale-alarm check" not in text
+    # An open alarm keeps the plain Description line.
+    text = await call_tool_text(build(settings), "cnc_get_alarm", {"alarm_id": ALARM_ID})
+    assert "- Description: Device P2 is unreachable\n" in text and "- Fault:" not in text
+
+
+def test_alarm_markdown_cleared_alarm_without_events_says_so():
+    text = alarm_markdown(ALARM_CLEARED_NO_EVENTS, NOW)
+    assert "- Description: cwm-solutions-automation-0 is healthy. (the clearing event" in text
+    assert "- Fault: not recorded (0 events)" in text
+    assert "Stale-alarm check" not in text  # cleared alarms are never flagged stale
+
+
+@respx.mock
+async def test_get_alarm_names_the_major_fault_of_an_nso_onboarding_alarm(settings):
+    """cnc_get_alarm on the live Major -> Info -> Clear shape (6ddc88ed) shows the
+    Major fault, not the Info progress row, in both markdown and (raw) JSON."""
+    mock_all_alarms({"state": "Success", "alarms": [ALARM_CLEARED_INFO, ALARM]})
+    text = await call_tool_text(
+        build(settings), "cnc_get_alarm", {"alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee"}
+    )
+    assert "- Description: NSO device is in sync. (the clearing event's text" in text
+    assert (
+        "- Fault: [Major] Failed to onboard the node on NSO. NSO Reported Error: Node does "
+        "not have a software type yet. (newest fault-severity event, 2025-09-13T08:10:00Z)"
+    ) in text
+    assert "- Fault: [Info]" not in text
+    # The Info row is still listed among the events, newest first.
+    assert (
+        text.index("[Clear] NSO device is in sync. (e-14,")
+        < text.index("[Info] Node was onboarded on NSO. (e-12,")
+        < text.index("software type yet. (e-11,")
+    )
+    data = json.loads(
+        await call_tool_text(
+            build(settings),
+            "cnc_get_alarm",
+            {"alarm_id": "6ddc88ed-d679-4d4d-9c9a-a9f879550fee", "response_format": "json"},
+        )
+    )
+    assert data == ALARM_CLEARED_INFO
 
 
 @respx.mock
@@ -713,10 +1131,14 @@ async def test_search_alarms_filters_sorts_and_caps_client_side(settings):
     lines = [line for line in text.splitlines() if line.startswith("- [")]
     # Newest Updated first: the cleared P1 alarm (Updated 1757760000000) before P2. Every
     # line carries state, ack flag, event count, created/updated ISO and the age (the age
-    # depends on the wall clock, so it is checked by shape only).
+    # depends on the wall clock, so it is checked by shape only). The cleared alarm's
+    # Description is the clearing event's text ("Device P1 is reachable"), so it matched
+    # "UNREACHABLE" through its fault event and the line shows the fault before the
+    # clear text.
     assert len(lines) == 2
     assert lines[0].startswith(
-        "- [Clear] Device P1 (p1) — Device P1 is unreachable (a-3, ack=False, events=2, "
+        "- [Clear] Device P1 (p1) — [Major] Device P1 is unreachable | cleared: Device P1 is "
+        "reachable (a-3, ack=False, events=2, "
         "created=2025-09-12T18:00:00Z, updated=2025-09-13T10:40:00Z, age="
     )
     assert lines[1].startswith(
@@ -726,6 +1148,67 @@ async def test_search_alarms_filters_sorts_and_caps_client_side(settings):
     assert all(line.endswith("d)") for line in lines)  # the fixtures are a year old
     assert "2 shown of 2 matches, 3 fetched, open and cleared, sort updated_desc" in text
     assert "Stale-alarm check" not in text
+
+
+@respx.mock
+async def test_search_alarms_matches_and_renders_cleared_alarms_by_fault_text(settings):
+    body = {"state": "Success", "alarms": [ALARM_CLEARED_NO_EVENTS, ALARM_CLEARED, ALARM]}
+    mock_all_alarms(body)
+    # "reachable" is in the clear text of a-3 and in the fault text of a-3 and P2 —
+    # the cleared pod-health alarm (no Events) does not match.
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"text": "is unreachable", "open_only": False}
+    )
+    lines = [line for line in text.splitlines() if line.startswith("- [")]
+    assert [line.split(", ack=")[0].rsplit("(", 1)[1] for line in lines] == ["a-3", ALARM_ID]
+    # The cleared pod-health alarm renders its clear text and says the fault is gone.
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"state": "clear", "open_only": False}
+    )
+    assert (
+        "- [Clear] cwm-solutions-automation-0 health is down. — cwm-solutions-automation-0 is "
+        "healthy. | original fault not recorded (0 events) (a-4, ack=False, events=0, "
+    ) in text
+    assert "Stale-alarm check" not in text  # cleared, so never flagged stale
+    assert "- [Clear] Device P1 (p1) — [Major] Device P1 is unreachable | cleared: " in text
+
+
+@respx.mock
+async def test_search_alarms_finds_and_renders_the_major_fault_behind_an_info_row(settings):
+    """Live 2026-09-14: cnc_search_alarms(text='failed to onboard', open_only=False)
+    missed the NSO-onboarding alarms because their newest non-Clear event is the Info
+    row "Node was onboarded on NSO." — the Major fault must be matched and rendered."""
+    pce = {
+        **ALARM_CLEARED_INFO,
+        "AlarmId": "72395fe4-fc89-46ce-abf7-5eb030cdf739",
+        "object_description": "Device PCE (73a30c7a-8e61-4b38-afc8-f2ac88537ee0)",
+        "Updated": "1757751040000",
+    }
+    mock_all_alarms(
+        {"state": "Success", "alarms": [ALARM_CLEARED_INFO_ONLY, pce, ALARM_CLEARED_INFO, ALARM]}
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"text": "failed to onboard", "open_only": False}
+    )
+    lines = [line for line in text.splitlines() if line.startswith("- [")]
+    assert [line.split(", ack=")[0].rsplit("(", 1)[1] for line in lines] == [
+        "6ddc88ed-d679-4d4d-9c9a-a9f879550fee",
+        "72395fe4-fc89-46ce-abf7-5eb030cdf739",
+    ]
+    assert (
+        f"- [Clear] Device PE2 ({PE2_UUID}) — [Major] Failed to onboard the node on NSO. NSO "
+        "Reported Error: Node does not have a software type yet. | cleared: NSO device is in "
+        "sync. (6ddc88ed-"
+    ) in text
+    assert "[Info] Node was onboarded on NSO." not in text
+    # The Info-only cleared alarm keeps its Info row as the (only available) fault text.
+    text = await call_tool_text(
+        build(settings), "cnc_search_alarms", {"state": "clear", "open_only": False}
+    )
+    assert (
+        "- [Clear] pipeline — [Info] pipeline health updating: HEALTHY | cleared: confirm "
+        "health (a-info, ack=False, events=2, "
+    ) in text
 
 
 @respx.mock
@@ -1316,6 +1799,55 @@ async def test_alarm_tool_docstrings_state_the_verified_facts(make_settings):
     assert '"Alarm acknowledged" / "Alarm unacknowledged"' in tools["cnc_get_alarm"]
     ack = tools["cnc_acknowledge_alarm"]
     assert "PERMANENT RESIDUE" in ack and "Alarm unacknowledged" in ack and "DATE-ONLY" in ack
+    # AckHist order is unstable live (agent round 2026-09-14): no tool may call it
+    # chronological; the Notes' epoch-ms timestamps date the calls that left a note.
+    for doc in (tools["cnc_get_alarm"], ack):
+        assert "chronolog" not in doc.lower() and "UNORDERED" in doc
+        assert "no stable order" in " ".join(doc.split()) and "Notes" in doc
+    assert "per-day counts" in tools["cnc_get_alarm"]
+    # The Notes are NOT claimed to be a complete ack timeline: an accepted ack was
+    # observed live (e564077d, 2026-09-14 03:31Z) leaving no note, and the mechanism
+    # is unverified — both docstrings say so and neither asserts completeness.
+    for doc in (tools["cnc_get_alarm"], ack):
+        flat = " ".join(doc.split())
+        assert "e564077d" in flat and "2026-09-14 03:31Z" in flat and "UNVERIFIED" in flat
+        assert "AckHist" in flat and "may exceed" in flat and "write-phase smoke" in flat
+        for claim in (
+            "are complete",
+            "exact and complete",
+            "every accepted call leaves",
+            "every accepted ack/un-ack leaves",
+            "no note-free ack",
+            "the ack/un-ack timeline",
+        ):
+            assert claim not in flat
+    assert "NOT a complete ack timeline" in " ".join(tools["cnc_get_alarm"].split())
+    # A Cleared alarm's Description is the clearing event's text: both listings and the
+    # detail view say so and render the fault — the newest FAULT-SEVERITY event, never
+    # an Info row (live: the NSO-onboarding alarms' "Node was onboarded on NSO.").
+    for name in ("cnc_search_alarms", "cnc_get_alarm"):
+        flat = " ".join(tools[name].split())
+        assert "CLEARED ALARMS" in flat and "verified live 2026-09-14" in flat
+        assert "newest fault-severity event" in flat and "CLEARING event's text" in flat
+        assert "Critical/Major/Minor/Warning" in flat and "Info" in flat
+        assert "Node was onboarded on NSO." in flat
+        assert "newest non-Clear event" not in flat
+    assert "| cleared: " in " ".join(search.split())
+    assert "original fault not recorded (0 events)" in " ".join(search.split())
+    # Page-size naming is kept stable (agents' schemas) but spelled out: 'limit' is the
+    # page size of the paged alarm tools and a plain cap in the search tool.
+    schema = {t.name: t.input_schema for t in await writable(make_settings).list_tools()}
+    for name in ("cnc_list_events", "cnc_list_device_alarms", "cnc_list_event_types"):
+        assert "this tool's page size" in schema[name]["properties"]["limit"]["description"]
+        assert "page_size" not in schema[name]["properties"]
+    search_limit = schema["cnc_search_alarms"]["properties"]["limit"]["description"]
+    assert (
+        "not a page size" in search_limit
+        and "page" not in schema["cnc_search_alarms"]["properties"]
+    )
+    assert "limit (this tool's page size" in " ".join(tools["cnc_list_events"].split())
+    assert "limit (this tool's page size" in " ".join(tools["cnc_list_device_alarms"].split())
+    assert "NOT a page size" in " ".join(search.split())
     # A note-less ack stores the platform note 'Alarm acknowledged' (observed live);
     # the old "unverified (every live ack carried one)" claim is gone.
     assert "Alarm acknowledged" in ack and "with a note only that note is stored" in ack

@@ -76,7 +76,14 @@ wire as given (no topology read — the fast path every existing caller took);
 anything else is looked up in the topology's ``networks`` collection (one
 GET) and refused client-side with "no node 'X' in the topology" when unknown,
 before any NBI call. The RSVP-TE tunnel tools still take router-ids only
-(nothing was available live to verify them with).
+(nothing was available live to verify them with). The nodes read for that
+resolution double as the router-id -> host name map (:func:`router_id_names`
+— a topology node carries both ``node-id`` = host name and its router-ids, so
+no inventory call is needed), and the SR policy headers / rows then read
+``PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100`` (agent findings round 2, 2026-
+09-14: with the names as inputs the tools still printed router-ids only, and
+the agent kept its own name map). No request is made just to decorate a
+router-id-only call.
 
 Origin vs delegation (agent scenario 3). Two independent flags describe an SR
 policy: ``policy-details.pcep-info.pcep-flag-c`` says WHO INSTANTIATED it
@@ -393,40 +400,92 @@ async def fetch_topology_nodes(client: ApiClient, network: str) -> list[dict[str
     )
 
 
-async def resolve_router_ids(
+async def resolve_router_ids_and_nodes(
     client: ApiClient, network: str, *names: str | None
-) -> list[str | None]:
-    """Each name -> its TE router-id; ``None`` and IP literals pass through untouched.
+) -> tuple[list[str | None], list[dict[str, Any]] | None]:
+    """Each name -> its TE router-id, plus the topology nodes read to resolve them.
 
-    The topology is read at most once, and only when some name is not an IP
-    literal — so a caller passing router-ids (the form every key uses on the
-    wire) costs no extra request, exactly as before host names were accepted.
-    A host name that is unknown, or a node without a router-id, raises
-    PlatformError (:func:`node_router_id`) before anything else is sent.
+    ``None`` and IP literals pass through untouched. The topology is read at
+    most once, and only when some name is not an IP literal — so a caller
+    passing router-ids (the form every key uses on the wire) costs no extra
+    request, exactly as before host names were accepted; the nodes are then
+    ``None``. When it WAS read, the nodes come back too, so the caller can
+    render host names next to router-ids (:func:`router_id_names`) without
+    a second request. A host name that is unknown, or a node without a
+    router-id, raises PlatformError (:func:`node_router_id`) before anything
+    else is sent.
     """
     cleaned = [name.strip() if isinstance(name, str) and name.strip() else None for name in names]
     if all(value is None or is_ip_address(value) for value in cleaned):
-        return cleaned
+        return cleaned, None
     nodes = await fetch_topology_nodes(client, network)
-    return [
+    resolved = [
         value if value is None or is_ip_address(value) else node_router_id(nodes, value)
         for value in cleaned
     ]
+    return resolved, nodes
+
+
+async def resolve_router_ids(
+    client: ApiClient, network: str, *names: str | None
+) -> list[str | None]:
+    """Each name -> its TE router-id (:func:`resolve_router_ids_and_nodes` without the nodes)."""
+    resolved, _nodes = await resolve_router_ids_and_nodes(client, network, *names)
+    return resolved
 
 
 async def resolve_policy_ends(
     client: ApiClient, network: str, headend: str, endpoint: str
-) -> tuple[str, str]:
-    """``(headend router-id, endpoint router-id)`` for a policy key; blank names are refused
-    before anything is read."""
+) -> tuple[str, str, dict[str, str]]:
+    """``(headend router-id, endpoint router-id, router-id -> host name)`` for a policy key.
+
+    Blank names are refused before anything is read. The name map is built
+    from the topology nodes the resolution read (:func:`router_id_names`);
+    it is empty when both ends were router-ids (no topology read — the fast
+    path), so the labels then show router-ids only.
+    """
     if not headend.strip() or not endpoint.strip():
         raise PlatformError(f"headend and endpoint must not be blank: give {_NODE_HELP}.")
-    head, end = await resolve_router_ids(client, network, headend, endpoint)
-    return str(head), str(end)
+    (head, end), nodes = await resolve_router_ids_and_nodes(client, network, headend, endpoint)
+    return str(head), str(end), router_id_names(nodes)
 
 
-def end_label(given: str, router_id: str) -> str:
-    """``PE2 (10.0.0.3)`` when a host name was resolved, else the router-id alone."""
+def router_id_names(nodes: list[dict[str, Any]] | None) -> dict[str, str]:
+    """``{router-id: node-id}`` for every topology node carrying router-ids.
+
+    The topology node record already carries both spellings — ``node-id`` is
+    the inventory host name and ``l3-node-attributes.router-id[]`` the TE
+    loopbacks — so a name map costs no inventory call. ``{}`` for ``None``
+    (no topology was read) or nodes without SR data.
+    """
+    names: dict[str, str] = {}
+    for node in nodes or []:
+        name = node_id_of(node)
+        if not name or name == "?":
+            continue
+        for router_id in router_ids(node_l3(node)):
+            names.setdefault(str(router_id), name)
+    return names
+
+
+def node_text(router_id: Any, names: dict[str, str] | None = None) -> str:
+    """``PE2 (10.0.0.3)`` when the router-id's host name is known, else the router-id alone."""
+    text = "?" if router_id is None else str(router_id)
+    name = (names or {}).get(text)
+    if name and name.lower() != text.lower():
+        return f"{name} ({text})"
+    return text
+
+
+def end_label(given: str, router_id: str, names: dict[str, str] | None = None) -> str:
+    """``PE2 (10.0.0.3)`` when the host name is known, else the router-id alone.
+
+    The topology's own node id wins (:func:`node_text`, exact spelling for
+    cnc_get_topology_node); without a name map the spelling the caller gave
+    is used, so a resolved host name still shows next to its router-id.
+    """
+    if names and router_id in names:
+        return node_text(router_id, names)
     if given.strip().lower() != router_id.lower():
         return f"{given.strip()} ({router_id})"
     return router_id
@@ -582,9 +641,10 @@ def policy_origin_line(policy: dict[str, Any]) -> str:
     return line
 
 
-def policy_key_text(policy: dict[str, Any]) -> str:
+def policy_key_text(policy: dict[str, Any], names: dict[str, str] | None = None) -> str:
+    """``PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100`` with a name map, else router-ids only."""
     return (
-        f"{policy.get('headend', '?')} -> {policy.get('endpoint', '?')} "
+        f"{node_text(policy.get('headend'), names)} -> {node_text(policy.get('endpoint'), names)} "
         f"color {policy.get('color', '?')}"
     )
 
@@ -720,12 +780,12 @@ def _metric_text(path: dict[str, Any]) -> str:
     return f"{metric.get('metric-type', '?')}:{metric.get('metric-value', '?')}"
 
 
-def sr_policy_line(policy: dict[str, Any]) -> str:
-    """One markdown line per SR policy (the list view)."""
+def sr_policy_line(policy: dict[str, Any], names: dict[str, str] | None = None) -> str:
+    """One markdown line per SR policy (the list view); ``names`` adds host names to the key."""
     details = policy_details(policy)
     paths = policy_paths(policy)
     head = (
-        f"- **{policy_key_text(policy)}** admin={policy.get('admin-state', '?')} "
+        f"- **{policy_key_text(policy, names)}** admin={policy.get('admin-state', '?')} "
         f"oper={policy.get('oper-state', '?')} type={policy.get('sr-policy-type', '?')} "
         f"bsid={details.get('binding-sid', '-')} origin={policy_origin(policy)} "
         f"pce-controlled={as_bool(details.get('pce-controlled'))} "
@@ -770,10 +830,11 @@ def _path_lines(path: dict[str, Any]) -> list[str]:
     return lines
 
 
-def sr_policy_markdown(policy: dict[str, Any]) -> str:
+def sr_policy_markdown(policy: dict[str, Any], names: dict[str, str] | None = None) -> str:
+    """The full markdown for one SR policy; ``names`` adds host names to the header key."""
     details = policy_details(policy)
     lines = [
-        f"# SR policy {policy_key_text(policy)}",
+        f"# SR policy {policy_key_text(policy, names)}",
         "",
         f"- admin-state={policy.get('admin-state', '?')} "
         f"oper-state={policy.get('oper-state', '?')} type={policy.get('sr-policy-type', '?')} "
@@ -1331,11 +1392,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ``(headend, endpoint, color)`` where headend/endpoint are the TE
         router-ids (loopbacks such as ``10.0.0.1``). The headend/endpoint
         filters accept a host name too (resolved through the topology, one
-        extra GET; a router-id costs nothing extra). An empty answer (``{}``)
-        is a normal result ("No SR policies are reported"), not an error —
-        check the SR-PCE provider (cnc_list_providers) and the PCC's PCEP
-        session (``node-pcep-sessions`` in the topology) when policies are
-        expected.
+        extra GET; a router-id costs nothing extra). When a host name was
+        given, the topology nodes that resolved it also supply a router-id ->
+        host name map, and the header and every row then read ``PE2
+        (10.0.0.3) -> PE1 (10.0.0.1) color 100`` (the node ids are the exact
+        keys for cnc_get_topology_node); with router-id filters only, or no
+        filter, nothing extra is read and the rows show router-ids alone. An
+        empty answer (``{}``) is a normal result ("No SR policies are
+        reported"), not an error — check the SR-PCE provider
+        (cnc_list_providers) and the PCC's PCEP session
+        (``node-pcep-sessions`` in the topology) when policies are expected.
 
         Origin vs delegation (two independent flags, verified live):
         ``policy-details.pcep-info.pcep-flag-c`` says who instantiated the
@@ -1354,13 +1420,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             oper_state: 'UP' | 'DOWN' (case-insensitive).
             pce_controlled: delegated-to-PCE filter.
             network: topology network id host names are resolved in.
-            response_format: markdown (one line per policy: key, admin/oper
-                state, type, binding SID, origin, pce-controlled, PCC
-                address, then the active path — the operationally-UP path of
-                highest preference, else the first — with its name,
-                preference, type, metric, hops as
+            response_format: markdown (one line per policy: key — with host
+                names next to the router-ids when a host-name filter was
+                given — admin/oper state, type, binding SID, origin,
+                pce-controlled, PCC address, then the active path — the
+                operationally-UP path of highest preference, else the first
+                — with its name, preference, type, metric, hops as
                 ``<label>(<sid-type>/<address>)`` and the last update time)
-                or json (the raw ``policy`` entries).
+                or json (the raw ``policy`` entries, router-ids only).
 
         Returns:
             str: Markdown, or JSON {"count": int, "total": int (before the
@@ -1381,7 +1448,12 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         """
         try:
             state = normalize_oper_state(oper_state)
-            head_key, end_key = await resolve_router_ids(client, network, headend, endpoint)
+            (head_key, end_key), nodes = await resolve_router_ids_and_nodes(
+                client, network, headend, endpoint
+            )
+            # Host names are known only when the topology was read to resolve one (no
+            # extra request is made just to decorate router-ids — the fast path stays).
+            names = router_id_names(nodes)
             policies = await get_container(SR_POLICIES_URL, SR_POLICY_MODULE, "policy")
             filters = {
                 "headend": head_key,
@@ -1389,6 +1461,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "color": color,
                 "oper_state": state,
                 "pce_controlled": pce_controlled,
+            }
+            shown = {
+                **filters,
+                "headend": None if head_key is None else node_text(head_key, names),
+                "endpoint": None if end_key is None else node_text(end_key, names),
             }
             matched = [
                 p
@@ -1417,20 +1494,30 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     "them (PCEP report-all).",
                     settings,
                 )
-            lines = [f"# SR policies ({len(matched)} of {len(policies)}, {_filter_text(filters)})"]
+            lines = [f"# SR policies ({len(matched)} of {len(policies)}, {_filter_text(shown)})"]
             lines.append("")
             if not matched:
                 lines.append(
-                    f"No SR policies match the filter ({_filter_text(filters)}); "
+                    f"No SR policies match the filter ({_filter_text(shown)}); "
                     f"{len(policies)} are reported in total."
                 )
-            lines.extend(sr_policy_line(p) for p in matched)
+            lines.extend(sr_policy_line(p, names) for p in matched)
+            if names:
+                key_note = (
+                    "Keys are (headend, endpoint, color); host names are shown next to the TE "
+                    "router-ids the wire uses ('PE2 (10.0.0.3)') and the get tools accept either"
+                )
+            else:
+                key_note = (
+                    "Keys are (headend, endpoint, color) with headend/endpoint the TE router-ids "
+                    "(the get tools accept host names too, and a host-name filter here shows "
+                    "host names next to the router-ids)"
+                )
             lines.extend(
                 [
                     "",
-                    "Keys are (headend, endpoint, color) with headend/endpoint the TE router-ids "
-                    "(the get tools accept host names too); cnc_get_sr_policy shows every "
-                    "candidate path, cnc_get_sr_policy_performance_metrics the PM entry. "
+                    f"{key_note}; cnc_get_sr_policy shows every candidate path, "
+                    "cnc_get_sr_policy_performance_metrics the PM entry. "
                     f"{_ORIGIN_RULE[0].upper()}{_ORIGIN_RULE[1:]}.",
                 ]
             )
@@ -1471,10 +1558,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         as cnc_create_sr_policy / cnc_delete_sr_policy: a host name is looked
         up in the topology's ``networks`` collection, one extra GET, and an
         unknown one is refused client-side as "no node 'X' in the topology";
-        a router-id goes on the wire as given, no lookup). A policy exists
-        here only while the SR-PCE gRPC feed is up and the head-end PCC
-        reports it (PCEP ``report-all``). The answer is re-checked on its key
-        fields client-side. A missing policy answers 409 ``data-missing`` and
+        a router-id goes on the wire as given, no lookup). When a host name
+        was given, the topology nodes that resolved it also supply the
+        router-id -> host name map, so the header reads ``# SR policy PE2
+        (10.0.0.3) -> PE1 (10.0.0.1) color 100`` for BOTH ends (the node ids
+        are the exact keys for cnc_get_topology_node); with router-ids only
+        nothing extra is read and the header shows router-ids alone. A
+        policy exists here only while the SR-PCE gRPC feed is up and the
+        head-end PCC reports it (PCEP ``report-all``). The answer is
+        re-checked on its key fields client-side. A missing policy answers 409 ``data-missing`` and
         is reported as "Error: no SR policy ..."; should a non-IP key still
         reach the NBI it answers 400 ``invalid-value`` (verified live) and is
         reported with the key rule.
@@ -1513,8 +1605,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             policy).
         """
         try:
-            head_key, end_key = await resolve_policy_ends(client, network, headend, endpoint)
-            label = f"{end_label(headend, head_key)} -> {end_label(endpoint, end_key)}"
+            head_key, end_key, names = await resolve_policy_ends(client, network, headend, endpoint)
+            label = (
+                f"{end_label(headend, head_key, names)} -> {end_label(endpoint, end_key, names)}"
+            )
             missing = PlatformError(
                 f"no SR policy {label} color {color} is reported by the "
                 f"SR-PCE feed. {_KEY_RULE}, and {_FEED_RULE}; list the known policies with "
@@ -1529,7 +1623,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             )
             if response_format is ResponseFormat.JSON:
                 return finalize(to_json(policy), settings)
-            return finalize(sr_policy_markdown(policy), settings)
+            return finalize(sr_policy_markdown(policy, names), settings)
         except Exception as e:
             return format_error(e)
 
@@ -1935,10 +2029,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             "Error: ..." on any other API failure.
         """
         try:
-            head_key, end_key = await resolve_policy_ends(client, network, headend, endpoint)
+            head_key, end_key, names = await resolve_policy_ends(client, network, headend, endpoint)
             title = (
-                f"SR policy {end_label(headend, head_key)} -> {end_label(endpoint, end_key)} "
-                f"color {color}"
+                f"SR policy {end_label(headend, head_key, names)} -> "
+                f"{end_label(endpoint, end_key, names)} color {color}"
             )
             missing = PlatformError(
                 f"no performance metrics for {title} — the policy must exist under that exact "

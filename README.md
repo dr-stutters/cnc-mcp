@@ -21,7 +21,7 @@ analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**236 tools** (175 read, 61 write) over 24 API areas. Every tool was built from
+**237 tools** (176 read, 61 write) over 24 API areas. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -84,7 +84,7 @@ Read tools — always registered:
 | **SR-TE operations** (Optimization Engine) | `cnc_list_sr_policies_on_nodes` · `cnc_list_sr_policies_on_interface` · `cnc_get_sr_policy_routes` · `cnc_get_sr_policy_metrics` · `cnc_preview_sr_policy_route` · `cnc_dryrun_sr_policy` · `cnc_get_sr_policy_path_notification_state` · `cnc_wait_for_sr_policy_oper_state` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
 | **Data Gateway** | `cnc_list_data_gateways` · `cnc_get_data_gateway` · `cnc_list_data_gateway_pools` · `cnc_get_data_gateway_load_metrics` · `cnc_list_data_gateway_outages` · `cnc_get_data_gateway_health` · `cnc_get_data_gateway_global_parameters` · `cnc_list_data_destinations` · `cnc_list_data_gateway_files` |
-| **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_check_nso_device_sync` · `cnc_wait_for_device_nso_state` |
+| **NSO** | `cnc_is_nso_configured` · `cnc_get_nso_policy` · `cnc_list_nso_devices` · `cnc_get_nso_device` · `cnc_check_device_nso_state` · `cnc_check_nso_device_sync` · `cnc_get_nso_device_config` · `cnc_wait_for_device_nso_state` |
 | **Inventory extras** | `cnc_get_device_summary` · `cnc_get_inventory_config` · `cnc_get_collection_cadence` · `cnc_get_device_tags` |
 | **Fault** | `cnc_get_alarm` · `cnc_search_alarms` · `cnc_list_events` · `cnc_list_device_alarms` · `cnc_get_alarm_settings` · `cnc_get_alarm_manager_settings` · `cnc_list_event_types` · `cnc_get_event_type_recommendation` · `cnc_list_alarm_suppression_policies` |
 | **Device configuration** | `cnc_get_device_config_preferences` · `cnc_list_device_backups` · `cnc_get_device_backup` · `cnc_list_config_backup_jobs` · `cnc_get_config_backup_job` · `cnc_list_config_templates` · `cnc_get_config_template` · `cnc_list_template_deployments` · `cnc_get_template_deployment` · `cnc_wait_for_config_backup_job` · `cnc_wait_for_template_deployment` |

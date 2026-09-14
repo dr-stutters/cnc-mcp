@@ -937,6 +937,17 @@ async def test_list_microservices_pages_client_side(settings):
     assert data["page"] == 1 and data["page_size"] == 2
     assert data["has_more"] is True and data["next_page"] == 2
     assert [r["Name"] for r in data["items"]] == ["pod-002", "pod-003"]
+    # Page-based only: the envelope carries exactly the documented keys, no offset pair.
+    assert set(data) == {
+        "total",
+        "count",
+        "page",
+        "page_size",
+        "has_more",
+        "next_page",
+        "collection_total",
+        "items",
+    }
 
     text = await call_tool_text(
         build(settings), "cnc_list_microservices", {"app_id": "capp-coe", "page_size": 2}
@@ -960,6 +971,17 @@ async def test_list_microservices_pages_client_side(settings):
     )
     assert not text.startswith("Error:")
     assert "Page 7 is past the end: 5 microservices for application capp-coe fill pages 0-2" in text
+
+
+async def test_list_microservices_documents_container_age_and_page_keys(make_settings):
+    """up_time is container age (a health-down episode does not reset it — observed live
+    2026-09-14) and the JSON envelope is documented as page-based only."""
+    tools = {t.name: t for t in await build(make_settings(enable_writes=True)).list_tools()}
+    listing = tools["cnc_list_microservices"].description or ""
+    assert "CONTAINER AGE" in listing
+    assert "A health=down episode therefore leaves" in listing
+    assert "no offset/next_offset" in listing
+    assert "never resets it" in (tools["cnc_restart_microservice"].description or "")
 
 
 @respx.mock

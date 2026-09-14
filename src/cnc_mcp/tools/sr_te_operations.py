@@ -2225,8 +2225,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         confirmed a delete or is waiting on a key that never existed (a
         typo'd color, swapped ends — the NBI answers the same 409 for both,
         verified live on a color that never existed), so the two are worded
-        apart ("was reported, then withdrawn" vs "was not reported at any
-        poll ... check the key with cnc_list_sr_policies").
+        apart: "was reported, then withdrawn" when a poll saw it, else "is
+        ABSENT: not reported at any poll" — which is the NORMAL success right
+        after a fast withdrawal (verified live, agent findings round 2: the
+        head-end withdrew within one poll interval), so it is not a warning:
+        if it follows a cnc_delete_sr_policy that answered ``reported: true``
+        (the policy existed when the delete was sent) the policy is confirmed
+        withdrawn (converged); only when the policy was expected to exist
+        should the key be verified with cnc_list_sr_policies.
 
         A timeout is NOT an error: the tool reports the last observed state
         and a hint that depends on the target, on the last state and on
@@ -2251,9 +2257,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: On success: "SR policy <key> is UP after Ns." — or, for
             ABSENT, "SR policy <key> was reported, then withdrawn (ABSENT)
-            after Ns." when a poll had reported it, else "SR policy <key> was
-            not reported at any poll (ABSENT) — if you expected it to exist,
-            check the key with cnc_list_sr_policies." — plus a JSON summary
+            after Ns." when a poll had reported it, else "SR policy <key> is
+            ABSENT: not reported at any poll after Ns. If this follows a
+            cnc_delete_sr_policy that answered reported: true, the policy is
+            confirmed withdrawn (converged); if you expected it to exist,
+            verify the key with cnc_list_sr_policies." — plus a JSON summary
             ({"reported": true, "seen_during_wait": true, "headend",
             "endpoint", "color", "admin_state", "oper_state",
             "sr_policy_type", "pce_controlled", "pcep_flag_c",
@@ -2308,8 +2316,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     )
                 else:
                     head_line = (
-                        f"SR policy {label} was not reported at any poll (ABSENT) — if you "
-                        "expected it to exist, check the key with cnc_list_sr_policies."
+                        f"SR policy {label} is ABSENT: not reported at any poll after "
+                        f"{elapsed:.0f}s. If this follows a cnc_delete_sr_policy that answered "
+                        "reported: true, the policy is confirmed withdrawn (converged); if you "
+                        "expected it to exist, verify the key with cnc_list_sr_policies."
                     )
             else:
                 current = (

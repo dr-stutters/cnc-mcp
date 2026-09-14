@@ -366,6 +366,127 @@ async def test_list_alarms_criteria_string_and_markdown(settings):
 
 
 @respx.mock
+async def test_list_alarms_renders_the_fault_of_a_cleared_alarm(settings):
+    """A Cleared alarm's top-level Description is the CLEARING event's text (the
+    platform keeps the newest event's text there; Events newest first — verified
+    live 2026-09-14), so the shared line shows the newest fault-severity event as
+    the fault before it (an Info row is never picked over a Major one), and a
+    cleared alarm without Events says the fault is gone."""
+    cleared = {
+        **ALARM,
+        "AlarmId": "a-clr",
+        "State": "Clear",
+        "Description": "Device PE1 reachable",
+        "Events": [
+            {
+                "EventId": "e-3",
+                "EventSeverity": "Clear",
+                "Description": "Device PE1 reachable",
+                "Timestamp": "1789212925000",
+            },
+            {
+                "EventId": "e-2",
+                "EventSeverity": "Major",
+                "Description": "Device PE1 unreachable",
+                "Timestamp": "1789212325000",
+            },
+        ],
+    }
+    no_events = {
+        **ALARM,
+        "AlarmId": "a-pod",
+        "State": "Clear",
+        "Description": "cwm-api-service is healthy.",
+        "object_id": "cwm-api-service health is down.",
+        "events_count": 0,
+    }
+    del no_events["Events"]
+    # The live NSO-onboarding shape (alarm 6ddc88ed, 2026-09-14): Major -> Info -> Clear.
+    # The newest non-Clear event is the Info row, but the fault is the Major event.
+    onboarding = {
+        **ALARM,
+        "AlarmId": "a-nso",
+        "State": "Clear",
+        "Description": "NSO device is in sync.",
+        "events_count": 3,
+        "Events": [
+            {
+                "EventId": "e-6",
+                "EventSeverity": "Clear",
+                "Description": "NSO device is in sync.",
+                "Timestamp": "1789245038458",
+            },
+            {
+                "EventId": "e-5",
+                "EventSeverity": "Info",
+                "Description": "Node was onboarded on NSO.",
+                "Timestamp": "1789245028663",
+            },
+            {
+                "EventId": "e-4",
+                "EventSeverity": "Major",
+                "Description": "Failed to onboard the node on NSO. NSO Reported Error: Node "
+                "does not have a software type yet.",
+                "Timestamp": "1789245005328",
+            },
+        ],
+    }
+    route = respx.post(ALARMS_URL).mock(
+        return_value=httpx.Response(
+            200, json={"state": "Success", "alarms": [cleared, no_events, onboarding]}
+        )
+    )
+    text = await call_tool_text(make_server(settings), "cnc_list_alarms", {"open_only": False})
+    assert json.loads(route.calls[0].request.content)["openAlarmsOnly"] is False
+    assert (
+        "- [Clear] n-1 — [Major] Device PE1 unreachable | cleared: Device PE1 reachable "
+        "(a-clr, ack=False, events=2, "
+    ) in text
+    assert (
+        "- [Clear] cwm-api-service health is down. — cwm-api-service is healthy. | original "
+        "fault not recorded (0 events) (a-pod, ack=False, events=0, "
+    ) in text
+    assert (
+        "- [Clear] n-1 — [Major] Failed to onboard the node on NSO. NSO Reported Error: Node "
+        "does not have a software type yet. | cleared: NSO device is in sync. (a-nso, "
+        "ack=False, events=3, "
+    ) in text
+    assert "[Info] Node was onboarded on NSO." not in text
+    assert "Stale-alarm check" not in text  # cleared alarms are never flagged stale
+    # The docstring states the rule the agent must expect.
+    doc = " ".join(
+        next(
+            t.description
+            for t in await make_server(settings).list_tools()
+            if t.name == "cnc_list_alarms"
+        ).split()
+    )
+    assert "newest fault-severity event" in doc and "Node was onboarded on NSO." in doc
+    assert "newest non-Clear event" not in doc
+    # JSON stays the raw platform alarm: Description is the clear text, Events carry the fault.
+    text = await call_tool_text(
+        make_server(settings), "cnc_list_alarms", {"open_only": False, "response_format": "json"}
+    )
+    item = json.loads(text)["items"][0]
+    assert item["Description"] == "Device PE1 reachable"
+    assert item["Events"][1]["Description"] == "Device PE1 unreachable"
+
+
+async def test_list_alarms_docstring_and_limit_are_spelled_out(settings):
+    """The page-size argument is named 'limit' (the criteria's own word) and stays so
+    for agents' schemas; the description and docstring say it is the page size."""
+    tools = {t.name: t for t in await make_server(settings).list_tools()}
+    tool = tools["cnc_list_alarms"]
+    limit = tool.input_schema["properties"]["limit"]
+    assert "this tool's page size" in limit["description"] and limit["default"] == 20
+    assert "page_size" not in tool.input_schema["properties"]
+    flat = " ".join((tool.description or "").split())
+    assert "limit (this tool's page size) / page (0-based page number)" in flat
+    assert "CLEARED ALARMS" in flat and "CLEARING event's text" in flat
+    assert "| cleared: " in flat and "original fault not recorded (0 events)" in flat
+
+
+@respx.mock
 async def test_list_alarms_sorts_per_page_and_refuses_unknown_sort(settings):
     older = {**ALARM, "AlarmId": "a-old", "Created": "1789212000000", "Updated": "1789212000000"}
     newer = {**ALARM, "AlarmId": "a-new", "Created": "1789213000000", "Updated": "1789212500000"}

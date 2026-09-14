@@ -20,21 +20,54 @@ Facts added from the 2026-09-14 agent round (read live, read-only):
   came back with Timestamp strictly descending within each page and across the
   page boundaries (2026-09-13T23:46:54Z ... 12:12:55Z) — page 0 holds the
   newest events. This is an observation, not an API contract.
-- **AckHist timestamps are date-only strings** (``"2026-09-14 00:00:00.0"``,
-  not epoch ms); the list came back newest DAY first with same-day entries in
-  chronological order (Ack, UnAck, Ack, UnAck for two days of ack/un-ack), so
-  the exact sequence within a day cannot be recovered from the timestamps.
-  ``Notes`` carry epoch-ms timestamps and are newest-first — they are the
-  reliable timeline. An ack WITHOUT a note makes the platform append the note
-  ``"Alarm acknowledged"`` and a note-less un-ack the note ``"Alarm
-  unacknowledged"`` (``CreatedBy`` = the acting user); an ack WITH a note
-  stores only that note. Observed on the 2026-09-13 scout alarm (read back
-  2026-09-14): Notes 'cnc-mcp scout ack' -> 'Alarm unacknowledged' -> 'Alarm
-  acknowledged' -> 'Alarm unacknowledged' -> 'cnc-mcp scout clear' against
-  AckHist Ack/UnAck/Ack/UnAck, and no script or test ever sent the text
-  'Alarm acknowledged'. Whether an un-ack WITH a note also stores the
-  platform note is unverified (every live un-ack was note-less). Neither
-  AckHist entries nor notes can be deleted (no API).
+- **AckHist is a date-only, UNORDERED tally** (``Timestamp`` ``"2026-09-14
+  00:00:00.0"``, not epoch ms). The entries come back in no stable order: the
+  same alarm answered its 2026-09-14 rows as Ack, UnAck, Ack, UnAck on one read
+  and UnAck, UnAck, Ack, Ack, Ack after one more ack (true sequence Ack, UnAck,
+  Ack, UnAck, Ack), and its 2026-09-13 pair flipped from Ack, UnAck to UnAck,
+  Ack between two reads (agent round 2026-09-14; re-read live 2026-09-14:
+  UnAck, UnAck, Ack, Ack, UnAck, Ack — two consecutive UnAcks are impossible,
+  so the list order carries no information). Never infer a sequence from
+  AckHist; the renderers show it as per-day counts. ``Notes`` carry epoch-ms
+  timestamps and give the exact times of the acks/un-acks that recorded a
+  note: an ack WITHOUT a note makes the platform append the note ``"Alarm
+  acknowledged"`` and a note-less un-ack the note ``"Alarm unacknowledged"``
+  (``CreatedBy`` = the acting user); an ack WITH a note stores only that note.
+  Observed on the 2026-09-13 scout alarm (read back 2026-09-14): Notes
+  'cnc-mcp scout ack' -> 'Alarm unacknowledged' -> 'Alarm acknowledged' ->
+  'Alarm unacknowledged' -> 'cnc-mcp scout clear' against AckHist
+  Ack/UnAck/Ack/UnAck, and no script or test ever sent the text 'Alarm
+  acknowledged'. **The Notes are NOT a complete ack timeline**: an accepted
+  ack (``state Success``) was observed live leaving NO note at all — alarm
+  e564077d, 2026-09-14 03:31:53Z, sent WITH the note 'cnc-mcp smoke ack'
+  (the same text as its 2026-09-13 ack note), followed by an annotate and a
+  note-less un-ack whose 'Alarm unacknowledged' note IS present — so the alarm
+  shows 3 Ack in its 2026-09-14 AckHist tally against 2 ack-time notes. The
+  mechanism (a repeated note text dropped? an ack-path drop?) is UNVERIFIED
+  pending a write-phase smoke; until then a day's AckHist count may exceed
+  its ack notes. Whether an un-ack WITH a note also stores the platform note
+  is unverified (every live un-ack was note-less). Neither AckHist entries
+  nor notes can be deleted (no API).
+- **An alarm's ``Description`` is always its NEWEST event's text** (verified
+  live 2026-09-14 on all 105 lab alarms: ``Events`` is Timestamp-descending
+  inside every alarm and ``Description == Events[0].Description`` for every
+  alarm that has events). For a **Cleared** alarm that is the CLEARING event's
+  text ("NSO device is in sync.", "Was able to connect to NSO nso service
+  pack.", "Device was detached.", "<pod> is healthy.") — the fault that was
+  cleared is only in the newest FAULT-SEVERITY event (Critical / Major /
+  Minor / Warning; 35 of 67 cleared alarms with events carried a different
+  fault text; 18 had several Clear events from re-clears). **Info events are
+  not faults**: two NSO-onboarding alarms (PE2 6ddc88ed, PCE 72395fe4) carry
+  Major "Failed to onboard the node on NSO ..." -> Info "Node was onboarded
+  on NSO." -> Clear "NSO device is in sync.", and only the Major text says
+  what went wrong, so :func:`fault_event` skips Info events and falls back
+  to the newest non-Clear (Info) event only when an alarm has no
+  fault-severity event at all (live: the "pipeline health updating: HEALTHY"
+  and "Updating Credentials ... to Deep Inventory Service" alarms, Info ->
+  Clear only). Seven cleared pod-health alarms had ``events_count`` 0 and no
+  ``Events`` at all, so their fault text is unrecoverable. :func:`alarm_line`
+  therefore renders a Cleared alarm as ``[<sev>] <fault> | cleared: <text>``
+  (see :func:`alarm_text`) and :func:`alarm_markdown` adds a ``Fault:`` line.
 - **Stale alarms.** Pod-health alarms ("<pod> is down.", Created/Updated
   2026-08-07, ``events_count`` 0, no ``Events`` key at all) stay open long
   after the pods recovered — Crosswork does not auto-clear them. The renderers
@@ -171,6 +204,12 @@ def alarm_criteria(limit: int, page: int) -> str:
 
 
 ALARM_STATES = ("Critical", "Major", "Minor", "Warning", "Info", "Clear")
+# Event severities that describe a FAULT. Info events are progress/notification
+# rows ("Node was onboarded on NSO.", "pipeline health updating: HEALTHY") and
+# Clear events close the alarm — neither is the fault that was cleared (live
+# 2026-09-14: the NSO-onboarding alarms carry Major -> Info -> Clear, and only the
+# Major text says what went wrong). fault_event() prefers these severities.
+FAULT_SEVERITIES = frozenset({"critical", "major", "minor", "warning"})
 # Client-side sort orders for the alarm search (the platform's ``order by`` is
 # ignored and its natural order is not newest-first — verified live 2026-09-14).
 ALARM_SORTS = ("updated_desc", "created_desc", "platform")
@@ -306,10 +345,83 @@ def event_count(a: dict[str, Any]) -> int:
 
 def is_stale(a: dict[str, Any], now: datetime) -> bool:
     """Open, no events, and unchanged for >= STALE_ALARM_DAYS — worth a live check."""
-    if str(a.get("State", "")).lower() == "clear" or event_count(a) != 0:
+    if is_cleared(a) or event_count(a) != 0:
         return False
     seconds = _epoch_seconds(a.get("Updated") or a.get("Created"))
     return seconds is not None and now.timestamp() - seconds >= STALE_ALARM_DAYS * 86400
+
+
+def is_cleared(a: dict[str, Any]) -> bool:
+    """True when the alarm's ``State`` is Clear (case-insensitive)."""
+    return str(a.get("State", "")).strip().lower() == "clear"
+
+
+def event_severity(e: dict[str, Any]) -> str:
+    """An event's ``EventSeverity``, lower-cased and stripped ('' when missing)."""
+    return str(e.get("EventSeverity", "")).strip().lower()
+
+
+def is_fault_severity(e: dict[str, Any]) -> bool:
+    """True when the event's severity is Critical / Major / Minor / Warning."""
+    return event_severity(e) in FAULT_SEVERITIES
+
+
+def fault_event(a: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest FAULT-SEVERITY event (Critical/Major/Minor/Warning) of an alarm.
+
+    The platform overwrites an alarm's top-level ``Description`` with its NEWEST
+    event's text (verified live 2026-09-14 on all 105 lab alarms), so for a
+    Cleared alarm ``Description`` is the CLEARING event's text and the fault
+    that was cleared lives only here. Info events are NOT faults — live, the
+    NSO-onboarding alarms carry Major "Failed to onboard the node on NSO ..."
+    -> Info "Node was onboarded on NSO." -> Clear "NSO device is in sync.", and
+    taking the newest non-Clear event would hide the Major fault behind the
+    Info progress row. Only when the alarm has no fault-severity event at all
+    (live: Info -> Clear alarms such as "pipeline health updating: HEALTHY")
+    does this fall back to the newest non-Clear event; None when every event
+    is a Clear or there are no events. Picked by ``Timestamp`` (not list
+    position) — ``Events`` was Timestamp-descending on every live alarm, but
+    the order is an observation, not a contract.
+    """
+    events = [e for e in (a.get("Events") or []) if isinstance(e, dict)]
+    candidates = [e for e in events if is_fault_severity(e)]
+    if not candidates:
+        candidates = [e for e in events if event_severity(e) != "clear"]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda e: _epoch_int(e.get("Timestamp")))
+
+
+def fault_event_label(fault: dict[str, Any]) -> str:
+    """How :func:`alarm_markdown` qualifies the ``Fault:`` line's source event."""
+    if is_fault_severity(fault):
+        return "newest fault-severity event"
+    return "newest non-Clear event — no Critical/Major/Minor/Warning event recorded"
+
+
+def alarm_text(a: dict[str, Any]) -> str:
+    """The description segment of :func:`alarm_line`.
+
+    Open alarm: ``Description`` as the platform sends it (its newest event's
+    text). Cleared alarm with events: ``[<fault severity>] <fault text> |
+    cleared: <Description>`` where the fault is the newest fault-severity
+    event per :func:`fault_event` (``cleared: (same text)`` when the clearing
+    event repeats the fault text, e.g. the gluster volume alarms), so a listing
+    shows what went wrong without a cnc_get_alarm per alarm. Cleared alarm
+    without events (live: pod-health alarms with events_count 0 and no
+    ``Events``): ``<Description> | original fault not recorded (0 events)``.
+    """
+    description = a.get("Description", "?")
+    if not is_cleared(a):
+        return str(description)
+    fault = fault_event(a)
+    if fault is None:
+        count = event_count(a)
+        why = "0 events" if count == 0 else f"no non-Clear event among {count}"
+        return f"{description} | original fault not recorded ({why})"
+    fault_text = fault.get("Description", "?")
+    cleared = "(same text)" if fault_text == description else description
+    return f"[{fault.get('EventSeverity', '?')}] {fault_text} | cleared: {cleared}"
 
 
 def sort_alarms(
@@ -327,6 +439,17 @@ def _contains(needle: str, *haystacks: Any) -> bool:
     return any(needle in str(h).lower() for h in haystacks if h is not None)
 
 
+def _searchable_texts(a: dict[str, Any]) -> tuple[Any, ...]:
+    """The strings the alarm ``text`` filter matches: Description,
+    object_description and, for a Cleared alarm, the fault event's text."""
+    texts: tuple[Any, ...] = (a.get("Description"), a.get("object_description"))
+    if is_cleared(a):
+        fault = fault_event(a)
+        if fault is not None:
+            texts += (fault.get("Description"),)
+    return texts
+
+
 def filter_alarms(
     alarms: list[Any],
     *,
@@ -337,13 +460,14 @@ def filter_alarms(
     sort: str = DEFAULT_ALARM_SORT,
 ) -> list[dict[str, Any]]:
     """Client-side alarm filters (the platform's ``where`` never matches), then
-    :func:`sort_alarms` (newest Updated first by default)."""
+    :func:`sort_alarms` (newest Updated first by default). ``text`` is matched
+    against ``Description``, ``object_description`` and — because a Cleared
+    alarm's ``Description`` is only the clearing event's text — the fault text
+    :func:`fault_event` renders for a Cleared alarm."""
     out = [a for a in alarms if isinstance(a, dict)]
     if text and text.strip():
         needle = text.strip().lower()
-        out = [
-            a for a in out if _contains(needle, a.get("Description"), a.get("object_description"))
-        ]
+        out = [a for a in out if _contains(needle, *_searchable_texts(a))]
     if state:
         out = [a for a in out if str(a.get("State", "")).lower() == state.lower()]
     if category and category.strip():
@@ -401,14 +525,15 @@ def filter_event_types(
 def alarm_line(a: dict[str, Any], now: datetime | None = None) -> str:
     """The shared one-line alarm rendering (use it in EVERY alarm listing):
     ``[State] object — Description (id, ack=…, events=N, created=<ISO>,
-    updated=<ISO>, age=<since Created>)``.
+    updated=<ISO>, age=<since Created>)``, where the Description segment of a
+    Cleared alarm is ``[<sev>] <fault> | cleared: <text>`` (:func:`alarm_text`).
 
     ``now`` fixes the reference time for ``age`` (tests); default: current UTC.
     """
     now = now or datetime.now(UTC)
     return (
         f"- [{a.get('State', '?')}] {a.get('object_description') or a.get('object_id') or '?'} "
-        f"— {a.get('Description', '?')} ({a.get('AlarmId', '?')}, "
+        f"— {alarm_text(a)} ({a.get('AlarmId', '?')}, "
         f"ack={a.get('Acknowledge', '?')}, events={event_count(a)}, "
         f"created={epoch_iso(a.get('Created'))}, updated={epoch_iso(a.get('Updated'))}, "
         f"age={age_text(a.get('Created'), now)})"
@@ -450,11 +575,45 @@ def history_stamp(value: Any) -> str:
 
 
 def _history_line(entry: dict[str, Any]) -> str:
-    """An AckHist / Notes entry: ``- <stamp> <CreatedBy>: <Description>``."""
+    """A Notes entry: ``- <stamp> <CreatedBy>: <Description>``."""
     return (
         f"- {history_stamp(entry.get('Timestamp'))} {entry.get('CreatedBy', '?')}: "
         f"{entry.get('Description', '?')}"
     )
+
+
+ACK_HIST_NOTE = (
+    "(AckHist is a per-day tally only: its timestamps are date-only and the platform "
+    "returns the entries in no stable order — the same alarm answered its rows in a "
+    "different order on consecutive reads, verified live 2026-09-14 — so no ack/un-ack "
+    "sequence can be read from it. The Notes below give the exact epoch-ms times of the "
+    "acks/un-acks that recorded a note: a note-less ack/un-ack writes the platform note "
+    "'Alarm acknowledged' / 'Alarm unacknowledged', an ack with a note stores that note "
+    "instead. They are NOT guaranteed complete: an accepted ack was observed live leaving "
+    "no note at all (alarm e564077d, 2026-09-14 03:31Z, sent with a note), so a day's "
+    "AckHist count may exceed its ack notes — the mechanism is unverified.)"
+)
+
+
+def ack_hist_lines(hist: list[dict[str, Any]]) -> list[str]:
+    """AckHist rendered as per-day counts, newest day first — never as ordered
+    rows, because the platform's order is meaningless (see :data:`ACK_HIST_NOTE`):
+    ``- <day> (date only): 3 Ack, 2 UnAck — by admin``."""
+    days: dict[str, dict[str, int]] = {}
+    users: dict[str, set[str]] = {}
+    for entry in hist:
+        day = history_stamp(entry.get("Timestamp"))
+        counts = days.setdefault(day, {})
+        what = str(entry.get("Description") or "?")
+        counts[what] = counts.get(what, 0) + 1
+        users.setdefault(day, set()).add(str(entry.get("CreatedBy") or "?"))
+    lines = []
+    for day in sorted(days, reverse=True):
+        # Sorted (Ack before UnAck) so the text is stable across reads — the platform's
+        # own order of the rows is not.
+        tally = ", ".join(f"{n} {what}" for what, n in sorted(days[day].items()))
+        lines.append(f"- {day}: {tally} — by {', '.join(sorted(users[day]))}")
+    return lines
 
 
 def alarm_markdown(a: dict[str, Any], now: datetime | None = None) -> str:
@@ -465,7 +624,28 @@ def alarm_markdown(a: dict[str, Any], now: datetime | None = None) -> str:
         "",
         f"- State: {a.get('State', '?')} (category {a.get('AlarmCategory', '?')})",
         f"- Acknowledged: {a.get('Acknowledge', '?')}",
-        f"- Description: {a.get('Description', '?')}",
+    ]
+    if is_cleared(a):
+        # Description is the CLEARING event's text (the platform keeps the newest
+        # event's text there); the fault that was cleared is the newest fault-severity
+        # event (Info rows such as "Node was onboarded on NSO." are skipped).
+        fault = fault_event(a)
+        lines.append(
+            f"- Description: {a.get('Description', '?')} (the clearing event's text — the "
+            "platform's Description is always the newest event's)"
+        )
+        if fault is None:
+            count = event_count(a)
+            why = "0 events" if count == 0 else f"no non-Clear event among {count}"
+            lines.append(f"- Fault: not recorded ({why})")
+        else:
+            lines.append(
+                f"- Fault: [{fault.get('EventSeverity', '?')}] {fault.get('Description', '?')} "
+                f"({fault_event_label(fault)}, {epoch_iso(fault.get('Timestamp'))})"
+            )
+    else:
+        lines.append(f"- Description: {a.get('Description', '?')}")
+    lines += [
         f"- Object: {a.get('object_description') or '?'} (object_id {a.get('object_id') or '?'})",
         f"- Origin: {a.get('origin_app_id') or '?'}"
         + (f" / {a['origin_service_id']}" if a.get("origin_service_id") else ""),
@@ -492,13 +672,8 @@ def alarm_markdown(a: dict[str, Any], now: datetime | None = None) -> str:
     if not hist:
         lines.append("- none")
     else:
-        lines.append(
-            "(AckHist timestamps are date-only on this platform; the exact ack/un-ack times "
-            "are in the Notes below — a note-less ack/un-ack writes the platform note "
-            "'Alarm acknowledged' / 'Alarm unacknowledged', an ack with a note stores that "
-            "note instead.)"
-        )
-    lines.extend(_history_line(h) for h in hist)
+        lines.append(ACK_HIST_NOTE)
+        lines.extend(ack_hist_lines(hist))
     notes = [n for n in (a.get("Notes") or []) if isinstance(n, dict)]
     notes.sort(key=lambda n: _epoch_int(n.get("Timestamp")), reverse=True)
     lines.extend(["", f"## Notes ({len(notes)}, newest first, permanent)"])
@@ -780,15 +955,41 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         (verified live 2026-09-14 — it hid three open Major alarms). For
         device/network (RTM) alarms use cnc_list_device_alarms instead.
 
-        READING THE HISTORY (verified live 2026-09-14): AckHist timestamps are
-        DATE-ONLY strings ("2026-09-14 00:00:00.0", rendered "2026-09-14 (date
-        only)") and the list comes back newest day first with same-day entries
-        in chronological order — the exact ack/un-ack times are NOT recoverable
-        from AckHist. Use the Notes instead: they carry full epoch-ms timestamps
+        CLEARED ALARMS (verified live 2026-09-14 on all 105 lab alarms): the
+        platform's top-level Description is always the NEWEST event's text, so
+        for a Cleared alarm it is the CLEARING event's text ("NSO device is in
+        sync.", "Device was detached.", "<pod> is healthy.") and the fault that
+        was cleared is only in the Events. The markdown therefore adds a
+        "Fault: [<severity>] <text>" line taken from the newest fault-severity
+        event (Critical/Major/Minor/Warning — NOT an Info event: the
+        NSO-onboarding alarms carry Major "Failed to onboard the node on NSO
+        ..." -> Info "Node was onboarded on NSO." -> Clear, and only the Major
+        text is the fault; the newest Info event is used only when the alarm
+        has no fault-severity event at all, and the line says so). "Fault: not
+        recorded (0 events)" for cleared pod-health alarms, which carry
+        events_count 0 and no Events at all; Events are listed newest first as
+        the platform sends them. In JSON read Events[] yourself — Description
+        is the clear text there too.
+        READING THE HISTORY (verified live 2026-09-14): AckHist is a DATE-ONLY,
+        UNORDERED tally. Its timestamps are "2026-09-14 00:00:00.0" (rendered
+        "2026-09-14 (date only)") and the platform returns the entries in no
+        stable order — the same alarm answered its same-day rows as Ack, UnAck,
+        Ack, UnAck on one read and UnAck, UnAck, Ack, Ack, Ack after one more
+        ack, and a two-entry day flipped between reads — so the markdown
+        renders AckHist as per-day counts ("2026-09-14 (date only): 3 Ack, 2
+        UnAck — by admin") and NO ack/un-ack sequence must ever be inferred
+        from it (raw JSON included). The Notes give the exact times of the
+        acks/un-acks that recorded a note: they carry full epoch-ms timestamps
         (rendered ISO, newest first); an ack's note is stored there at the ack
-        time, and a note-less ack / un-ack makes the platform append its own
+        time and a note-less ack / un-ack makes the platform append its own
         note "Alarm acknowledged" / "Alarm unacknowledged" (observed on the
-        2026-09-13 scout alarm). Both lists are permanent (no delete API).
+        2026-09-13 scout alarm). They are NOT a complete ack timeline: an
+        accepted ack was observed live leaving no note at all (alarm
+        e564077d, 2026-09-14 03:31Z, sent with a note whose text repeated an
+        earlier note; the un-ack seconds later DID leave its note), so a day's
+        AckHist count may exceed its ack notes — the mechanism (repeated note
+        text dropped? an ack-path drop?) is UNVERIFIED pending a write-phase
+        smoke. Both lists are permanent (no delete API).
         STALE ALARMS: when an open alarm shows 0 events and no update for 7+
         days the markdown adds a "Stale-alarm check" line — Crosswork does not
         auto-clear such alarms (verified live 2026-09-14 on pod-health alarms
@@ -802,17 +1003,19 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             alarm_id: the AlarmId (exact, case-insensitive).
 
         Returns:
-            str: Markdown with state, category, acknowledged flag, description,
-            object, origin, created/updated (ISO-8601 from the platform's epoch
-            ms, with the age), the event count and events (first 10), a
-            stale-alarm check line when applicable, the AckHist entries and the
-            Notes (newest first); or the raw alarm JSON:
-            {"AlarmId", "AlarmCategory", "State", "Acknowledge", "Description",
-             "object_id", "object_description", "origin_app_id", "origin_service_id",
+            str: Markdown with state, category, acknowledged flag, description
+            (plus the "Fault:" line for a Cleared alarm), object, origin,
+            created/updated (ISO-8601 from the platform's epoch ms, with the
+            age), the event count and events (first 10, newest first), a
+            stale-alarm check line when applicable, the AckHist per-day counts
+            and the Notes (newest first); or the raw alarm JSON:
+            {"AlarmId", "AlarmCategory", "State", "Acknowledge",
+             "Description" (the newest event's text), "object_id",
+             "object_description", "origin_app_id", "origin_service_id",
              "event_type", "events_count", "Created", "Updated" (epoch ms strings),
-             "Events": [...] (absent when there are none),
+             "Events": [...] (newest first; absent when there are none),
              "AckHist": [{"CreatedBy", "Description": "Ack"|"UnAck",
-                          "Timestamp": "<YYYY-MM-DD 00:00:00.0>"}],
+                          "Timestamp": "<YYYY-MM-DD 00:00:00.0>"}] (unordered),
              "Notes": [{"CreatedBy", "Description", "Timestamp": "<epoch ms>"}]}
             "Error: no alarm '<id>' (list with cnc_list_alarms)" when nothing
             matches; other failures: "Error: <actionable message>".
@@ -875,7 +1078,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ),
         ] = DEFAULT_ALARM_SORT,
         limit: Annotated[
-            int, Field(description="Maximum alarms to return (e.g. 50).", ge=1, le=500)
+            int,
+            Field(
+                description="Maximum alarms to return after filtering and sorting (e.g. 50). "
+                "This is a cap, not a page size: there is no page argument — every alarm in "
+                "scope is fetched and the count of all matches is reported.",
+                ge=1,
+                le=500,
+            ),
         ] = 50,
         response_format: Annotated[
             ResponseFormat,
@@ -885,6 +1095,27 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         """Search Crosswork platform alarms by text, state, category and
         acknowledged flag, sorted client-side (newest Updated first by default,
         or newest Created first with sort='created_desc').
+
+        CLEARED ALARMS (verified live 2026-09-14 on all 105 lab alarms): the
+        platform overwrites an alarm's top-level Description with its NEWEST
+        event's text, so for a Cleared alarm Description is the CLEARING
+        event's text ("NSO device is in sync.", "Was able to connect to NSO nso
+        service pack.", "Device was detached.", "<pod> is healthy.") and says
+        nothing about what went wrong. Each markdown line of a Cleared alarm
+        therefore renders the newest fault-severity event
+        (Critical/Major/Minor/Warning — Info rows such as "Node was onboarded
+        on NSO." are skipped, so the NSO-onboarding alarms show their Major
+        "Failed to onboard ..." text; an Info event is used only when the
+        alarm has no fault-severity event at all) as the fault, then the
+        clear text: "[Clear] NSO Provider nso — [Major] Unable to connect to
+        NSO nso service pack. | cleared: Was able to connect to NSO nso service
+        pack. (...)" ("cleared: (same text)" when the clearing event repeats the
+        fault text; "<text> | original fault not recorded (0 events)" for the
+        cleared pod-health alarms, which have no Events at all). The `text`
+        filter matches that fault text too, so text='unable to connect' with
+        open_only=False finds the cleared alarm whose Description now reads
+        "Was able to connect ...". In JSON the items are raw — read Events[]
+        (newest first) for the fault text.
 
         Read-only. Use it for "which alarms mention P2", "all unacknowledged
         Critical alarms", "cleared alarms about collection", "the most recent
@@ -916,19 +1147,25 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         condition before reporting it as current.
 
         Args:
-            text: substring over Description / object_description.
+            text: substring over Description / object_description (and the
+                fault event text of a Cleared alarm).
             state: Critical|Major|Minor|Warning|Info|Clear (Clear only with open_only=False).
             category: exact AlarmCategory (e.g. 'System').
             acknowledged: True / False to keep only that flag; None for both.
             open_only: False to include cleared alarms.
             sort: updated_desc (default) | created_desc | platform.
-            limit: cap on the returned rows (the count of all matches is reported).
+            limit: cap on the returned rows — NOT a page size (no page argument;
+                the count of all matches is reported and 'truncated' says
+                whether the cap cut the list). cnc_list_alarms / cnc_list_events
+                page with limit (their page size) + page instead.
 
         Returns:
             str: Markdown, one line per alarm
             "[State] object_description — Description (AlarmId, ack=…, events=N,
-            created=<ISO>, updated=<ISO>, age=<since Created, e.g. 38d>)", plus
-            the stale-alarm check line when applicable; or JSON:
+            created=<ISO>, updated=<ISO>, age=<since Created, e.g. 38d>)" — for a
+            Cleared alarm the Description segment is "[<fault severity>] <fault
+            text> | cleared: <Description>" — plus the stale-alarm check line
+            when applicable; or JSON:
             {"total": <matches>, "count": int, "sort": str, "items": [<alarm>, ...],
              "truncated": bool, "fetched": <alarms fetched before filtering>}
             (Created/Updated are epoch-ms strings; "Events" is absent when
@@ -991,7 +1228,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     )
     async def cnc_list_events(
         limit: Annotated[
-            int, Field(description="Events per page (e.g. 50).", ge=1, le=EVENTS_MAX_LIMIT)
+            int,
+            Field(
+                description="Events per page — this tool's page size, max 100 (e.g. 50); "
+                "'page' selects the page.",
+                ge=1,
+                le=EVENTS_MAX_LIMIT,
+            ),
         ] = 50,
         page: Annotated[int, Field(description="0-based page number (e.g. 0).", ge=0)] = 0,
         severity: Annotated[
@@ -1047,7 +1290,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         page, keep paging.
 
         Args:
-            limit / page: platform page size (max 100) and 0-based page.
+            limit (this tool's page size, max 100) / page (0-based): the
+                platform's own paging.
             severity / category / text: filters within the page.
 
         Returns:
@@ -1126,7 +1370,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ),
         ] = RTM_DEFAULT_ALARM_TYPE,
         limit: Annotated[
-            int, Field(description="Alarms per page, max 100 (e.g. 50).", ge=1, le=MAX_COUNT)
+            int,
+            Field(
+                description="Alarms per page — this tool's page size, max 100 (e.g. 50); "
+                "'offset' selects the page start.",
+                ge=1,
+                le=MAX_COUNT,
+            ),
         ] = 50,
         offset: Annotated[
             int, Field(description="0-based object offset (.startIndex), e.g. 0.", ge=0)
@@ -1160,7 +1410,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             node_fdn: nd-ref FDN filter (from the EMF inventory's nd.fdn).
             severity: perceived-severity filter (lower-case wire values).
             alarm_type: device (default, verified) | network | system (unverified).
-            limit / offset: EMF page size (1..100) and 0-based start index.
+            limit (this tool's page size, 1..100) / offset (0-based start
+                index): EMF .maxCount / .startIndex paging.
 
         Returns:
             str: Markdown "[severity] node source — description (uuid; category;
@@ -1362,7 +1613,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             ),
         ] = None,
         limit: Annotated[
-            int, Field(description="Event types per page (e.g. 100).", ge=1, le=500)
+            int,
+            Field(
+                description="Event types per page — this tool's page size (e.g. 100); 'page' "
+                "selects the page.",
+                ge=1,
+                le=500,
+            ),
         ] = 100,
         page: Annotated[int, Field(description="0-based page number (e.g. 0).", ge=0)] = 0,
         response_format: Annotated[
@@ -1384,7 +1641,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
 
         Args:
             category / name / severity: client-side filters.
-            limit / page: client-side paging over the filtered catalogue.
+            limit (this tool's page size) / page (0-based): client-side paging
+                over the filtered catalogue.
 
         Returns:
             str: Markdown "<name> [<defaultCategory>] severity=<severity>
@@ -1586,9 +1844,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         PERMANENT RESIDUE (verified live 2026-09-14) — an ack/un-ack is NOT fully
         reversible, so do not promise "full cleanup" when a task asks for it:
         - every accepted call appends an AckHist entry ("Ack" / "UnAck"); there
-          is no API to remove one. AckHist timestamps are DATE-ONLY
-          ("2026-09-14 00:00:00.0"), newest day first with same-day entries in
-          chronological order — the exact times live in the Notes;
+          is no API to remove one. AckHist is a DATE-ONLY, UNORDERED tally
+          (timestamps "2026-09-14 00:00:00.0"; the platform returns the entries
+          in no stable order — the same alarm's same-day rows came back as Ack,
+          UnAck, Ack, UnAck before an ack and UnAck, UnAck, Ack, Ack, Ack after
+          it, verified live 2026-09-14), so cnc_get_alarm renders it as per-day
+          counts and no sequence must be inferred from it; the Notes (see
+          below) give the exact times of the calls that recorded a note;
         - the optional `note` becomes a permanent Notes entry (no edit/delete
           API, exactly like cnc_annotate_alarm);
         - an ack WITHOUT a note makes the platform append the permanent note
@@ -1599,8 +1861,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
           user). Whether an un-ack WITH a note also stores the platform note is
           UNVERIFIED (every live un-ack was note-less; by the ack pattern the
           user's note probably replaces it).
-        So there is no note-free ack: with or without a `note`, every accepted
-        call leaves a Notes entry. NOT VERIFIED LIVE: whether acknowledging an
+        Expect a note per accepted call, but do NOT rely on it: one accepted
+        ack (state Success) was observed live leaving NO note at all — alarm
+        e564077d, 2026-09-14 03:31Z, sent with the note 'cnc-mcp smoke ack'
+        (the same text as that alarm's 2026-09-13 ack note), while the
+        annotate and the note-less un-ack seconds later recorded theirs — so
+        the AckHist per-day count may exceed the ack notes; the mechanism
+        (repeated note text dropped? an ack-path drop?) is UNVERIFIED pending a
+        write-phase smoke. Re-read with cnc_get_alarm when the note matters.
+        NOT VERIFIED LIVE: whether acknowledging an
         already-acknowledged alarm succeeds, fails, or adds a second AckHist
         entry — check "before.acknowledged" in the result (or cnc_get_alarm
         first) instead of re-sending blindly; the tool is therefore not marked
@@ -1661,6 +1930,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if body.get("note"):
                 # With a note the platform stores only that note (observed live for an
                 # ack; for an un-ack it is unverified — every live un-ack was note-less).
+                # Not guaranteed: one accepted ack with a note left no note at all
+                # (e564077d, 2026-09-14 03:31Z) — see the docstring.
                 residue.append(f"the note '{body['note']}' as a Notes entry")
                 if not acknowledge:
                     residue[-1] += (
