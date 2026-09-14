@@ -212,6 +212,7 @@ async def test_crosswork_403_unauthorized_request_triggers_reauth(make_settings)
             httpx.Response(200, json={"data": []}),
         ]
     )
+    logout = respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
     client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
     try:
         result = await client.request_json(
@@ -221,8 +222,12 @@ async def test_crosswork_403_unauthorized_request_triggers_reauth(make_settings)
         assert api.call_count == 2
         assert leg2.call_count == 2
         assert api.calls[1].request.headers["Authorization"] == "Bearer a.fresh.jwt"
+        # the re-login released the rejected session (with the JWT that was rejected)
+        assert logout.call_count == 1
+        assert logout.calls[0].request.headers["Authorization"] == "Bearer a.stale.jwt"
     finally:
         await client.aclose()
+    assert logout.call_count == 2  # ... and aclose() released the fresh one
 
 
 @respx.mock
@@ -317,6 +322,7 @@ async def test_raw_content_body_survives_reauth_intact(make_settings):
             httpx.Response(200, json={"ok": True}),
         ]
     )
+    logout = respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
     client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
     try:
         result = await client.request_json(
@@ -333,6 +339,7 @@ async def test_raw_content_body_survives_reauth_intact(make_settings):
         assert second.headers.get_list("Content-Type") == ["text/plain"]
         assert first.headers["Authorization"] == "Bearer a.stale.jwt"
         assert second.headers["Authorization"] == "Bearer a.fresh.jwt"
+        assert logout.call_count == 1  # exactly one session released per re-login
     finally:
         await client.aclose()
 
@@ -470,6 +477,7 @@ async def test_ok_statuses_still_get_the_one_reauth_pass(make_settings):
     api = respx.get(f"{BASE_URL}/crosswork/inventory/v1/no-such-path").mock(
         return_value=httpx.Response(403, json={"error": "Unauthorized request"})
     )
+    logout = respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
     client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
     try:
         response = await client.request(
@@ -479,6 +487,9 @@ async def test_ok_statuses_still_get_the_one_reauth_pass(make_settings):
         assert api.call_count == 2  # one re-auth retry, no backoff retries
         assert leg2.call_count == 2  # both SSO legs ran again
         assert api.calls[1].request.headers["Authorization"] == "Bearer a.fresh.jwt"
+        # the unrouted path's 403 cost one re-login, and that re-login released the
+        # still-valid session it replaced: no SSO session leaks per false positive
+        assert logout.call_count == 1
     finally:
         await client.aclose()
 

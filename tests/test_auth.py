@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import httpx
 import pytest
 import respx
 
-from cnc_mcp.auth import BasicAuth, CrossworkCasAuth, LoginTokenAuth, StaticTokenAuth
+from cnc_mcp.auth import (
+    AuthStrategy,
+    BasicAuth,
+    CrossworkCasAuth,
+    LoginTokenAuth,
+    NoAuth,
+    StaticTokenAuth,
+    jwt_claims,
+)
 from cnc_mcp.errors import PlatformError
 from tests.conftest import BASE_URL
 
@@ -285,6 +294,52 @@ async def test_crosswork_logout_deletes_the_tgt_and_forgets_the_token():
 
 
 @respx.mock
+async def test_crosswork_relogin_releases_the_rejected_session_first():
+    """A 403 'Unauthorized request' also answers an unknown path or a missing role grant
+    with a perfectly valid JWT, so the re-login it triggers must DELETE the current TGT
+    (with that JWT — the only form Crosswork accepts) before opening a new session;
+    otherwise every such re-login leaks one session towards the per-user cap."""
+    leg1 = respx.post(TICKETS).mock(
+        side_effect=[httpx.Response(201, text="TGT-1-abc"), httpx.Response(201, text="TGT-2-def")]
+    )
+    respx.post(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(200, text="a.old.jwt"))
+    respx.post(f"{TICKETS}/TGT-2-def").mock(return_value=httpx.Response(200, text="a.new.jwt"))
+    delete_old = respx.delete(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(200))
+    delete_new = respx.delete(f"{TICKETS}/TGT-2-def").mock(return_value=httpx.Response(200))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+        assert auth.headers() == {"Authorization": "Bearer a.old.jwt"}
+        assert await auth.handle_unauthorized(http, {"Authorization": "Bearer a.old.jwt"})
+        assert auth.headers() == {"Authorization": "Bearer a.new.jwt"}
+        assert delete_old.call_count == 1 and delete_new.call_count == 0
+        assert delete_old.calls[0].request.headers["Authorization"] == "Bearer a.old.jwt"
+        assert leg1.call_count == 2
+        await auth.logout(http)  # closing releases the NEW session, exactly once
+    assert delete_old.call_count == 1 and delete_new.call_count == 1
+
+
+@respx.mock
+async def test_crosswork_relogin_proceeds_when_the_release_fails():
+    """A failed DELETE (the session may already be gone) never blocks the re-login."""
+    respx.post(TICKETS).mock(
+        side_effect=[httpx.Response(201, text="TGT-1-abc"), httpx.Response(201, text="TGT-2-def")]
+    )
+    respx.post(f"{TICKETS}/TGT-1-abc").mock(return_value=httpx.Response(200, text="a.old.jwt"))
+    respx.post(f"{TICKETS}/TGT-2-def").mock(return_value=httpx.Response(200, text="a.new.jwt"))
+    delete_old = respx.delete(f"{TICKETS}/TGT-1-abc").mock(
+        return_value=httpx.Response(403, json={"error": "Your session has ended."})
+    )
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+        assert await auth.handle_unauthorized(http, {"Authorization": "Bearer a.old.jwt"})
+    assert delete_old.call_count == 1
+    assert auth.headers() == {"Authorization": "Bearer a.new.jwt"}
+    assert auth._tgt == "TGT-2-def"
+
+
+@respx.mock
 async def test_crosswork_logout_never_raises():
     _mock_cas()
     respx.delete(f"{TICKETS}/TGT-1-abc").mock(side_effect=httpx.ConnectError("gone"))
@@ -331,3 +386,77 @@ async def test_crosswork_terminated_session_403_is_an_auth_failure():
     assert auth.is_auth_failure(ended)
     denied = httpx.Response(403, json={"error": "Permission denied for role"})
     assert not auth.is_auth_failure(denied)
+
+
+# --- identity: bearer_token() and jwt_claims() -------------------------------------------
+
+
+def b64url(data: bytes) -> str:
+    """base64url without padding, as JWTs encode their parts."""
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def make_jwt(claims: dict) -> str:
+    header = b64url(b'{"alg":"HS512","typ":"JWT"}')
+    return f"{header}.{b64url(json.dumps(claims).encode())}.c2ln"
+
+
+def test_jwt_claims_decodes_the_payload_without_the_key():
+    claims = {
+        "sub": "mcp-ro",
+        "username": "mcp-ro",
+        "policy_id": "cnc-mcp-readonly",
+        "deviceAccessGroups": "ALL-ACCESS",
+        "exp": 1789500000,
+        "iat": 1789471200,
+        "iss": "https://cnc.example.test/crosswork/sso",
+    }
+    assert jwt_claims(make_jwt(claims)) == claims
+
+
+@pytest.mark.parametrize("length", range(1, 8))
+def test_jwt_claims_restores_dropped_padding(length):
+    # Payloads of every length modulo 4 (JWT encoding drops the '=' padding).
+    claims = {"sub": "x" * length}
+    assert jwt_claims(make_jwt(claims)) == claims
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        None,
+        "",
+        "not-a-jwt",
+        "only.two",
+        "a.b.c.d",
+        "header.!!!not-base64!!!.sig",
+        f"h.{b64url(b'not json')}.s",
+        f"h.{b64url(b'[1, 2, 3]')}.s",  # valid JSON, not an object
+        "TGT-123-abc-cas",  # a CAS ticket-granting ticket, not a JWT
+    ],
+)
+def test_jwt_claims_rejects_garbage_and_non_jwts(token):
+    assert jwt_claims(token) is None
+
+
+def test_bearer_token_per_strategy():
+    assert AuthStrategy().bearer_token() is None
+    assert NoAuth().bearer_token() is None
+    assert BasicAuth("u", "p").bearer_token() is None
+    assert StaticTokenAuth("tok").bearer_token() == "tok"
+    login = LoginTokenAuth("/auth/login", "u", "p")
+    assert login.bearer_token() is None  # never logs in on its own
+    cas = CrossworkCasAuth("mcp-admin", "secret")
+    assert cas.bearer_token() is None
+
+
+@respx.mock
+async def test_bearer_token_after_crosswork_login_is_the_jwt():
+    jwt = make_jwt({"sub": "mcp-admin", "policy_id": "admin"})
+    respx.post(TICKETS).mock(return_value=httpx.Response(201, text="TGT-1-abc-cas"))
+    respx.post(f"{TICKETS}/TGT-1-abc-cas").mock(return_value=httpx.Response(200, text=jwt))
+    auth = CrossworkCasAuth("mcp-admin", "secret")
+    async with httpx.AsyncClient(base_url=BASE_URL) as http:
+        await auth.ensure_authenticated(http)
+    assert auth.bearer_token() == jwt
+    assert jwt_claims(auth.bearer_token()) == {"sub": "mcp-admin", "policy_id": "admin"}

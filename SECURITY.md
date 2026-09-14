@@ -16,7 +16,9 @@ there.
 
 In scope: anything that lets a secret (password, ticket-granting ticket, JWT,
 credential-profile contents) reach a tool answer, a log line or a file; a
-write reaching the platform while `CNC_MCP_ENABLE_WRITES` is unset; TLS
+write reaching the platform while `CNC_MCP_ENABLE_WRITES` is unset, while
+`CNC_MCP_DRY_RUN` is `true`, from an area outside `CNC_MCP_WRITE_AREAS` or
+from a tool named in `CNC_MCP_DISABLED_TOOLS`; TLS
 verification being bypassed while `CNC_MCP_VERIFY_TLS` is `true`; tool
 arguments that can alter the request path or body in ways the tool's schema
 does not describe (for example an unencoded key breaking out of a RESTCONF
@@ -45,9 +47,19 @@ Only the latest release is supported with fixes.
   names. The Dockerfile copies the build context, so the image only stays
   clean while `.dockerignore` does; pass credentials to a container at run
   time (`docker run -i --rm --env-file .env …`).
-- Use a dedicated Crosswork user for the server. Reads need the inventory,
-  topology, alarm and AAA read tasks; give the account write tasks only for a
-  deployment that enables writes.
+- Use a dedicated Crosswork user for the server, with a role that grants
+  only what its registered tools send — the gateway refuses everything else
+  with a 403, whatever the agent asks for. [docs/RBAC.md](docs/RBAC.md)
+  (generated from the tool source by `scripts/rbac_map.py`) lists the exact
+  API rows and methods a read-only account needs and what each write area
+  adds, with ready-made role bodies in `docs/rbac/`; `cnc_check_permissions`
+  reads the running account's role and reports which registered tools it
+  would refuse, so a least-privilege role can be verified before an agent
+  hits the 403. The two AAA rows in those recipes are anchored to the paths
+  the tools send: the broader listing behind them returns administrative
+  data and must not be granted to a non-administrator. The role bodies have
+  not yet been loaded into a real Crosswork; the doc says which claims are
+  verified and which are read from the gateway's source.
 - The authentication flow is Crosswork's CAS SSO: the password is exchanged
   for a ticket-granting ticket, which is exchanged for a service-ticket JWT
   (about 8 hours) sent as `Authorization: Bearer`. The server re-authenticates
@@ -65,6 +77,38 @@ and it forces every tool to declare `read_only` (with `destructive` and
 `idempotent` for writes); deletes and overwrites carry the MCP `destructive`
 annotation so a client can ask for confirmation. Writes that could not be verified
 against a live instance are not exposed at all (see the README roadmap).
+
+Three further controls narrow a deployment that does enable writes. All
+three are decided when the tools are registered, before an agent connects,
+and an unknown area or tool name in any of them is a startup failure with a
+"did you mean" hint — a misspelt entry can never silently gate nothing.
+
+- **`CNC_MCP_WRITE_AREAS`** registers the write tools of the listed areas
+  only (an area is a `tools/` module: `fault`, `service_provisioning`, ...).
+  A deployment that exists to acknowledge alarms never has `cnc_delete_device`
+  or `cnc_nso_sync_to_device` in its tool list. The write playbooks are
+  registered only when the sibling that commits for them is, so an allowlist
+  cannot expose a commit through a composite it excluded directly.
+- **`CNC_MCP_DISABLED_TOOLS`** never registers the named tools, read or
+  write, whatever the other settings say.
+- **`CNC_MCP_DRY_RUN=true`** keeps the write tools registered but lets nothing
+  reach the platform: a tool with a `dry_run` argument runs with it forced to
+  `true` (the platform's own preview — NSO's `dry-run=native`, the
+  Optimization Engine's dry run), every other write is not called at all and
+  answers with the arguments it would have sent, and the write playbooks stop
+  after their preview stage. The swap happens after registration; if the
+  wrapper cannot be installed the write tool is removed rather than left
+  live. The "not executed" answer redacts values by argument name
+  (`password`, `secret`, `token`, `key`, `passphrase`, `community`) and
+  withholds the free-text bodies a tool declares (configlets, template
+  variables, webhook URLs); a secret passed under an unrelated argument name
+  would be echoed back to the agent that supplied it.
+
+The account's Crosswork role is the layer beneath all of these: a write tool
+that is registered still fails at the gateway (403) when the role does not
+grant the API and method it sends, and `cnc_check_permissions` reports the
+server's safety mode next to the role so the two can be reconciled — see
+[Credentials](#credentials).
 
 ## Secrets in output and logs
 

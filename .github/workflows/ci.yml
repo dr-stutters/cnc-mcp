@@ -24,6 +24,11 @@ jobs:
         run: uv run ruff check src tests
       - name: Test
         run: uv run pytest -q
+      - name: RBAC map is current
+        # Offline (the catalogue is embedded in the committed map): a tool added or a
+        # request template changed without `make rbac` leaves rbac_map.json, docs/RBAC.md
+        # or the role bodies stale, and cnc_check_permissions would not know the tool.
+        run: uv run python scripts/rbac_map.py --check
 
   build:
     # Proves the package builds and the console script starts from the wheel

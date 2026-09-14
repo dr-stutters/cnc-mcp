@@ -1,4 +1,4 @@
-.PHONY: install test lint fmt run inspect cli build docker-build
+.PHONY: install test lint fmt run inspect cli build docker-build rbac rbac-fetch rbac-check
 
 # Arguments for `make cli`, e.g.:
 #   make cli ARGS="list"
@@ -29,6 +29,20 @@ inspect:
 # Drive the server over the real MCP stdio protocol (scripts/mcp_cli.py).
 cli:
 	uv run python scripts/mcp_cli.py $(ARGS)
+
+# RBAC map (src/cnc_mcp/data/rbac_map.json), docs/RBAC.md and the docs/rbac/*.role.json
+# bodies, regenerated from the tool source (scripts/rbac_map.py). `rbac` works offline
+# from the catalogue embedded in the committed map; `rbac-fetch` re-reads the gateway's
+# secured-API catalogue from the live instance in .env; `rbac-check` exits 1 when the
+# committed files are stale (for CI).
+rbac:
+	uv run python scripts/rbac_map.py --offline
+
+rbac-fetch:
+	uv run python scripts/rbac_map.py
+
+rbac-check:
+	uv run python scripts/rbac_map.py --check
 
 # Wheel + sdist into dist/.
 build:

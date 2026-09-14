@@ -27,6 +27,51 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
   to use, adapt to whether the playbook tools are registered, and reject
   unknown arguments by name. `scripts/mcp_cli.py` gains `prompts` and
   `prompt <name>`.
+- **Write allowlist, tool denylist and dry-run mode** (`config.py`,
+  `safety.py`, `tools/__init__.py`), layered on `CNC_MCP_ENABLE_WRITES`:
+  - `CNC_MCP_WRITE_AREAS` — comma-separated areas (the `tools/` module
+    names: `fault`, `service_provisioning`, ...) whose write tools are
+    registered when writes are on; empty means every area, read tools are
+    never affected. A write playbook is registered only when the sibling
+    that commits for it is (`register_tool(requires=...)`), the skip reason
+    logged.
+  - `CNC_MCP_DISABLED_TOOLS` — comma-separated tool names never registered,
+    read or write.
+  - `CNC_MCP_DRY_RUN=true` — the write tools stay registered but nothing
+    changes on the platform: a tool with a `dry_run` argument runs with it
+    forced to `true` and answers the preview; every other write is not
+    executed and answers `NOT EXECUTED` with the (redacted) arguments it
+    would have sent; each write tool's description says which applies. If
+    the wrapper cannot be installed the write is removed rather than left
+    live.
+  - An unknown area or tool name fails startup as a configuration error
+    with a "did you mean" hint; an allowlisted area whose tools are all
+    read-only is a warning. The startup log summarises what was registered
+    (`Registered N of M tools (R read, W write); writes ...; disabled tools:
+    ...; dry-run ...`), and the connect-time instructions and the prompts
+    describe the mode in force and why an absent write tool is absent.
+- **`cnc_check_permissions`** (`tools/admin.py`, read-only): reads the
+  account's identity from the session JWT, its role through the
+  `aaaread/v1` mirror (falling back to `aaa/v1`), and evaluates every
+  registered tool against the role's gateway grants using the packaged
+  RBAC map (`src/cnc_mcp/data/rbac_map.json`) — the verdict, the API rows
+  and methods to grant, the refused tools by area, and the server's own
+  safety mode (writes / areas / dry-run / disabled tools / tools
+  registered) next to the role. The 403 hint now points at it.
+- **`docs/RBAC.md`, `docs/rbac/*.role.json` and `scripts/rbac_map.py`**: the
+  least-privilege recipe for a read-only account and what each write area
+  adds, a per-tool table, the task-checkbox bundles, and ready-made role
+  bodies (untested against a real role) — all generated from the tool
+  source and the gateway's secured-API catalogue (`make rbac`, offline;
+  `make rbac-fetch`, live; `make rbac-check` fails CI when a tool changed
+  without regenerating).
+- **Playbook `dry_run`**: `cnc_provision_l3vpn_e2e` and
+  `cnc_create_sr_policy_e2e` take `dry_run=true` to stop after their
+  preview stage with a `dry-run` verdict and nothing committed; global
+  dry-run mode forces it.
+- **`scripts/mcp_cli.py --env NAME=VALUE`** (repeatable, before or after the
+  command): start the server with extra environment variables — the way to
+  try an allowlist, a denylist or dry-run mode without editing `.env`.
 
 ### Changed
 

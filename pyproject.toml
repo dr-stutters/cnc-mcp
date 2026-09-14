@@ -66,12 +66,16 @@ packages = ["src/cnc_mcp"]
 
 [tool.hatch.build.targets.sdist]
 # Everything a `pip install` or a `docker build` from the sdist needs, plus the
-# tests and the live-verification scripts. LICENSE and README.md are always
-# included by hatchling; .env, the local smoke plan and caches never are.
+# tests and the live-verification scripts (docs/RBAC.md and docs/rbac/ are the
+# generated RBAC outputs tests/test_rbac_map.py checks against the packaged map).
+# LICENSE and README.md are always included by hatchling; .env, the local smoke
+# plan and caches never are.
 only-include = [
     "src/cnc_mcp",
     "tests",
     "scripts",
+    "docs/RBAC.md",
+    "docs/rbac",
     "pyproject.toml",
     "uv.lock",
     "README.md",

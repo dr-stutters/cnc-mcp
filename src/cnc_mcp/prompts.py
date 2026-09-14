@@ -9,7 +9,9 @@ on a build) collapse each of those into one call. The prompts here tell the
 assistant which composite to start with when this build registers it — and
 which individual tools build the same picture when it does not — which tools
 to drill in with when a section is missing or degraded, what shape the answer
-takes, and what to say when a write tool is absent (writes disabled).
+takes, and what to say when a write tool is absent — with the reason the registry
+recorded for it (writes off, its area not in ``CNC_MCP_WRITE_AREAS``, disabled by
+name), never a blanket "writes are disabled".
 
 Prompts are text only — they never call the platform — so they render with
 writes disabled and with no credentials. Each is built with
@@ -38,8 +40,12 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import INVALID_PARAMS
 from pydantic import Field
 
-from cnc_mcp.config import Settings
-from cnc_mcp.safety import AppContext, describe_unknown_arguments
+from cnc_mcp.safety import (
+    AppContext,
+    absent_tool_reasons,
+    describe_unknown_arguments,
+    safety_mode_lines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,21 +79,58 @@ _NOT_GIVEN = "(not given — ask the operator for it before the dry run; never i
 _PromptFn = Callable[..., Awaitable[str]]
 
 
-def writes_note(settings: Settings, *, write_tools: str) -> str:
-    """The paragraph every prompt ends with: whether writes are on, and what to say
-    when a write tool named in the prompt is missing from the assistant's tool list."""
-    prefix = Settings.model_config.get("env_prefix", "")
-    if settings.enable_writes:
-        status = "Write tools are ENABLED on this server and change the live platform."
+_NEVER_CLAIM = (
+    "show the exact call you would have made and what it would change, and never claim "
+    "to have made a change you could not make."
+)
+
+
+def writes_note(ctx: AppContext, *, write_tools: str) -> str:
+    """The paragraph every prompt ends with: the exact safety mode this server runs in
+    (the same lines the server instructions carry — ``safety.safety_mode_lines``), then,
+    for each write tool named in ``write_tools`` that is not registered, the reason the
+    registry recorded (``safety.absent_tool_reasons``: ``enable_writes is false``,
+    ``area 'nso' is not in CNC_MCP_WRITE_AREAS (fault)``, ``disabled by
+    CNC_MCP_DISABLED_TOOLS``, ``needs cnc_create_sr_policy (...)``) — so the remedy the
+    assistant explains is the one that applies, not a blanket "set ENABLE_WRITES". In
+    global dry-run mode the named writes are registered, and the note says which of them
+    previews and which is recorded, not executed."""
+    settings = ctx.settings
+    names = [name.strip() for name in write_tools.split(",") if name.strip()]
+    lines = [f"Write tools ({write_tools}): " + " ".join(safety_mode_lines(settings))]
+    absent = absent_tool_reasons(ctx, names)
+    if absent:
+        by_reason: dict[str, list[str]] = {}
+        for name, reason in absent.items():
+            by_reason.setdefault(reason, []).append(name)
+        listed = "; ".join(f"{', '.join(tools)} ({reason})" for reason, tools in by_reason.items())
+        lines.append(
+            f"Of those, not registered on this server: {listed}. Do not try to call them; if "
+            f"the task needs one, say plainly that it is not registered and why, {_NEVER_CLAIM}"
+        )
     else:
-        status = "This server was started READ-ONLY: no write tool is registered."
-    return (
-        f"Write tools ({write_tools}): {status} If a write tool named above is missing "
-        "from your tool list, writes are disabled: say so plainly, show the exact call you "
-        f"would have made and what it would change, explain that {prefix}ENABLE_WRITES=true "
-        "must be set and the server restarted before it can run, and never claim to have "
-        "made a change you could not make."
-    )
+        lines.append(
+            "If a write tool named above is nevertheless missing from your tool list, say so "
+            f"plainly, {_NEVER_CLAIM}"
+        )
+    if settings.enable_writes and settings.dry_run:
+        previews = [n for n in names if _dry_run_form(ctx, n) == "preview"]
+        recorded = [n for n in names if _dry_run_form(ctx, n) == "recorded"]
+        forms = []
+        if previews:
+            verb = "answers" if len(previews) == 1 else "answer"
+            forms.append(f"{', '.join(previews)} {verb} the preview (dry_run forced to true)")
+        if recorded:
+            verb = "is" if len(recorded) == 1 else "are"
+            forms.append(f"{', '.join(recorded)} {verb} recorded, not executed")
+        if forms:
+            lines.append(f"In this dry-run mode {'; '.join(forms)}.")
+    return " ".join(lines)
+
+
+def _dry_run_form(ctx: AppContext, name: str) -> str | None:
+    record = ctx.tools.get(name)
+    return record.dry_run_form if record is not None and record.registered else None
 
 
 def _arg(value: str) -> str:
@@ -140,8 +183,8 @@ def _playbook(
 
 
 def register_prompts(mcp: MCPServer, ctx: AppContext) -> None:
-    """Register the six playbook prompts on ``mcp`` (called after the tools)."""
-    settings = ctx.settings
+    """Register the six playbook prompts on ``mcp`` (called after the tools, whose
+    registry ``ctx.tools`` the closing paragraph of every prompt reads)."""
 
     @_playbook(
         mcp,
@@ -166,7 +209,7 @@ def register_prompts(mcp: MCPServer, ctx: AppContext) -> None:
         registered = await registered_tool_names(mcp)
         head = f"Troubleshoot the Crosswork-managed device '{device}', looking back {hours} hours."
         note = writes_note(
-            settings,
+            ctx,
             write_tools="cnc_nso_device_action, cnc_unlock_device, cnc_update_device",
         )
         if "cnc_investigate_device" in registered:
@@ -235,7 +278,7 @@ Answer with exactly these four headings:
     async def network_health_check() -> str:
         registered = await registered_tool_names(mcp)
         note = writes_note(
-            settings,
+            ctx,
             write_tools="cnc_restart_microservice, cnc_acknowledge_alarm, cnc_clear_alarm",
         )
         if "cnc_network_health_report" in registered:
@@ -327,7 +370,7 @@ This is a read-only check: do not restart, acknowledge or clear anything unless 
             f"Explain the SR-TE policy from head-end '{headend}' to end-point '{endpoint}' "
             f"with color {color}, measured over the last {hours} hours."
         )
-        note = writes_note(settings, write_tools="cnc_update_sr_policy, cnc_delete_sr_policy")
+        note = writes_note(ctx, write_tools="cnc_update_sr_policy, cnc_delete_sr_policy")
         # color is an integer in every policy tool's schema: render it unquoted so the
         # assistant does not copy a string where the schema wants a number.
         if "cnc_explain_sr_policy" in registered:
@@ -422,12 +465,12 @@ PCC-initiated policy cannot be removed through the PCE at all.
             "pack, safely."
         )
         # The e2e composite is a write tool AND optional on a build: name it only when it
-        # is actually registered, so its absence is never read as "writes are disabled".
+        # is actually registered, so its absence is never read as "that write is off".
         e2e = "cnc_provision_l3vpn_e2e" in registered
         write_tools = "cnc_create_l3vpn_service, cnc_nso_device_action"
         if e2e:
             write_tools = "cnc_create_l3vpn_service, cnc_provision_l3vpn_e2e, cnc_nso_device_action"
-        note = writes_note(settings, write_tools=write_tools)
+        note = writes_note(ctx, write_tools=write_tools)
         if e2e:
             commit = """\
 4. Only after an explicit yes: cnc_provision_l3vpn_e2e (it commits, waits for the plan and
@@ -446,8 +489,9 @@ Inputs:
 - route_distinguisher: {rd}
 
 Do it in this order and stop where told:
-0. Check your tool list. If cnc_create_l3vpn_service is absent, writes are disabled on this
-   server: say so, show the call you would have made, and stop (see the last paragraph).
+0. Check your tool list. If cnc_create_l3vpn_service is absent, it is not registered on
+   this server (the last paragraph says why): say so, show the call you would have made,
+   and stop.
 1. Pre-flight, read-only: every endpoint node must be an NSO device that is in sync —
    cnc_check_device_nso_state(host_name=...) and, when in doubt, cnc_check_nso_device_sync;
    a head-end NSO considers out of sync answers 502 on commit (cnc_nso_device_action
@@ -488,7 +532,7 @@ result — or, if you stopped earlier, exactly where and why.
     async def alarm_triage() -> str:
         registered = await registered_tool_names(mcp)
         note = writes_note(
-            settings,
+            ctx,
             write_tools="cnc_acknowledge_alarm, cnc_annotate_alarm, cnc_clear_alarm",
         )
         if "cnc_alarm_triage" in registered:
@@ -554,7 +598,7 @@ cnc_clear_alarm) unless asked explicitly — notes and acknowledgements are perm
         service = _arg(service)
         registered = await registered_tool_names(mcp)
         note = writes_note(
-            settings,
+            ctx,
             write_tools="cnc_provision_service, cnc_delete_service, cnc_delete_vpn_service",
         )
         if "cnc_explain_service" in registered:

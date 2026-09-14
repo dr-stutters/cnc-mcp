@@ -187,7 +187,8 @@ _DETAIL_HINTS: list[tuple[int, str, str]] = [
         "Crosswork answered 'Unauthorized request'. This is either a rejected bearer "
         "token (the server already re-authenticated once and retried) or a path the "
         "gateway does not know / your role may not call — check the endpoint path before "
-        "suspecting the credentials.",
+        "suspecting the credentials — cnc_check_permissions lists the API rows the role "
+        "lacks.",
     ),
     (
         500,

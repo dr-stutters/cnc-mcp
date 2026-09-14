@@ -823,6 +823,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=False,
         idempotent=False,
+        # The URL may carry userinfo (https://user:secret@host:443/hook).
+        redact=("client_url",),
     )
     async def cnc_create_webhook_subscription(
         client_url: Annotated[

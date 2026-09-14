@@ -18,6 +18,7 @@ answers); addresses and names are documentation ones, not a lab's.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -41,11 +42,13 @@ from cnc_mcp.tools.composite import (
     CHECKING_TRANSIENT_SECONDS,
     COMPOSITE_TOOLS,
     MAX_POLICY_SERVICE_READS,
+    OPTIONAL_WRITE_SIBLINGS,
     PM_FRESH_HOURS,
     REACHABILITY_CADENCE_SECONDS,
     SIBLING_CALLS,
     TRIAGE_LIMIT,
     WRITE_COMPOSITES,
+    WRITE_SIBLINGS,
     Call,
     Composer,
     chronic_history,
@@ -229,8 +232,11 @@ def stuck_checking(uuid: str, host: str, router_id: str, *, age_seconds: int) ->
     (as cnc_list_devices sends it: no ``element``), stamped ``age_seconds`` ago; the
     transports' REACHABLE stamps are older still; the record's errors carry the
     CDG no-response texts."""
-    stamp = str(NOW_EPOCH - age_seconds)
-    older = str(NOW_EPOCH - age_seconds - 6 * 3600)
+    # Stamped against the clock at CALL time, not import time: a "(2m ago)" assertion must
+    # hold however long the rest of the suite ran before this test.
+    now = int(time.time())
+    stamp = str(now - age_seconds)
+    older = str(now - age_seconds - 6 * 3600)
     record = device(
         uuid,
         host,
@@ -3407,6 +3413,59 @@ async def test_provision_l3vpn_e2e_copes_with_an_absent_sibling(make_settings, f
 
 
 @respx.mock
+async def test_provision_l3vpn_e2e_skips_the_trace_when_the_oam_tool_is_not_registered(
+    make_settings, fake_clock
+):
+    """The trace is optional (trace=false exists), so the playbook is offered with OAM
+    writes off — CNC_MCP_WRITE_AREAS without 'oam' — and then says the trace was
+    skipped instead of failing the verdict on an 'Unknown tool'."""
+    routes = mock_provisioning()
+    mcp = build_server(
+        make_settings(
+            max_retries=0, enable_writes=True, write_areas="composite, service_provisioning"
+        )
+    )
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_provision_l3vpn_e2e" in names and "cnc_start_oam_trace_route" not in names
+    text = await call_tool_text(mcp, "cnc_provision_l3vpn_e2e", L3VPN_ARGS)
+    assert not text.startswith("Error:")
+    assert verdict_of(text) == "DEPLOYED"
+    assert "plan completed, oper-status op-up, trace skipped (tool not registered)" in text
+    assert (
+        "- trace: skipped — cnc_start_oam_trace_route is not registered on this server (OAM "
+        "writes are off: CNC_MCP_WRITE_AREAS or CNC_MCP_DISABLED_TOOLS), so no trace was run"
+        in text
+    )
+    assert "enable OAM writes and run cnc_start_oam_trace_route yourself" in text
+    assert "OAM trace route: skipped — cnc_start_oam_trace_route is not registered" in text
+    assert not routes["start"].called and not routes["nodes"].called
+    assert "Unknown tool" not in text
+    calls = audit(text)
+    assert not any(c.startswith(("cnc_get_device(", "cnc_start_oam_trace_route(")) for c in calls)
+    # The same server, disabled by name rather than by area.
+    respx.reset()
+    routes = mock_provisioning()
+    mcp = build_server(
+        make_settings(max_retries=0, enable_writes=True, disabled_tools="cnc_start_oam_trace_route")
+    )
+    payload = json.loads(
+        await call_tool_text(
+            mcp, "cnc_provision_l3vpn_e2e", {**L3VPN_ARGS, "response_format": "json"}
+        )
+    )
+    assert payload["verdict"]["status"] == "deployed"
+    assert payload["sections"]["trace"]["status"] == "skipped"
+    assert payload["sections"]["trace"]["error"].startswith(
+        "cnc_start_oam_trace_route is not registered on this server"
+    )
+    assert not routes["start"].called
+    # trace=false still reads trace=false, not the missing tool.
+    text = await call_tool_text(mcp, "cnc_provision_l3vpn_e2e", {**L3VPN_ARGS, "trace": False})
+    assert "OAM trace route: skipped — trace=false" in text
+    assert "not registered" not in text
+
+
+@respx.mock
 async def test_provision_l3vpn_e2e_rejects_wait_seconds_the_sibling_would_reject(
     make_settings, fake_clock
 ):
@@ -3761,3 +3820,221 @@ async def test_every_sub_call_made_is_declared_in_sibling_calls(make_settings, f
             mcp, "cnc_create_sr_policy_e2e", {**SR_ARGS, "response_format": "json"}
         ),
     )
+
+
+# --- dry_run on the write composites --------------------------------------------------------
+
+
+@respx.mock
+async def test_provision_l3vpn_e2e_dry_run_stops_after_the_dry_run(make_settings, fake_clock):
+    routes = mock_provisioning()
+    mcp = await writes(make_settings)
+    text = await call_tool_text(mcp, "cnc_provision_l3vpn_e2e", {**L3VPN_ARGS, "dry_run": True})
+    assert not text.startswith("Error:")
+    assert verdict_of(text) == "DRY-RUN"
+    assert (
+        f"Dry run only for '{VPN_ID}': the device CLI NSO would push is rendered below; "
+        "nothing was committed. Call again with dry_run=false to provision it." in text
+    )
+    assert "- dry run: ok (CLI rendered below, nothing committed)" in text
+    assert "- commit: not attempted (dry_run=true)" in text
+    assert "Dry run only — nothing was committed" in text and "vrf doc-l3vpn-1" in text
+    assert "Commit (NSO): skipped — dry_run=true" in text
+    assert "Service plan convergence: skipped — dry_run=true" in text
+    assert "OAM trace route: skipped — dry_run=true" in text
+    # Exactly one sub-call, the ?dry-run=native PUT; nothing after it ran.
+    assert routes["put"].call_count == 1
+    assert routes["put"].calls[0].request.url.params.get("dry-run") == "native"
+    for name in ("nano_plan", "plan_data", "health", "start", "trace"):
+        assert not routes[name].called, name
+    calls = audit(text)
+    assert len(calls) == 1 and calls[0].endswith("dry_run=True) -> ok")
+    payload = json.loads(
+        await call_tool_text(
+            mcp,
+            "cnc_provision_l3vpn_e2e",
+            {**L3VPN_ARGS, "dry_run": True, "trace": False, "response_format": "json"},
+        )
+    )
+    assert payload["verdict"]["status"] == "dry-run"
+    assert payload["verdict"]["reasons"] == [
+        "dry run: ok (CLI rendered below, nothing committed)",
+        "commit: not attempted (dry_run=true)",
+    ]
+    assert payload["sections"]["dry_run"]["status"] == "ok"
+    assert payload["sections"]["dry_run"]["text"].startswith("Dry run only")
+    assert payload["sections"]["commit"] == {
+        "title": "Commit (NSO)",
+        "tool": "cnc_create_l3vpn_service",
+        "status": "skipped",
+        "summary": [],
+        "error": "dry_run=true",
+    }
+    assert payload["sections"]["trace"]["error"] == "trace=false"
+    assert [c["tool"] for c in payload["calls"]] == ["cnc_create_l3vpn_service"]
+    assert payload["calls"][0]["arguments"]["dry_run"] is True
+    assert routes["put"].call_count == 2
+
+
+@respx.mock
+async def test_create_sr_policy_e2e_dry_run_stops_after_the_dry_run(make_settings, fake_clock):
+    routes = mock_sr_policy_creation()
+    mcp = await writes(make_settings)
+    text = await call_tool_text(mcp, "cnc_create_sr_policy_e2e", {**SR_ARGS, "dry_run": True})
+    assert not text.startswith("Error:")
+    assert verdict_of(text) == "DRY-RUN"
+    assert (
+        "Dry run only for PE1 -> PE2 color 200: the route the PCE would compute is shown "
+        "below; no policy was created. Call again with dry_run=false to create it." in text
+    )
+    assert "- dry run: success" in text and "- create: not attempted (dry_run=true)" in text
+    assert "- route: PE1 GigabitEthernet0/0/0/0 -> P1 GigabitEthernet0/0/0/1" in text
+    assert "Create (PCE-initiated): skipped — dry_run=true" in text
+    assert "Oper-state convergence: skipped — dry_run=true" in text
+    assert "Computed route: skipped — dry_run=true" in text
+    assert routes["dryrun"].called
+    for name in ("create", "policy", "routes"):
+        assert not routes[name].called, name
+    assert [c.split("(")[0] for c in audit(text)] == ["cnc_dryrun_sr_policy"]
+    payload = json.loads(
+        await call_tool_text(
+            mcp, "cnc_create_sr_policy_e2e", {**SR_ARGS, "dry_run": True, "response_format": "json"}
+        )
+    )
+    assert payload["verdict"]["status"] == "dry-run"
+    assert payload["sections"]["dry_run"]["data"]["state"] == "success"
+    assert payload["sections"]["create"]["status"] == "skipped"
+    assert payload["sections"]["create"]["error"] == "dry_run=true"
+    assert [c["tool"] for c in payload["calls"]] == ["cnc_dryrun_sr_policy"]
+    assert not routes["create"].called
+
+
+@respx.mock
+async def test_create_sr_policy_e2e_dry_run_failed_dry_run_is_still_failed(
+    make_settings, fake_clock
+):
+    routes = mock_sr_policy_creation()
+    routes["dryrun"].mock(
+        return_value=ok(
+            out(SRP, state="failure", message="No path found for the given constraints. ")
+        )
+    )
+    text = await call_tool_text(
+        await writes(make_settings), "cnc_create_sr_policy_e2e", {**SR_ARGS, "dry_run": True}
+    )
+    assert verdict_of(text) == "FAILED"
+    assert "Stopped at the dry run; no policy was created" in text
+    assert not routes["create"].called
+
+
+@respx.mock
+async def test_global_dry_run_mode_forces_the_playbooks_to_preview(make_settings, fake_clock):
+    """With CNC_MCP_DRY_RUN=true the playbooks are called WITHOUT dry_run and still never
+    reach their commit stage: the wrapper forces dry_run=true on the playbook itself."""
+    routes = mock_provisioning()
+    mcp = await build(make_settings(max_retries=0, enable_writes=True, dry_run=True))
+    text = await call_tool_text(mcp, "cnc_provision_l3vpn_e2e", {**L3VPN_ARGS, "dry_run": False})
+    assert text.startswith(
+        "DRY-RUN MODE (CNC_MCP_DRY_RUN=true): nothing was committed — the answer below is the "
+        f"preview.\n\n# L3VPN provisioning: {VPN_ID}"
+    )
+    assert verdict_of(text) == "DRY-RUN"
+    # The headline names the real next step: under the server-wide mode "dry_run=false"
+    # would be forced back to true, so it points at the variable instead.
+    assert "nothing can be committed until the operator unsets it; then call again" in text
+    assert "Call again with dry_run=false" not in text
+    assert routes["put"].call_count == 1
+    assert routes["put"].calls[0].request.url.params.get("dry-run") == "native"
+    for name in ("nano_plan", "plan_data", "health", "start", "trace"):
+        assert not routes[name].called, name
+    # The sibling's own answer inside the section carries the banner too (it ran through
+    # its own wrapper), and the audit shows the one forced call.
+    assert text.count("DRY-RUN MODE (CNC_MCP_DRY_RUN=true)") == 2
+    assert audit(text) == [audit(text)[0]] and audit(text)[0].endswith("dry_run=True) -> ok")
+    # A JSON answer is not banner-prefixed (it must stay parseable).
+    payload = json.loads(
+        await call_tool_text(
+            mcp, "cnc_provision_l3vpn_e2e", {**L3VPN_ARGS, "response_format": "json"}
+        )
+    )
+    assert payload["verdict"]["status"] == "dry-run"
+    assert [c["tool"] for c in payload["calls"]] == ["cnc_create_l3vpn_service"]
+    assert all(c.request.url.params.get("dry-run") == "native" for c in routes["put"].calls)
+    respx.reset()
+    routes = mock_sr_policy_creation()
+    text = await call_tool_text(mcp, "cnc_create_sr_policy_e2e", SR_ARGS)
+    assert text.startswith("DRY-RUN MODE (CNC_MCP_DRY_RUN=true)")
+    assert verdict_of(text) == "DRY-RUN"
+    assert "until the operator unsets it; then call again to create it." in text
+    assert routes["dryrun"].called and not routes["create"].called
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in WRITE_COMPOSITES:
+        assert tools[name].description.endswith(
+            "DRY-RUN MODE is active on this server: dry_run is forced to true — the tool only "
+            "previews; nothing is committed."
+        ), name
+
+
+# --- registration needs the write siblings --------------------------------------------------
+
+
+async def test_write_siblings_are_the_write_tools_the_playbooks_call(make_settings):
+    """WRITE_SIBLINGS (what a playbook's registration requires) is the write sibling
+    that commits; OPTIONAL_WRITE_SIBLINGS the writes it can skip with a note (the L3VPN
+    trace). Together they are exactly the siblings in SIBLING_CALLS that are write
+    tools, and the commit sibling is always required."""
+    tools = {t.name: t for t in await (await writes(make_settings)).list_tools()}
+    assert set(WRITE_SIBLINGS) == set(WRITE_COMPOSITES) == set(OPTIONAL_WRITE_SIBLINGS)
+    for composite_name in WRITE_COMPOSITES:
+        required = set(WRITE_SIBLINGS[composite_name])
+        optional = set(OPTIONAL_WRITE_SIBLINGS[composite_name])
+        write_siblings = {
+            sibling
+            for sibling in SIBLING_CALLS[composite_name]
+            if tools[sibling].annotations.read_only_hint is False
+        }
+        assert required and not (required & optional), composite_name
+        assert required | optional == write_siblings, composite_name
+        assert required <= write_siblings, composite_name
+    assert WRITE_SIBLINGS["cnc_provision_l3vpn_e2e"] == ("cnc_create_l3vpn_service",)
+    assert OPTIONAL_WRITE_SIBLINGS["cnc_provision_l3vpn_e2e"] == ("cnc_start_oam_trace_route",)
+    assert WRITE_SIBLINGS["cnc_create_sr_policy_e2e"] == ("cnc_create_sr_policy",)
+
+
+async def test_write_playbooks_are_skipped_when_a_write_sibling_is_not_registered(
+    make_settings, caplog
+):
+    with caplog.at_level(logging.INFO, logger="cnc_mcp.safety"):
+        mcp = build_server(make_settings(enable_writes=True, write_areas="composite"))
+    names = {t.name for t in await mcp.list_tools()}
+    assert set(COMPOSITE_TOOLS) - set(WRITE_COMPOSITES) <= names
+    assert not (set(WRITE_COMPOSITES) & names)
+    assert (
+        "Tool cnc_provision_l3vpn_e2e not registered (needs cnc_create_l3vpn_service "
+        "(area service_provisioning))" in caplog.text
+    )
+    assert (
+        "Tool cnc_create_sr_policy_e2e not registered (needs cnc_create_sr_policy "
+        "(area sr_te_operations))" in caplog.text
+    )
+    # The L3VPN playbook needs its commit sibling's area only (the OAM trace is optional:
+    # an operator keeping OAM writes off still gets the playbook); the SR one its own.
+    mcp = build_server(
+        make_settings(enable_writes=True, write_areas="composite, service_provisioning, oam")
+    )
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_provision_l3vpn_e2e" in names and "cnc_create_sr_policy_e2e" not in names
+    mcp = build_server(
+        make_settings(enable_writes=True, write_areas="composite, service_provisioning")
+    )
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_provision_l3vpn_e2e" in names and "cnc_start_oam_trace_route" not in names
+    mcp = build_server(make_settings(enable_writes=True, write_areas="composite, oam"))
+    assert "cnc_provision_l3vpn_e2e" not in {t.name for t in await mcp.list_tools()}
+    mcp = build_server(make_settings(enable_writes=True, write_areas="composite,sr_te_operations"))
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_create_sr_policy_e2e" in names and "cnc_provision_l3vpn_e2e" not in names
+    # A disabled write sibling has the same effect.
+    mcp = build_server(make_settings(enable_writes=True, disabled_tools="cnc_create_sr_policy"))
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_create_sr_policy_e2e" not in names and "cnc_provision_l3vpn_e2e" in names

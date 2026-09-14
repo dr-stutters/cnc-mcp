@@ -1688,6 +1688,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=False,
         idempotent=False,
+        dry_run_hint="preview the computed path with cnc_dryrun_sr_policy",
     )
     async def cnc_create_sr_policy(
         headend: Annotated[str, Field(description=_HEADEND_DESC, min_length=1, max_length=253)],
@@ -1825,6 +1826,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=True,
         idempotent=True,
+        dry_run_hint="preview the computed path with cnc_dryrun_sr_policy",
     )
     async def cnc_update_sr_policy(
         headend: Annotated[str, Field(description=_HEADEND_DESC, min_length=1, max_length=253)],

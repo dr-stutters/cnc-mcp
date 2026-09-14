@@ -434,15 +434,25 @@ async def test_provision_note_names_the_e2e_composite_only_when_registered(make_
 
 
 async def test_prompts_explain_absent_write_tools_in_both_modes(make_settings):
+    """Read-only: the note names the remedy (ENABLE_WRITES) and lists every write tool
+    it names as not registered. Writes on: no tool is listed as absent, and the
+    ENABLE_WRITES remedy — wrong in that mode — is not mentioned."""
     prefix = "CNC_MCP_"
     for enable_writes, phrase in ((False, "READ-ONLY"), (True, "ENABLED")):
         mcp = build_server(make_settings(enable_writes=enable_writes))
         for name, arguments in SAMPLE_ARGUMENTS.items():
             text = await prompt_text(mcp, name, arguments)
             assert phrase in text, (name, enable_writes)
-            assert "missing from your tool list, writes are disabled" in text, name
-            assert f"{prefix}ENABLE_WRITES=true" in text, name
             assert "never claim to have made a change" in text, name
+            if enable_writes:
+                assert f"{prefix}ENABLE_WRITES" not in text, name
+                assert "not registered on this server" not in text, name
+                assert "nevertheless missing from your tool list" in text, name
+            else:
+                assert f"{prefix}ENABLE_WRITES=true" in text, name
+                assert "not registered on this server: " in text, name
+                assert "(enable_writes is false)" in text, name
+                assert "nevertheless missing" not in text, name
 
 
 async def test_prompts_carry_no_lab_specific_names(make_settings):
@@ -462,13 +472,127 @@ async def test_prompts_carry_no_lab_specific_names(make_settings):
             assert lab not in blob, f"{prompt.name} metadata mentions {lab!r}"
 
 
+def _context(make_settings, **overrides):
+    """A registered AppContext (the real tool set) for the settings given."""
+    from cnc_mcp.auth import StaticTokenAuth
+    from cnc_mcp.client import ApiClient
+    from cnc_mcp.safety import AppContext
+    from cnc_mcp.tools import register_all_tools
+
+    settings = make_settings(**overrides)
+    ctx = AppContext(settings=settings, client=ApiClient(settings, StaticTokenAuth("t")))
+    register_all_tools(MCPServer("test"), ctx)
+    return ctx
+
+
 def test_writes_note_reflects_the_server_mode(make_settings):
-    off = writes_note(make_settings(enable_writes=False), write_tools="cnc_delete_device")
-    on = writes_note(make_settings(enable_writes=True), write_tools="cnc_delete_device")
+    """The closing paragraph carries the server's safety_mode_lines() — the same text
+    the instructions end with — and, for each named write tool that is absent, the
+    registry's own reason, so the remedy the assistant explains is the one that
+    applies (an area not in WRITE_AREAS or a DISABLED_TOOLS entry is never answered
+    with 'set ENABLE_WRITES=true')."""
+    from cnc_mcp.safety import safety_mode_lines
+
+    tools = "cnc_delete_device, cnc_acknowledge_alarm"
+    off = writes_note(_context(make_settings, enable_writes=False), write_tools=tools)
+    on = writes_note(_context(make_settings, enable_writes=True), write_tools=tools)
     assert "READ-ONLY" in off and "ENABLED" not in off
     assert "ENABLED" in on and "READ-ONLY" not in on
-    assert "cnc_delete_device" in off
+    assert off.startswith(f"Write tools ({tools}): ")
     assert "CNC_MCP_ENABLE_WRITES=true" in off
+    assert (
+        "Of those, not registered on this server: cnc_delete_device, cnc_acknowledge_alarm "
+        "(enable_writes is false). Do not try to call them" in off
+    )
+    assert "CNC_MCP_ENABLE_WRITES" not in on and "not registered on this server" not in on
+    assert "nevertheless missing from your tool list" in on
+    for ctx_kwargs, text in (({"enable_writes": False}, off), ({"enable_writes": True}, on)):
+        for line in safety_mode_lines(make_settings(**ctx_kwargs)):
+            assert line in text
+
+    # Writes on for one area: the other area's tool is absent for THAT reason.
+    areas = writes_note(
+        _context(make_settings, enable_writes=True, write_areas="fault"), write_tools=tools
+    )
+    assert "ENABLED only for the areas fault (CNC_MCP_WRITE_AREAS)" in areas
+    assert (
+        "Of those, not registered on this server: cnc_delete_device (area 'devices' is not in "
+        "CNC_MCP_WRITE_AREAS (fault)). Do not try to call them" in areas
+    )
+    assert "cnc_acknowledge_alarm (" not in areas  # registered: not listed as absent
+    assert "ENABLE_WRITES" not in areas
+
+    # A tool disabled by name: absent for that reason, whether writes are on or off.
+    disabled = writes_note(
+        _context(make_settings, enable_writes=True, disabled_tools="cnc_acknowledge_alarm"),
+        write_tools=tools,
+    )
+    assert "1 tool is disabled by configuration (CNC_MCP_DISABLED_TOOLS)" in disabled
+    assert (
+        "not registered on this server: cnc_acknowledge_alarm (disabled by "
+        "CNC_MCP_DISABLED_TOOLS). Do not try to call them" in disabled
+    )
+    assert "cnc_delete_device (" not in disabled and "ENABLE_WRITES" not in disabled
+    both = writes_note(
+        _context(make_settings, enable_writes=False, disabled_tools="cnc_acknowledge_alarm"),
+        write_tools=tools,
+    )
+    assert (
+        "not registered on this server: cnc_delete_device (enable_writes is false); "
+        "cnc_acknowledge_alarm (disabled by CNC_MCP_DISABLED_TOOLS)." in both
+    )
+
+    # Dry-run mode: nothing is absent; the note says which form each named write takes.
+    dry = writes_note(
+        _context(make_settings, enable_writes=True, dry_run=True),
+        write_tools="cnc_create_l3vpn_service, cnc_provision_l3vpn_e2e, cnc_nso_device_action",
+    )
+    assert "DRY-RUN MODE is active (CNC_MCP_DRY_RUN=true)" in dry
+    assert "not registered on this server" not in dry and "ENABLE_WRITES" not in dry
+    assert dry.endswith(
+        "In this dry-run mode cnc_create_l3vpn_service, cnc_provision_l3vpn_e2e answer the "
+        "preview (dry_run forced to true); cnc_nso_device_action is recorded, not executed."
+    )
+    one = writes_note(
+        _context(make_settings, enable_writes=True, dry_run=True), write_tools="cnc_delete_device"
+    )
+    assert one.endswith("In this dry-run mode cnc_delete_device is recorded, not executed.")
+    # Read-only + dry_run: the read-only line governs, no dry-run sentence.
+    off_dry = writes_note(
+        _context(make_settings, enable_writes=False, dry_run=True), write_tools=tools
+    )
+    assert "READ-ONLY" in off_dry and "dry-run mode" not in off_dry
+
+    # A name no module defines is reported as such, never as a disabled write.
+    unknown = writes_note(
+        _context(make_settings, enable_writes=True), write_tools="cnc_delete_device, cnc_nope"
+    )
+    assert "not registered on this server: cnc_nope (not a tool of this build)." in unknown
+
+
+async def test_prompts_quote_the_registry_reason_for_an_absent_write_tool(make_settings):
+    """Through the server: with writes on for one area, or a tool disabled by name, the
+    provision prompt's closing paragraph gives the real reason and never the
+    ENABLE_WRITES remedy (verified wrong before: every prompt said 'writes are
+    disabled ... CNC_MCP_ENABLE_WRITES=true must be set')."""
+    args = SAMPLE_ARGUMENTS["provision_l3vpn"]
+    mcp = build_server(make_settings(enable_writes=True, write_areas="fault"))
+    text = await prompt_text(mcp, "provision_l3vpn", args)
+    assert "ENABLE_WRITES" not in text
+    assert "cnc_create_l3vpn_service (area 'service_provisioning' is not in " in text
+    assert "cnc_nso_device_action (area 'nso' is not in CNC_MCP_WRITE_AREAS (fault))" in text
+    assert "cnc_provision_l3vpn_e2e" not in text  # not registered: not named at all
+    mcp = build_server(make_settings(enable_writes=True, disabled_tools="cnc_nso_device_action"))
+    text = await prompt_text(mcp, "troubleshoot_device", SAMPLE_ARGUMENTS["troubleshoot_device"])
+    assert "ENABLE_WRITES" not in text
+    assert "cnc_nso_device_action (disabled by CNC_MCP_DISABLED_TOOLS)" in text
+    assert "cnc_unlock_device (" not in text
+    mcp = build_server(make_settings(enable_writes=True, dry_run=True))
+    text = await prompt_text(mcp, "provision_l3vpn", args)
+    assert "DRY-RUN MODE is active" in text and "Write tools are ENABLED" in text
+    assert "cnc_nso_device_action is recorded, not executed" in text
+    # Step 0 of the provisioning playbook points at that paragraph, not at ENABLE_WRITES.
+    assert "it is not registered on\n   this server (the last paragraph says why)" in text
 
 
 async def test_register_prompts_is_idempotent_per_server(make_settings):

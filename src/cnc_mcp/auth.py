@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+from typing import Any
 
 import httpx
 
@@ -74,6 +76,40 @@ class AuthStrategy:
         logged and forgotten, since the caller is shutting down anyway.
         """
 
+    def bearer_token(self) -> str | None:
+        """The token this strategy currently presents, or None when it has none.
+
+        Never acquires one: a strategy that logs in lazily answers None until its
+        first request has run. Callers that need the token's claims
+        (:func:`jwt_claims`) make one request first. The value is a credential —
+        never log it or include it in a tool answer.
+        """
+        return None
+
+
+def jwt_claims(token: str | None) -> dict[str, Any] | None:
+    """The payload claims of a JWT, decoded WITHOUT verifying the signature.
+
+    Splits ``header.payload.signature``, base64url-decodes the payload (adding
+    the padding the JWT encoding drops) and parses it as a JSON object. Answers
+    None for anything else: an empty value, a token that is not three dot-
+    separated parts, undecodable base64, or a payload that is not a JSON object.
+    The claims are the platform's own statement about the session (Crosswork's
+    CAS JWT carries ``sub``/``username``, ``policy_id`` = the role,
+    ``deviceAccessGroups``, ``exp``/``iat``, ``iss``) and are readable by anyone
+    holding the token — this is identification, not authentication. Never logs
+    the token.
+    """
+    if not token or token.count(".") != 2:
+        return None
+    payload = token.split(".")[1]
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        claims = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return claims if isinstance(claims, dict) else None
+
 
 class NoAuth(AuthStrategy):
     """No authentication (rare; useful for local mocks)."""
@@ -113,10 +149,14 @@ class StaticTokenAuth(AuthStrategy):
         if not token:
             raise PlatformError("Static token auth requires the *_API_TOKEN environment variable.")
         self._header_name = header_name
+        self._token = token
         self._value = f"{scheme} {token}" if scheme else token
 
     def headers(self) -> dict[str, str]:
         return {self._header_name: self._value}
+
+    def bearer_token(self) -> str | None:
+        return self._token
 
 
 class LoginTokenAuth(AuthStrategy):
@@ -193,12 +233,21 @@ class LoginTokenAuth(AuthStrategy):
                 # several in-flight requests all 401 on an expired token).
                 return True
             logger.info("Session token rejected (401); re-authenticating")
-            self._token = None
-            await self._login(http)
+            await self._relogin(http)
         return True
+
+    async def _relogin(self, http: httpx.AsyncClient) -> None:
+        """Drop the rejected token and log in again (called under the lock). Hook: a
+        strategy with a platform-side session releases that session first."""
+        self._token = None
+        await self._login(http)
 
     def invalidate(self) -> None:
         self._token = None
+
+    def bearer_token(self) -> str | None:
+        """The cached session token; None before the first login (never logs in)."""
+        return self._token
 
     async def _login(self, http: httpx.AsyncClient) -> None:
         kwargs: dict = {}
@@ -288,6 +337,12 @@ class CrossworkCasAuth(LoginTokenAuth):
     JWT-shaped but invalid one is a 500 (``"Middleware error"``), so
     is_auth_failure() recognises those bodies — otherwise an expired token
     would surface as a permission error and never trigger re-authentication.
+    The flip side: 403 ``"Unauthorized request"`` is ALSO what an unknown path
+    or a missing role grant answers with a perfectly valid token, so a
+    re-login can be triggered while the rejected session is still alive.
+    _relogin() therefore deletes the current TGT (with the JWT it still holds)
+    before acquiring a new one — a re-login never leaves a session behind,
+    whatever the 403 meant.
     """
 
     TICKETS_PATH = "/crosswork/sso/v1/tickets"
@@ -380,6 +435,24 @@ class CrossworkCasAuth(LoginTokenAuth):
         self._token = token
         self._tgt = tgt
         logger.info("Authenticated to Crosswork (JWT acquired)")
+
+    async def _relogin(self, http: httpx.AsyncClient) -> None:
+        """Release the rejected session, then log in again.
+
+        The rejected JWT may still be valid (a 403 ``Unauthorized request`` is
+        also what an unknown path or a missing role grant answers), so the
+        DELETE is sent with it — the only form Crosswork accepts — and the SSO
+        session it names is released before a new one is opened. Without this,
+        every such false-positive re-login leaked one session towards the
+        per-user cap (reproduced against a mocked gateway 2026-09-14:
+        cnc_check_permissions on a role without the aaaread grant opened four
+        sessions per call and closed none; at 50 sessions per user and an 8 h
+        idle drain, a dozen checks locked the service account out). A failed
+        DELETE is logged and forgotten: the re-login must still happen.
+        """
+        await self.logout(http)
+        self._token = None  # whatever the DELETE answered, the rejected JWT is not reused
+        await self._login(http)
 
     async def logout(self, http: httpx.AsyncClient) -> None:
         """Delete the ticket-granting ticket so the SSO session is released."""

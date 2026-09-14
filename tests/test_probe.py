@@ -272,11 +272,21 @@ def make_client(settings) -> ApiClient:
 
 
 def mock_cas_login(fresh_tokens: list[str]) -> respx.Route:
-    """Mock both CAS legs; leg 2 hands out ``fresh_tokens`` in order. Returns the leg-2 route."""
+    """Mock both CAS legs and the TGT delete (a re-login releases the session it
+    replaces); leg 2 hands out ``fresh_tokens`` in order. Returns the leg-2 route."""
     tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
     respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
+    respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
     return respx.post(f"{tickets}/TGT-1-x").mock(
         side_effect=[httpx.Response(200, text=t) for t in fresh_tokens]
+    )
+
+
+def sso_logouts() -> int:
+    return sum(
+        1
+        for c in respx.calls
+        if c.request.method == "DELETE" and "/crosswork/sso/v1/tickets/" in str(c.request.url)
     )
 
 
@@ -353,8 +363,10 @@ async def test_probe_path_with_cas_auth_reads_403_as_no_rbac_only_after_one_relo
         assert api.call_count == 2
         assert api.calls[0].request.headers["Authorization"] == "Bearer a.stale.jwt"
         assert api.calls[1].request.headers["Authorization"] == "Bearer a.fresh.jwt"
+        assert sso_logouts() == 1  # the re-login released the session it replaced
     finally:
         await client.aclose()
+    assert sso_logouts() == 2  # ... and closing released the fresh one
 
 
 @respx.mock
@@ -371,7 +383,7 @@ async def test_availability_require_blocks_no_rbac_with_the_fresh_token_explanat
     try:
         with pytest.raises(PlatformError, match="no RBAC entry for this path"):
             await avail.require(client, "/crosswork/inventory/v1/made-up")
-        assert leg2.call_count == 2 and api.call_count == 2
+        assert leg2.call_count == 2 and api.call_count == 2 and sso_logouts() == 1
         assert avail.get("/crosswork/inventory") is Routing.ROUTED_NO_RBAC
         # Cached: a second require() re-raises without touching the network.
         with pytest.raises(PlatformError, match="no RBAC entry"):

@@ -10,6 +10,7 @@ and wrappers.
 
 from __future__ import annotations
 
+import base64
 import itertools
 import json
 
@@ -19,12 +20,12 @@ import respx
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from cnc_mcp.auth import StaticTokenAuth
+from cnc_mcp.auth import CrossworkCasAuth, StaticTokenAuth
 from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.formatting import TRUNCATION_HINT, epoch_iso
-from cnc_mcp.safety import AppContext
-from cnc_mcp.tools import ALL_MODULES, admin
+from cnc_mcp.safety import AppContext, register_tool
+from cnc_mcp.tools import ALL_MODULES, admin, devices, fault, topology
 from tests.conftest import BASE_URL, call_tool_text
 
 PLATFORM = f"{BASE_URL}/crosswork/platform/v2"
@@ -574,6 +575,7 @@ READ_TOOLS = {
     "cnc_get_role_permissions",
     "cnc_get_password_policy",
     "cnc_list_secured_apis",
+    "cnc_check_permissions",
 }
 WRITE_TOOLS = {"cnc_set_login_banner", "cnc_set_maintenance_mode", "cnc_restart_microservice"}
 
@@ -2032,3 +2034,603 @@ async def test_restart_microservice_failure_and_blank_name(make_settings):
     respx.post(RESTART_URL).mock(return_value=NATS_500)
     text = await call_tool_text(build(settings), "cnc_restart_microservice", {"name": "x"})
     assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_check_permissions ---------------------------------------------------
+
+AAA_READ = f"{BASE_URL}/crosswork/aaaread/v1"
+ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def make_jwt(**claims) -> str:
+    """A CAS-shaped JWT (HS512 header, plain claims, dummy signature)."""
+    payload = {
+        "sub": "mcp-ro",
+        "username": "mcp-ro",
+        "policy_id": "cnc-mcp-readonly",
+        "deviceAccessGroups": "ALL-ACCESS",
+        "iat": 1789471200,
+        "exp": 1789500000,
+        "iss": f"{BASE_URL}/crosswork/sso",
+        **claims,
+    }
+    header = b64url(b'{"alg":"HS512"}')
+    return f"{header}.{b64url(json.dumps(payload).encode())}.c2ln"
+
+
+def role_object(name: str, methods_for: dict[str, list[str]] | None = None) -> dict:
+    """A Tyk policy in the verified aaa/v1/role shape: every api of the packaged map with
+    ``/.*`` and all five methods (the admin shape), overridden per api_id by
+    ``methods_for`` (an empty list drops the api from access_rights)."""
+    overrides = methods_for or {}
+    rights = {}
+    for api_id, api in admin.load_rbac_map()["apis"].items():
+        methods = overrides.get(api_id, ALL_METHODS)
+        if not methods:
+            continue
+        rights[api_id] = {
+            "api_name": api["name"],
+            "api_id": api_id,
+            "versions": ["Default"],
+            "allowed_urls": [{"url": "/.*", "methods": methods}],
+            "limit": None,
+            "allowance_scope": "",
+        }
+    return {
+        "_id": "",
+        "id": "",
+        "name": name,
+        "org_id": "1",
+        "rate": 5000,
+        "per": 60,
+        "quota_max": -1,
+        "active": True,
+        "is_inactive": False,
+        "key_expires_in": -1,
+        "access_rights": rights,
+    }
+
+
+def role_access(name: str, api_access: bool = True) -> dict:
+    return {"PolicyId": name, "GuiAccess": True, "ApiAccess": api_access, "PolicyData": ""}
+
+
+def build_rbac(settings: Settings, *, extra_tool: bool = False, modules=()) -> MCPServer:
+    """admin + devices + topology (+ ``modules``) on one server, logged in with a static
+    JWT."""
+    mcp = MCPServer("test")
+    ctx = AppContext(
+        settings=settings, client=ApiClient(settings, StaticTokenAuth(settings.api_token))
+    )
+    for module in (admin, devices, topology, *modules):
+        module.register(mcp, ctx)
+    if extra_tool:
+
+        @register_tool(mcp, ctx, name="cnc_new_unmapped_tool", title="New", read_only=True)
+        async def cnc_new_unmapped_tool() -> str:
+            return "x"
+
+    return mcp
+
+
+def mock_role(name: str, role: dict, access: dict | None = None, base: str = AAA_READ):
+    respx.get(f"{base}/role/{name}").mock(return_value=httpx.Response(200, json=role))
+    respx.get(f"{base}/roleAccess/{name}").mock(
+        return_value=httpx.Response(200, json=access or role_access(name))
+    )
+
+
+@respx.mock
+async def test_check_permissions_admin_shaped_role_permits_everything(make_settings):
+    settings = make_settings(
+        api_token=make_jwt(policy_id="admin", sub="mcp-admin", username="mcp-admin")
+    )
+    mock_role("admin", role_object("admin"))
+    mcp = build_rbac(settings)
+    registered = len(await mcp.list_tools())
+    text = await call_tool_text(mcp, "cnc_check_permissions", {})
+    assert text.startswith("# Permission check for account 'mcp-admin'")
+    assert "- role (policy_id): admin" in text
+    assert "- device access groups: ALL-ACCESS" in text
+    assert "expires 2026-09-15T" in text  # exp claim rendered as ISO UTC
+    assert "- role read from: GET /crosswork/aaaread/v1/role/admin" in text
+    assert "GUI access: yes; API access: yes (GET /crosswork/aaaread/v1/roleAccess/admin)" in text
+    assert f"**Verdict**: All {registered} registered tools are permitted by role 'admin'." in text
+    assert "## Refused tools" not in text and "not in the RBAC map" not in text
+    assert "This check is static" in text
+    assert "not ALL-ACCESS" not in text
+    # the token itself never appears in the answer
+    assert settings.api_token not in text and "eyJ" not in text
+
+
+@respx.mock
+async def test_check_permissions_lists_the_rows_a_restricted_role_lacks(make_settings):
+    """inventory_cwinventory granted GET only, topo_restconf not granted at all: the device
+    tools (POST nodes/query) and the topology tools are refused with the exact rows."""
+    settings = make_settings(api_token=make_jwt())
+    role = role_object("cnc-mcp-readonly", {"inventory_cwinventory": ["GET"], "topo_restconf": []})
+    mock_role("cnc-mcp-readonly", role)
+    mcp = build_rbac(settings)
+    registered = len(await mcp.list_tools())
+    text = await call_tool_text(mcp, "cnc_check_permissions", {})
+    assert "- username: mcp-ro (sub mcp-ro)" in text
+    assert (
+        f"of {registered} registered tools would be refused by the gateway (403) under role "
+        "'cnc-mcp-readonly'." in text
+    )
+    assert "Unauthorized request" not in text  # the refusal body was never observed live
+    assert "## API rows to grant (Administration > Users and Roles > Roles)" in text
+    assert "| Inventory | inventory_cwinventory | Inventory APIs | POST |" in text
+    assert "| Topology RESTCONF | topo_restconf | Topology RESTCONF | GET |" in text
+    assert "## Refused tools" in text
+    assert text.count("### devices") == 1 and text.count("### topology") == 1  # grouped by area
+    assert (
+        "- **cnc_list_devices** (read)\n  - Inventory / inventory_cwinventory (Inventory APIs): "
+        "POST /crosswork/inventory/v1/nodes/query — method or path not in the API's "
+        "allowed_urls (missing POST)"
+    ) in text
+    assert (
+        "GET /crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks — API not "
+        "granted to the role (missing GET)" in text
+    )
+    # a GET-only inventory read stays permitted; the admin tools never touch either api
+    assert "cnc_get_device_summary" not in text.split("## Refused tools")[1]
+    assert "cnc_get_platform_version" not in text.split("## Refused tools")[1]
+
+
+@respx.mock
+async def test_check_permissions_json_shape_and_unmapped_tool(make_settings):
+    settings = make_settings(api_token=make_jwt(deviceAccessGroups="DAG-East"))
+    role = role_object("cnc-mcp-readonly", {"inventory_cwinventory": ["GET"]})
+    mock_role("cnc-mcp-readonly", role)
+    mcp = build_rbac(settings, extra_tool=True)
+    text = await call_tool_text(mcp, "cnc_check_permissions", {"response_format": "json"})
+    data = json.loads(text)
+    assert set(data) == {
+        "identity",
+        "role",
+        "summary",
+        "server",
+        "grants_needed",
+        "refused",
+        "not_in_map",
+        "notes",
+    }
+    assert data["identity"] == {
+        "username": "mcp-ro",
+        "subject": "mcp-ro",
+        "role": "cnc-mcp-readonly",
+        "device_access_groups": ["DAG-East"],
+        "token_issued": "2026-09-15T11:20:00Z",
+        "token_expires": "2026-09-15T19:20:00Z",
+        "issuer": f"{BASE_URL}/crosswork/sso",
+    }
+    assert data["role"]["name"] == "cnc-mcp-readonly"
+    assert data["role"]["source"] == "/crosswork/aaaread/v1/role/cnc-mcp-readonly"
+    assert data["role"]["api_access"] is True and data["role"]["gui_access"] is True
+    assert (
+        data["role"]["api_grants"] == len(role["access_rights"]) and data["role"]["active"] is True
+    )
+    summary = data["summary"]
+    assert summary["registered_tools"] == len(await mcp.list_tools())
+    assert (
+        summary["permitted"] + summary["refused"] + summary["not_in_map"]
+        == summary["registered_tools"]
+    )
+    assert summary["not_in_map"] == 1 and data["not_in_map"] == ["cnc_new_unmapped_tool"]
+    inventory = next(g for g in data["grants_needed"] if g["api_id"] == "inventory_cwinventory")
+    assert inventory["feature"] == "Inventory" and inventory["methods"] == ["POST"]
+    assert "cnc_list_devices" in inventory["tools"] and "cnc_get_device" in inventory["tools"]
+    refused = {r["tool"]: r for r in data["refused"]}
+    assert (
+        refused["cnc_list_devices"]["area"] == "devices"
+        and refused["cnc_list_devices"]["read_only"] is True
+    )
+    assert refused["cnc_list_devices"]["missing"] == [
+        {
+            "api_id": "inventory_cwinventory",
+            "feature": "Inventory",
+            "api_name": "Inventory APIs",
+            "method": "POST",
+            "path": "/crosswork/inventory/v1/nodes/query",
+            "missing_methods": ["POST"],
+            "reason": "method or path not in the API's allowed_urls",
+        }
+    ]
+    assert any("DAG-East" in n and "not ALL-ACCESS" in n for n in data["notes"])
+    assert any("static" in n for n in data["notes"])
+
+
+@respx.mock
+async def test_check_permissions_role_without_api_access(make_settings):
+    settings = make_settings(api_token=make_jwt(policy_id="viewer"))
+    mock_role("viewer", role_object("viewer"), role_access("viewer", api_access=False))
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert "API access: no" in text
+    assert "**Verdict**: Role 'viewer' has ApiAccess=false: it has NO API access at all" in text
+
+
+@respx.mock
+async def test_check_permissions_falls_back_to_aaa_when_the_mirror_refuses(make_settings):
+    """The mirror is tried once for the role; roleAccess is then read from the base that
+    answered (aaa/v1) — a second refused mirror probe would cost a re-login under CAS."""
+    settings = make_settings(api_token=make_jwt(policy_id="ops"))
+    unauthorized = httpx.Response(403, json={"error": "Unauthorized request"})
+    mirror_role = respx.get(f"{AAA_READ}/role/ops").mock(return_value=unauthorized)
+    mirror_access = respx.get(f"{AAA_READ}/roleAccess/ops").mock(return_value=unauthorized)
+    mock_role("ops", role_object("ops"), base=AAA)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert mirror_role.call_count == 1 and not mirror_access.called
+    assert "- role read from: GET /crosswork/aaa/v1/role/ops" in text
+    assert "(GET /crosswork/aaa/v1/roleAccess/ops)" in text
+    assert "are permitted by role 'ops'." in text
+
+
+def cas_login_routes(jwt: str) -> tuple[respx.Route, respx.Route]:
+    """Both CAS legs plus the TGT delete; returns (leg-1 route, delete route)."""
+    tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
+    leg1 = respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
+    respx.post(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200, text=jwt))
+    delete = respx.delete(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200))
+    return leg1, delete
+
+
+def build_rbac_cas(settings: Settings) -> MCPServer:
+    """admin on a server with the real CAS strategy (lazy login, 403 = re-authenticate)."""
+    mcp = MCPServer("test")
+    ctx = AppContext(
+        settings=settings,
+        client=ApiClient(settings, CrossworkCasAuth(settings.username, settings.password)),
+    )
+    admin.register(mcp, ctx)
+    return mcp
+
+
+@respx.mock
+async def test_check_permissions_under_cas_costs_one_login_on_the_fallback_path(make_settings):
+    """Under CrossworkCasAuth every 403 'Unauthorized request' is an auth failure -> re-login
+    -> retry. The mirror-refused path must still cost exactly ONE login: the warm-up goes
+    through ensure_authenticated() (no probe GET that could 403), the role is read
+    through the mirror once (one 403 -> one re-login, whose old TGT is deleted), and
+    roleAccess is read from aaa/v1 directly. Previously: three leaked SSO sessions."""
+    settings = make_settings(api_token="", username="mcp-ops", password="secret")
+    leg1, delete = cas_login_routes(make_jwt(policy_id="ops", sub="mcp-ops", username="mcp-ops"))
+    unauthorized = httpx.Response(403, json={"error": "Unauthorized request"})
+    mirror_role = respx.get(f"{AAA_READ}/role/ops").mock(return_value=unauthorized)
+    mirror_access = respx.get(f"{AAA_READ}/roleAccess/ops").mock(return_value=unauthorized)
+    mock_role("ops", role_object("ops"), base=AAA)
+    text = await call_tool_text(build_rbac_cas(settings), "cnc_check_permissions", {})
+    assert "are permitted by role 'ops'." in text
+    assert "- role read from: GET /crosswork/aaa/v1/role/ops" in text
+    # the mirror's 403 was retried once with a fresh token (the client's one re-auth pass)
+    assert mirror_role.call_count == 2 and not mirror_access.called
+    # initial login + the one re-login; the re-login released the first session
+    assert leg1.call_count == 2 and delete.call_count == 1
+    assert not any(c.request.url.path.endswith("/userpermission") for c in respx.calls)
+
+
+@respx.mock
+async def test_check_permissions_under_cas_permits_with_the_mirror_and_never_relogs(
+    make_settings,
+):
+    settings = make_settings(api_token="", username="mcp-ops", password="secret")
+    leg1, delete = cas_login_routes(make_jwt(policy_id="ops", sub="mcp-ops", username="mcp-ops"))
+    mock_role("ops", role_object("ops"))
+    text = await call_tool_text(build_rbac_cas(settings), "cnc_check_permissions", {})
+    assert "- username: mcp-ops (sub mcp-ops)" in text
+    assert "are permitted by role 'ops'." in text
+    assert leg1.call_count == 1 and delete.call_count == 0
+
+
+@respx.mock
+async def test_check_permissions_both_bases_refused_names_the_row_to_grant(make_settings):
+    """When neither the mirror nor aaa/v1 lets the account read its role, the error names
+    the aaa_cw_role_read row instead of pointing back at cnc_check_permissions."""
+    settings = make_settings(api_token=make_jwt(policy_id="ops"))
+    unauthorized = httpx.Response(403, json={"error": "Unauthorized request"})
+    respx.get(f"{AAA_READ}/role/ops").mock(return_value=unauthorized)
+    respx.get(f"{AAA}/role/ops").mock(return_value=unauthorized)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert text.startswith("Error: role 'ops' may not read its own role")
+    assert "GET /crosswork/aaaread/v1/role/ops and GET /crosswork/aaa/v1/role/ops" in text
+    assert "aaa_cw_role_read" in text and "/crosswork/aaaread/" in text
+    assert "cnc_check_permissions lists" not in text  # not the circular generic 403 hint
+
+
+@respx.mock
+async def test_check_permissions_mirror_only_role_is_not_refused(make_settings):
+    """The map models the mirror and the aaa/v1 fallback as alternatives (any_of): a role
+    granting only aaa_cw_role_read reads itself through the mirror and must not report
+    itself refused (nor list aaa_cwaaa for it); the aaa_cwaaa-only tools still are."""
+    settings = make_settings(api_token=make_jwt())
+    role = role_object("cnc-mcp-readonly", {"aaa_cwaaa": []})
+    mock_role("cnc-mcp-readonly", role)
+    text = await call_tool_text(
+        build_rbac(settings), "cnc_check_permissions", {"response_format": "json"}
+    )
+    data = json.loads(text)
+    refused = {r["tool"]: r for r in data["refused"]}
+    assert "cnc_check_permissions" not in refused and "cnc_list_roles" in refused
+    assert data["summary"]["permitted"] + len(refused) == data["summary"]["registered_tools"]
+    aaa = next(g for g in data["grants_needed"] if g["api_id"] == "aaa_cwaaa")
+    assert "cnc_check_permissions" not in aaa["tools"] and "cnc_list_roles" in aaa["tools"]
+
+
+@respx.mock
+async def test_check_permissions_aaa_only_role_is_not_refused_either(make_settings):
+    settings = make_settings(api_token=make_jwt(policy_id="ops"))
+    unauthorized = httpx.Response(403, json={"error": "Unauthorized request"})
+    respx.get(f"{AAA_READ}/role/ops").mock(return_value=unauthorized)
+    mock_role("ops", role_object("ops", {"aaa_cw_role_read": []}), base=AAA)
+    text = await call_tool_text(
+        build_rbac(settings), "cnc_check_permissions", {"response_format": "json"}
+    )
+    data = json.loads(text)
+    assert not data["refused"] and not data["grants_needed"]
+    assert data["summary"]["permitted"] == data["summary"]["registered_tools"]
+
+
+@respx.mock
+async def test_check_permissions_neither_alternative_lists_the_preferred_rows(make_settings):
+    """With no AAA grant at all the tool is refused; the rows it lists are the FIRST
+    alternative's (the mirror, tried first) and say the other would do too."""
+    settings = make_settings(api_token=make_jwt(policy_id="ops"))
+    # both AAA rows dropped; the role itself is served (mocked) so the evaluation runs
+    mock_role("ops", role_object("ops", {"aaa_cw_role_read": [], "aaa_cwaaa": []}))
+    text = await call_tool_text(
+        build_rbac(settings), "cnc_check_permissions", {"response_format": "json"}
+    )
+    data = json.loads(text)
+    refused = {r["tool"]: r for r in data["refused"]}
+    missing = refused["cnc_check_permissions"]["missing"]
+    assert {m["api_id"] for m in missing} == {"aaa_cw_role_read"}
+    assert {m["path"] for m in missing} == {
+        "/crosswork/aaaread/v1/role/{}",
+        "/crosswork/aaaread/v1/roleAccess/{}",
+    }
+    assert all(
+        m["reason"].endswith("(preferred of 2 alternatives; granting aaa_cwaaa instead also works)")
+        for m in missing
+    )
+    mirror = next(g for g in data["grants_needed"] if g["api_id"] == "aaa_cw_role_read")
+    assert mirror["tools"] == ["cnc_check_permissions"] and mirror["methods"] == ["GET"]
+
+
+@respx.mock
+async def test_check_permissions_unescapes_catalogue_names(make_settings):
+    """The map keeps the catalogue's HTML entities ('Alarms &amp; Events'); the answer
+    must not, in either format."""
+    settings = make_settings(api_token=make_jwt())
+    mock_role("cnc-mcp-readonly", role_object("cnc-mcp-readonly", {"cw-fault-alarms-api": []}))
+    mcp = build_rbac(settings, modules=(fault,))
+    text = await call_tool_text(mcp, "cnc_check_permissions", {})
+    assert "Alarms & Events" in text and "&amp;" not in text
+    data = json.loads(
+        await call_tool_text(mcp, "cnc_check_permissions", {"response_format": "json"})
+    )
+    row = next(g for g in data["grants_needed"] if g["api_id"] == "cw-fault-alarms-api")
+    assert row["api_name"] == "Alarms & Events"
+
+
+@respx.mock
+async def test_check_permissions_out_of_range_exp_is_not_an_error(make_settings):
+    settings = make_settings(api_token=make_jwt(policy_id="admin", exp=1e20, iat=1e18))
+    mock_role("admin", role_object("admin"))
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert not text.startswith("Error:")
+    assert "- token: issued ?, expires ?" in text
+    assert "has expired" not in text
+
+
+@respx.mock
+async def test_check_permissions_flags_the_gateway_fail_open_cases(make_settings):
+    """An allowed_urls regex that does not compile and an empty access_rights map are
+    refused here although Tyk fails open on them; the note says so."""
+    settings = make_settings(api_token=make_jwt(policy_id="ops"))
+    role = role_object("ops")
+    role["access_rights"]["inventory_cwinventory"]["allowed_urls"] = [
+        {"url": "/(nodes", "methods": ALL_METHODS}
+    ]
+    mock_role("ops", role)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert "would be refused by the gateway (403)" in text
+    assert "- **cnc_list_devices** (read)" in text
+    assert "fail OPEN" in text and "inventory_cwinventory url '/(nodes'" in text
+
+    empty = {**role_object("empty"), "access_rights": {}}
+    mock_role("empty", empty)
+    settings = make_settings(api_token=make_jwt(policy_id="empty"))
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert "- API grants on the role: 0" in text
+    assert "fail OPEN" in text and "access_rights map is empty" in text
+
+
+@respx.mock
+async def test_check_permissions_evaluates_only_registered_tools(make_settings):
+    """The evaluated set is the server's live tool list (mcp.list_tools()): with writes
+    off no write tool is evaluated, so a role lacking every write method is still
+    reported as permitting everything."""
+    settings = make_settings(api_token=make_jwt(policy_id="ro"))
+    role = role_object("ro", {"inventory_cwinventory": ["GET", "POST"]})  # no PATCH/DELETE
+    mock_role("ro", role)
+    mcp = build_rbac(settings)
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_delete_device" not in names
+    data = json.loads(
+        await call_tool_text(mcp, "cnc_check_permissions", {"response_format": "json"})
+    )
+    assert data["summary"]["registered_tools"] == len(names)
+    assert data["summary"]["permitted"] == len(names) and not data["refused"]
+
+
+# --- missing_methods: the Tyk v5.1.1 allowed_urls semantics ------------------------------
+
+
+def _grant(*urls: tuple[str, list[str]]) -> dict:
+    return {"allowed_urls": [{"url": url, "methods": methods} for url, methods in urls]}
+
+
+NODES_QUERY = {
+    "method": "POST",
+    "path": "/crosswork/inventory/v1/nodes/query",
+    "api_id": "inventory_cwinventory",
+}
+
+
+def test_missing_methods_is_an_unanchored_search_on_the_full_path():
+    # per gateway/mw_granular_access.go: regexp.MatchString(url, r.URL.Path)
+    assert admin.missing_methods(NODES_QUERY, _grant(("/nodes", ["POST"]))) == []
+    assert admin.missing_methods(NODES_QUERY, _grant(("nodes/query$", ["POST"]))) == []
+    assert admin.missing_methods(NODES_QUERY, _grant(("/.*", ["POST"]))) == []
+    # anchored to the listen-path-stripped path: Tyk never strips it, so nothing matches
+    assert admin.missing_methods(NODES_QUERY, _grant(("^/v1/nodes/query$", ["POST"]))) == ["POST"]
+    assert (
+        admin.missing_methods(
+            NODES_QUERY, _grant(("^/crosswork/inventory/v1/nodes/query$", ["POST"]))
+        )
+        == []
+    )
+
+
+def test_missing_methods_methods_and_wildcards():
+    assert admin.missing_methods(NODES_QUERY, _grant(("/nodes", ["GET"]))) == ["POST"]
+    assert admin.missing_methods(NODES_QUERY, None) == ["POST"]
+    # the method may come from any matching entry; an unmatched entry contributes nothing
+    assert admin.missing_methods(
+        NODES_QUERY, _grant(("/other", ["POST"]), ("/nodes", ["GET"]))
+    ) == ["POST"]
+    assert (
+        admin.missing_methods(NODES_QUERY, _grant(("/other", ["GET"]), ("/nodes", ["POST"]))) == []
+    )
+    wildcard = {**NODES_QUERY, "method": "*"}
+    assert admin.missing_methods(wildcard, _grant(("/nodes", ["GET", "POST"]))) == [
+        "PUT",
+        "PATCH",
+        "DELETE",
+    ]
+    assert admin.missing_methods(wildcard, None) == ALL_METHODS
+    # an empty allowed_urls is Tyk's "no path restriction"
+    assert admin.missing_methods(wildcard, {"allowed_urls": []}) == []
+    assert admin.missing_methods(wildcard, {}) == []
+
+
+def test_missing_methods_placeholder_and_invalid_regex():
+    keyed = {**NODES_QUERY, "method": "GET", "path": "/crosswork/inventory/v1/nodes/{}"}
+    assert (
+        admin.missing_methods(keyed, _grant(("^/crosswork/inventory/v1/nodes/[^/]+$", ["GET"])))
+        == []
+    )
+    assert admin.missing_methods(keyed, _grant(("^/crosswork/inventory/v1/nodes$", ["GET"]))) == [
+        "GET"
+    ]
+    # conservative divergence: an entry that does not compile is skipped (Tyk fails open)
+    assert admin.missing_methods(NODES_QUERY, _grant(("/(nodes", ["POST"]))) == ["POST"]
+    assert (
+        admin.missing_methods(NODES_QUERY, _grant(("/(nodes", ["POST"]), ("/nodes", ["POST"])))
+        == []
+    )
+
+
+@respx.mock
+async def test_check_permissions_unknown_role_and_platform_error(make_settings):
+    settings = make_settings(api_token=make_jwt(policy_id="gone"), max_retries=0)
+    not_found = httpx.Response(404, json={"error": "role not found", "code": 404})
+    respx.get(f"{AAA_READ}/role/gone").mock(return_value=not_found)
+    respx.get(f"{AAA}/role/gone").mock(return_value=not_found)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert text.startswith("Error: no role 'gone'") and "/crosswork/aaa/v1/role/gone" in text
+    respx.get(f"{AAA_READ}/role/gone").mock(return_value=NATS_500)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert text.startswith("Error:") and "500" in text
+
+
+@respx.mock
+async def test_check_permissions_role_access_unreadable_is_a_note_not_an_error(make_settings):
+    settings = make_settings(api_token=make_jwt(policy_id="ops"), max_retries=0)
+    respx.get(f"{AAA_READ}/role/ops").mock(
+        return_value=httpx.Response(200, json=role_object("ops"))
+    )
+    respx.get(f"{AAA_READ}/roleAccess/ops").mock(return_value=NATS_500)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert "are permitted by role 'ops'." in text
+    assert "roleAccess for 'ops' could not be read" in text
+    assert "GUI access:" not in text
+
+
+@respx.mock
+async def test_check_permissions_refuses_a_non_jwt_token(make_settings):
+    settings = make_settings(api_token="opaque-api-token")
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert text.startswith("Error: the bearer token is not a JWT")
+    assert "opaque-api-token" not in text
+    assert not respx.calls  # nothing was sent
+
+
+@respx.mock
+async def test_check_permissions_jwt_without_policy_id(make_settings):
+    payload = b64url(b'{"sub": "x"}')
+    token = f"{b64url(b'{}')}.{payload}.s"
+    settings = make_settings(api_token=token)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert text.startswith("Error: the JWT carries no policy_id claim")
+
+
+@respx.mock
+async def test_check_permissions_reports_the_server_safety_mode(make_settings):
+    """The 'Server safety mode' block is the server's own configuration (from the
+    settings and the register_tool registry), rendered next to the role so an
+    operator can tell 'the role refuses it' from 'this server never registered it'."""
+    mock_role("admin", role_object("admin"))
+    # read-only server: the default
+    settings = make_settings(api_token=make_jwt(policy_id="admin"))
+    mcp = build_rbac(settings)
+    text = await call_tool_text(mcp, "cnc_check_permissions", {})
+    block = text.split("**Server safety mode**")[1].split("**Verdict**")[0]
+    assert "- writes: off (CNC_MCP_ENABLE_WRITES is not true" in block
+    assert "- dry-run: off" in block
+    assert "- disabled tools: none" in block
+    registered = len(await mcp.list_tools())
+    assert f"- tools registered: {registered} ({registered} read, 0 write) of" in block
+    assert "CNC_MCP_WRITE_AREAS" not in block and "CNC_MCP_DISABLED_TOOLS" not in block
+    # writes on for one area, dry-run on, one read tool disabled by name
+    settings = make_settings(
+        api_token=make_jwt(policy_id="admin"),
+        enable_writes=True,
+        write_areas="admin, Devices",
+        dry_run=True,
+        disabled_tools="cnc_get_platform_version",
+    )
+    mcp = build_rbac(settings)
+    names = {t.name for t in await mcp.list_tools()}
+    assert "cnc_get_platform_version" not in names
+    assert "cnc_set_login_banner" in names and "cnc_create_device" in names
+    assert "cnc_get_topology_summary" in names  # a read of an area outside the allowlist
+    text = await call_tool_text(mcp, "cnc_check_permissions", {})
+    block = text.split("**Server safety mode**")[1].split("**Verdict**")[0]
+    assert "- writes: on for areas admin, devices (CNC_MCP_WRITE_AREAS)" in block
+    assert "- dry-run: ON (CNC_MCP_DRY_RUN=true: registered writes preview or are recorded" in block
+    assert "- disabled tools: cnc_get_platform_version (CNC_MCP_DISABLED_TOOLS)" in block
+    assert f"- tools registered: {len(names)} ({len(names) - 7} read, 7 write) of" in block
+    data = json.loads(
+        await call_tool_text(mcp, "cnc_check_permissions", {"response_format": "json"})
+    )
+    assert data["server"] == {
+        "writes": "on for areas admin, devices",
+        "write_areas": ["admin", "devices"],
+        "dry_run": True,
+        "disabled_tools": ["cnc_get_platform_version"],
+        "tools": {
+            "registered": len(names),
+            "read": len(names) - 7,
+            "write": 7,
+            "total": len(names) + 1,  # the disabled tool is in the registry, not on the server
+        },
+    }
+    # writes on for every area reads as such, without naming the variable
+    settings = make_settings(api_token=make_jwt(policy_id="admin"), enable_writes=True)
+    text = await call_tool_text(build_rbac(settings), "cnc_check_permissions", {})
+    assert "- writes: on for all areas\n" in text

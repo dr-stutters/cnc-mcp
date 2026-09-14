@@ -19,7 +19,7 @@ from cnc_mcp.client import ApiClient
 from cnc_mcp.config import Settings
 from cnc_mcp.errors import PlatformError
 from cnc_mcp.prompts import register_prompts
-from cnc_mcp.safety import AppContext
+from cnc_mcp.safety import AppContext, safety_mode_lines
 from cnc_mcp.tools import register_all_tools
 
 SERVER_NAME = "cnc_mcp"
@@ -61,7 +61,6 @@ def quiet_http_logging() -> None:
 
 def build_instructions(settings: Settings) -> str:
     """Server-level instructions shown to connecting agents."""
-    prefix = Settings.model_config.get("env_prefix", "")
     lines = [
         "Tools for Cisco Crosswork Network Controller (CNC): device inventory, credential "
         "profiles, providers (SR-PCE, NSO, ...), the topology graph, tags, alarms, users, "
@@ -125,7 +124,9 @@ def build_instructions(settings: Settings) -> str:
         "management IP; applications by their capp-* id (capp-coe, capp-infra, ...); an "
         "unknown user answers 500 'Invalid Username' (rendered as not found). Crosswork caps "
         "concurrent sessions per user (cnc_get_session_config); this server logs its session "
-        "out on exit.",
+        "out on exit. A 403 'Unauthorized request' from any tool means the account's role "
+        "does not grant the API and method that tool sends: run cnc_check_permissions, which "
+        "names the account, its role, the rows to grant and this server's safety mode.",
         "- Alarms: system alarms (Crosswork's own) come from alarms/v1 (cnc_list_alarms, "
         "cnc_search_alarms, cnc_get_alarm, ack/note/clear); the platform ignores server-side "
         "filters and does not page newest-first, so searches and sorting are client-side "
@@ -204,16 +205,7 @@ def build_instructions(settings: Settings) -> str:
         "that say which tools to call (the one-call composite when this build has it, the "
         "individual tools otherwise), how to drill in and how to answer.",
     ]
-    if settings.enable_writes:
-        lines.append(
-            "Write tools are ENABLED and modify the live platform. Confirm intent "
-            "before creating, changing, or deleting anything."
-        )
-    else:
-        lines.append(
-            "This server is READ-ONLY: write tools are not registered. To enable "
-            f"them, set the {prefix}ENABLE_WRITES=true environment variable and restart."
-        )
+    lines.extend(safety_mode_lines(settings))  # the prompts' writes_note() shares these
     return "\n".join(lines)
 
 
@@ -266,12 +258,18 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     quiet_http_logging()
-    logger.info("Starting %s (writes %s)", SERVER_NAME, "ON" if settings.enable_writes else "off")
+    logger.info(
+        "Starting %s (writes %s, dry-run %s)",
+        SERVER_NAME,
+        "ON" if settings.enable_writes else "off",
+        "ON" if settings.dry_run else "off",
+    )
     try:
         server = build_server(settings)
     except PlatformError as e:
-        # Auth strategies raise PlatformError for incomplete credentials — fail fast
-        # with a clean message, not a traceback.
+        # Auth strategies raise PlatformError for incomplete credentials, and the tool
+        # registry for an unknown WRITE_AREAS / DISABLED_TOOLS name — fail fast with a
+        # clean message, not a traceback.
         print(f"Configuration error: {e}", file=sys.stderr)
         raise SystemExit(1) from e
     server.run()

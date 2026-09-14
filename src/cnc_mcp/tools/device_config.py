@@ -2194,6 +2194,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=False,
         idempotent=False,
+        # A configlet is device configuration and routinely carries 'username ...
+        # password', 'snmp-server community', 'tacacs-server key' lines; the dry-run
+        # "not executed" answer must not echo it (or the variables) back verbatim.
+        redact=("configlet", "variables"),
     )
     async def cnc_create_config_template(
         name: Annotated[
@@ -2440,6 +2444,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=True,
         idempotent=False,
+        # Variable values may be secrets the template substitutes into device config.
+        redact=("variables",),
     )
     async def cnc_deploy_config_template(
         name: Annotated[

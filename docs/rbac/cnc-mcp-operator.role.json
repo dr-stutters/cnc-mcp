@@ -1,0 +1,841 @@
+{
+ "cnc-mcp-operator": {
+  "access_rights": {
+   "aaa_cw_role_read": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "^/crosswork/aaaread/v1/(role|roleAccess)(/|$)"
+     }
+    ],
+    "api_id": "aaa_cw_role_read",
+    "api_name": "Know my role - Read only",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "aaa_cwaaa": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "^/crosswork/aaa/v1/(role|roleAccess|user|userpermission|usertask)(/|$)|^/crosswork/aaa/v1/(activeSessions|getSessionMgmtPermissions|isNSOConfigured|passwordPolicyConfig|sessionconfig)$|^/crosswork/aaa/v2/api$"
+     }
+    ],
+    "api_id": "aaa_cwaaa",
+    "api_name": "Users and Roles Management",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cat-fp-deployment-manager": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cat-fp-deployment-manager",
+    "api_name": "CAT FP Deployment Manager APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "collection_dg-manager": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "collection_dg-manager",
+    "api_name": "Data Gateway Manager APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-config-service-deprecated": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-config-service-deprecated",
+    "api_name": "Config Service",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-ack-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "PUT"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-ack-api",
+    "api_name": "Alarms &amp; Events",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-alarm-manager-settings": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-manager-settings",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-alarm-recommended-action": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-recommended-action",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-alarm-settings": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-settings",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-alarm-severity-settings": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-severity-settings",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-alarms-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarms-api",
+    "api_name": "Alarms &amp; Events",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-clear-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "PUT"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-clear-api",
+    "api_name": "Alarms &amp; Events",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-events-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-events-api",
+    "api_name": "Alarms &amp; Events",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-gnmi-settings": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-gnmi-settings",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-fault-notes-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "PUT"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-notes-api",
+    "api_name": "Alarms &amp; Events",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-grouping-service": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-grouping-service",
+    "api_name": "Grouping",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-image-service-deprecated": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-image-service-deprecated",
+    "api_name": "Image Service",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-inventory-job-dashboard": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-inventory-job-dashboard",
+    "api_name": "Device Inventory",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-probe-mgr": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-probe-mgr",
+    "api_name": "Probe Manager APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cw-ztp-service": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-ztp-service",
+    "api_name": "ZTP Service",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "cwcollection": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cwcollection",
+    "api_name": "Collection APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "device-config": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST",
+       "DELETE"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "device-config",
+    "api_name": "Device Configuration",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "dg-manager-global-parameters-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "dg-manager-global-parameters-api",
+    "api_name": "Data Gateway Global Parameters API",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "ems-inventory": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "ems-inventory",
+    "api_name": "Device Inventory",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "event-processing-service-suppressionpolicy-api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST",
+       "DELETE"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "event-processing-service-suppressionpolicy-api",
+    "api_name": "Alarm Suppression Policies",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "external-notification-subscription": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "external-notification-subscription",
+    "api_name": "External Notification Subscription",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "inventory_cwinventory": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "inventory_cwinventory",
+    "api_name": "Inventory APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-alarm-1-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-alarm-1-700",
+    "api_name": "Alarms and Events RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-alarm-nt-2-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-alarm-nt-2-700",
+    "api_name": "RESTCONF Notification Subscription",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-alarm-nt-9-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-alarm-nt-9-700",
+    "api_name": "RESTCONF Notification Subscription",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-inv-chassis-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-inv-chassis-700",
+    "api_name": "Device Inventory RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-inv-equipment-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-inv-equipment-700",
+    "api_name": "Device Inventory RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-inv-module-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-inv-module-700",
+    "api_name": "Device Inventory RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-inv-node-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-inv-node-700",
+    "api_name": "Device Inventory RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-inv-tp-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-inv-tp-700",
+    "api_name": "Device Inventory RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nb-api-subscription-api-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST",
+       "DELETE"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-subscription-api-700",
+    "api_name": "RESTCONF Notification Subscription",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "nso-connector": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nso-connector",
+    "api_name": "NSO Connector APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "optima_analytics_api": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "optima_analytics_api",
+    "api_name": "OPTIMA Analytics",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "optima_restconf": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "optima_restconf",
+    "api_name": "Optimization Engine RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "performance-dataretention-apis": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "performance-dataretention-apis",
+    "api_name": "Performance Monitoring Data Retention",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "performance-policies-rest-apis": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "performance-policies-rest-apis",
+    "api_name": "Performance Monitoring Policies",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "performance-rest-apis": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "performance-rest-apis",
+    "api_name": "Performance Monitoring Dashboards",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "platform_cwplatform": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "platform_cwplatform",
+    "api_name": "Platform APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "proxy_cw-proxy": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "PUT",
+       "PATCH",
+       "DELETE"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "proxy_cw-proxy",
+    "api_name": "Crosswork Proxy APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "swim-nbi": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "swim-nbi",
+    "api_name": "SWIM",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "topo_restconf": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "topo_restconf",
+    "api_name": "Topology RESTCONF",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   },
+   "tsdn_cat-restconf-nbi": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "GET",
+       "POST"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "tsdn_cat-restconf-nbi",
+    "api_name": "CAT Inventory RESTCONF APIs",
+    "limit": null,
+    "versions": [
+     "Default"
+    ]
+   }
+  },
+  "active": true,
+  "enable_http_signature_validation": false,
+  "hmac_enabled": false,
+  "is_inactive": false,
+  "key_expires_in": -1,
+  "name": "cnc-mcp-operator",
+  "org_id": "1",
+  "partitions": {
+   "acl": false,
+   "per_api": false,
+   "quota": false,
+   "rate_limit": false
+  },
+  "per": 60,
+  "quota_max": -1,
+  "quota_renewal_rate": 60,
+  "rate": 5000,
+  "tags": [],
+  "throttle_interval": 0,
+  "throttle_retry_limit": 0
+ }
+}

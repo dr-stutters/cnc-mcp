@@ -44,7 +44,16 @@ output); every answer passes through ``finalize()``.
 
 Write composites (``cnc_provision_l3vpn_e2e``, ``cnc_create_sr_policy_e2e``)
 are registered only with ``CNC_MCP_ENABLE_WRITES=true``, like the writes they
-wrap; they also cope with a sibling that is absent (the audit line says so).
+wrap, and only when the write sibling that commits (:data:`WRITE_SIBLINGS`) is
+itself registered — with ``CNC_MCP_WRITE_AREAS`` naming ``composite`` but not
+``service_provisioning`` / ``sr_te_operations`` they are skipped, the reason
+logged and recorded. An optional write sibling (the L3VPN playbook's OAM trace,
+``trace=true``) is not required: when it is not registered — ``oam`` kept out of
+``CNC_MCP_WRITE_AREAS`` — the step is skipped and the verdict says why. They
+also cope with a sibling that is absent at call time (the audit line says so).
+Both take ``dry_run``: true stops after the preview stage (NSO's dry run / the
+Optimization Engine's dry run) with a ``dry-run`` verdict and nothing committed;
+global dry-run mode (``CNC_MCP_DRY_RUN=true``) forces it.
 """
 
 from __future__ import annotations
@@ -178,6 +187,35 @@ COMPOSITE_TOOLS = (
     "cnc_create_sr_policy_e2e",
 )
 WRITE_COMPOSITES = ("cnc_provision_l3vpn_e2e", "cnc_create_sr_policy_e2e")
+# The WRITE sibling each write composite cannot run without — the one that commits:
+# the playbook is registered only when it is (register_tool's ``requires``), since a
+# playbook whose commit step cannot run has no business being offered. An optional
+# write sibling is deliberately NOT listed: cnc_start_oam_trace_route (trace=true,
+# area oam) is skipped with a note when it is not registered, so an operator keeping
+# OAM writes off still gets the L3VPN playbook. tests/test_tools_composite.py checks
+# these against the siblings' read_only annotations.
+WRITE_SIBLINGS: dict[str, tuple[str, ...]] = {
+    "cnc_provision_l3vpn_e2e": ("cnc_create_l3vpn_service",),
+    "cnc_create_sr_policy_e2e": ("cnc_create_sr_policy",),
+}
+OPTIONAL_WRITE_SIBLINGS: dict[str, tuple[str, ...]] = {
+    "cnc_provision_l3vpn_e2e": ("cnc_start_oam_trace_route",),
+    "cnc_create_sr_policy_e2e": (),
+}
+DRY_RUN_STATUS = "dry-run"
+
+
+def next_step(global_dry_run: bool, action: str) -> str:
+    """The sentence that closes a DRY-RUN headline: what turns the preview into the real
+    thing. Under the server-wide dry-run mode ``dry_run=false`` would be forced back to
+    true by the safety wrapper, so the honest instruction is to unset the variable."""
+    if global_dry_run:
+        return (
+            "This server runs in DRY-RUN mode (CNC_MCP_DRY_RUN=true): nothing can be "
+            f"committed until the operator unsets it; then call again to {action}."
+        )
+    return f"Call again with dry_run=false to {action}."
+
 
 # Every sibling each composite calls, with the argument names it forwards. This is the
 # drift guard: tests/test_tools_composite.py checks every name here against the sibling's
@@ -440,6 +478,11 @@ class Composer:
     def __init__(self, mcp: MCPServer) -> None:
         self.mcp = mcp
         self.calls: list[Call] = []
+
+    async def has(self, tool: str) -> bool:
+        """Whether ``tool`` is registered on the server right now (an optional write
+        sibling may be gated by CNC_MCP_WRITE_AREAS / DISABLED_TOOLS)."""
+        return any(t.name == tool for t in await self.mcp.list_tools())
 
     async def call(self, tool: str, **arguments: Any) -> Call:
         """Call one registered tool; an error answer or a ToolError becomes ``ok=False``.
@@ -2814,6 +2857,8 @@ async def provision_l3vpn_e2e(
     profile_id: str,
     trace: bool,
     wait_seconds: int,
+    dry_run: bool = False,
+    global_dry_run: bool = False,
 ) -> tuple[Verdict, list[Section]]:
     steps: list[str] = []
     notes: list[str] = []
@@ -2837,6 +2882,31 @@ async def provision_l3vpn_e2e(
         steps.append(f"dry run: FAILED — {dry.error}")
         return stop("failed", f"Stopped at the dry run; nothing was committed for '{vpn_id}'.")
     steps.append("dry run: ok (CLI rendered below, nothing committed)")
+    if dry_run:
+        steps.append("commit: not attempted (dry_run=true)")
+        why = "dry_run=true"
+        sections.append(Section.skipped("commit", "Commit (NSO)", "cnc_create_l3vpn_service", why))
+        sections.append(
+            Section.skipped("plan", "Service plan convergence", "cnc_wait_for_service_plan", why)
+        )
+        sections.append(
+            Section.skipped(
+                "health", "VPN oper-status (CAT inventory)", "cnc_get_vpn_service_health", why
+            )
+        )
+        sections.append(
+            Section.skipped(
+                "trace",
+                "OAM trace route",
+                "cnc_start_oam_trace_route",
+                why if trace else "trace=false",
+            )
+        )
+        return stop(
+            DRY_RUN_STATUS,
+            f"Dry run only for '{vpn_id}': the device CLI NSO would push is rendered below; "
+            f"nothing was committed. {next_step(global_dry_run, 'provision it')}",
+        )
 
     commit = await composer.call("cnc_create_l3vpn_service", **args, dry_run=False)
     sections.append(Section.from_call("commit", "Commit (NSO)", commit))
@@ -2877,9 +2947,23 @@ async def provision_l3vpn_e2e(
         steps.append(f"verify: CAT inventory read failed — {health.error}")
 
     trace_ok: bool | None = None
+    trace_tool_absent = trace and not await composer.has("cnc_start_oam_trace_route")
     if not trace:
         sections.append(
             Section.skipped("trace", "OAM trace route", "cnc_start_oam_trace_route", "trace=false")
+        )
+    elif trace_tool_absent:
+        why = (
+            "cnc_start_oam_trace_route is not registered on this server (OAM writes are off: "
+            "CNC_MCP_WRITE_AREAS or CNC_MCP_DISABLED_TOOLS), so no trace was run"
+        )
+        sections.append(
+            Section.skipped("trace", "OAM trace route", "cnc_start_oam_trace_route", why)
+        )
+        steps.append(f"trace: skipped — {why}")
+        notes.append(
+            "verify the data path another way, or enable OAM writes and run "
+            "cnc_start_oam_trace_route yourself"
         )
     elif not plan.ok:
         sections.append(
@@ -2961,6 +3045,8 @@ async def provision_l3vpn_e2e(
         + (
             ""
             if not trace
+            else ", trace skipped (tool not registered)"
+            if trace_tool_absent
             else f", trace {'ok' if trace_ok else 'not ok' if trace_ok is False else 'pending'}"
         )
         + f". Remove it with cnc_delete_vpn_service(vpn_id='{vpn_id}', layer='l3') when done."
@@ -2988,6 +3074,8 @@ async def create_sr_policy_e2e(
     binding_sid: int | None,
     network: str,
     wait_seconds: int,
+    dry_run: bool = False,
+    global_dry_run: bool = False,
 ) -> tuple[Verdict, list[Section]]:
     steps: list[str] = []
     notes: list[str] = []
@@ -3033,6 +3121,29 @@ async def create_sr_policy_e2e(
             "failed", f"Stopped at the dry run; no policy was created for {label}.", steps, notes
         ), sections
     steps.append(f"dry run: {_dict(dry.data).get('state') or 'ok'}")
+    if dry_run:
+        steps.append("create: not attempted (dry_run=true)")
+        if _text(_dict(dry.data).get("state")) == "degraded":
+            notes.append("the dry run was degraded (constraints relaxed)")
+        why = "dry_run=true"
+        sections.append(
+            Section.skipped("create", "Create (PCE-initiated)", "cnc_create_sr_policy", why)
+        )
+        sections.append(
+            Section.skipped(
+                "oper_state", "Oper-state convergence", "cnc_wait_for_sr_policy_oper_state", why
+            )
+        )
+        sections.append(
+            Section.skipped("routes", "Computed route", "cnc_get_sr_policy_routes", why)
+        )
+        return Verdict(
+            DRY_RUN_STATUS,
+            f"Dry run only for {label}: the route the PCE would compute is shown below; no "
+            f"policy was created. {next_step(global_dry_run, 'create it')}",
+            steps,
+            notes,
+        ), sections
     if _text(_dict(dry.data).get("state")) == "degraded":
         notes.append("the dry run was degraded (constraints relaxed); the create proceeds anyway")
 
@@ -3624,6 +3735,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=True,  # the PUT it wraps replaces an existing service of that name
         idempotent=True,
+        requires=WRITE_SIBLINGS["cnc_provision_l3vpn_e2e"],
     )
     async def cnc_provision_l3vpn_e2e(
         vpn_id: Annotated[
@@ -3689,6 +3801,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 le=600,
             ),
         ] = 120,
+        dry_run: Annotated[
+            bool,
+            Field(
+                description="true: stop after the NSO dry-run stage — report the device CLI "
+                "NSO would push and a VERDICT of DRY-RUN; nothing is committed. false "
+                "(default): commit and verify."
+            ),
+        ] = False,
         response_format: Annotated[ResponseFormat, Field(description=_FORMAT_DESC)] = (
             ResponseFormat.MARKDOWN
         ),
@@ -3697,28 +3817,35 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         push is included in the answer), commit, wait for the service plan, read the
         VPN's oper-status from the CAT inventory, and (trace=true) run an OAM trace route
         between the first two endpoint nodes — with a verdict listing every step's
-        outcome.
+        outcome. dry_run=true stops after the dry run: the CLI is reported, the verdict
+        is ``dry-run`` and nothing is committed (the same preview as
+        cnc_create_l3vpn_service(dry_run=true), in the playbook's shape).
 
-        WRITE tool (registered only with CNC_MCP_ENABLE_WRITES=true); the commit changes
-        the head-ends' configuration through NSO. Use it when the operator has confirmed
-        the intent; use cnc_create_l3vpn_service(dry_run=true) alone to only preview.
-        Stop rules: a failed dry run stops before anything is committed; a failed commit
-        stops and reports (NSO rejected the service — nothing was deployed); a failed plan
-        skips the trace. Nothing is ever deleted or rolled back — remove the service
-        yourself with cnc_delete_vpn_service(vpn_id=..., layer='l3') when the answer says
-        so. Head-ends need a BGP process (give local_as on the endpoints) and must be in
-        sync with NSO (a 502 means run cnc_nso_device_action sync-from first).
+        WRITE tool (registered only with CNC_MCP_ENABLE_WRITES=true and when
+        cnc_create_l3vpn_service is registered; without cnc_start_oam_trace_route — OAM
+        writes off — the trace step is skipped and the verdict says so); the
+        commit changes the head-ends' configuration through NSO. Use it when the operator
+        has confirmed the intent; use dry_run=true (or cnc_create_l3vpn_service with
+        dry_run=true) to only preview. Stop rules: a failed dry run stops before anything
+        is committed; a failed commit stops and reports (NSO rejected the service —
+        nothing was deployed); a failed plan skips the trace. Nothing is ever deleted or
+        rolled back — remove the service yourself with cnc_delete_vpn_service(vpn_id=...,
+        layer='l3') when the answer says so. Head-ends need a BGP process (give local_as
+        on the endpoints) and must be in sync with NSO (a 502 means run
+        cnc_nso_device_action sync-from first).
 
         VERDICT: ``deployed`` (commit ok, plan completed, CAT inventory read, trace ok or
         not requested), ``deployed-unverified`` (committed but the plan did not complete
         in wait_seconds, the CAT read failed or the trace did not succeed — the reasons
-        say which) or ``failed`` (stopped at the dry run / commit / plan). A trace the
-        platform reports FAILED is the platform's verdict on the network (gNMI / 'mpls
-        oam' on the devices), not an API error.
+        say which), ``failed`` (stopped at the dry run / commit / plan) or ``dry-run``
+        (dry_run=true: the dry run succeeded and nothing was committed; the commit, plan,
+        health and trace sections read "skipped — dry_run=true"). A trace the platform
+        reports FAILED is the platform's verdict on the network (gNMI / 'mpls oam' on the
+        devices), not an API error.
 
-        Sub-tools called, in order: cnc_create_l3vpn_service(dry_run=true), the same with
-        dry_run=false, cnc_wait_for_service_plan(target='completed'),
-        cnc_get_vpn_service_health(layer='l3'), then for the trace
+        Sub-tools called, in order: cnc_create_l3vpn_service(dry_run=true), then — unless
+        dry_run=true — the same with dry_run=false, cnc_wait_for_service_plan(
+        target='completed'), cnc_get_vpn_service_health(layer='l3'), then for the trace
         cnc_get_device(host_name=<node>) for the first two endpoint nodes,
         cnc_start_oam_trace_route and cnc_wait_for_oam_trace_route(timeout_seconds=90).
 
@@ -3727,6 +3854,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 exactly what cnc_create_l3vpn_service takes.
             trace: run the OAM trace route after the plan completes.
             wait_seconds: plan wait budget.
+            dry_run: stop after the dry run with a DRY-RUN verdict; nothing is committed.
             response_format: markdown (default) or json.
 
         Returns:
@@ -3747,6 +3875,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 profile_id=profile_id,
                 trace=trace,
                 wait_seconds=wait_seconds,
+                dry_run=dry_run,
+                global_dry_run=settings.dry_run,
             )
             return render(
                 f"L3VPN provisioning: {vpn_id.strip()}",
@@ -3767,6 +3897,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=False,
         idempotent=False,
+        requires=WRITE_SIBLINGS["cnc_create_sr_policy_e2e"],
     )
     async def cnc_create_sr_policy_e2e(
         headend: Annotated[
@@ -3872,38 +4003,52 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 le=600,
             ),
         ] = 60,
+        dry_run: Annotated[
+            bool,
+            Field(
+                description="true: stop after the Optimization Engine dry run — report the "
+                "route the PCE would compute and a VERDICT of DRY-RUN; nothing is created. "
+                "false (default): create and wait for UP."
+            ),
+        ] = False,
         response_format: Annotated[ResponseFormat, Field(description=_FORMAT_DESC)] = (
             ResponseFormat.MARKDOWN
         ),
     ) -> str:
         """Create a PCE-initiated SR policy end to end in one call: dry run (the route the
         PCE would compute is included), create, wait for oper-state UP, then read the
-        computed route — with a verdict listing every step's outcome.
+        computed route — with a verdict listing every step's outcome. dry_run=true stops
+        after the dry run: the computed route is reported, the verdict is ``dry-run`` and
+        nothing is created.
 
-        WRITE tool (registered only with CNC_MCP_ENABLE_WRITES=true); the create
-        programs the head-end over PCEP within seconds. Use it when the operator has
-        confirmed the intent; cnc_dryrun_sr_policy alone only previews. Stop rules: a
-        failed dry run stops before anything is created; a failed create stops and
-        reports. Nothing is deleted afterwards — remove the policy with
-        cnc_delete_sr_policy(headend=..., endpoint=..., color=...) when the answer says so
-        (a PCE-initiated policy can be removed through the PCE; a PCC-initiated one
-        cannot).
+        WRITE tool (registered only with CNC_MCP_ENABLE_WRITES=true and when
+        cnc_create_sr_policy is registered); the create programs the head-end over PCEP
+        within seconds. Use it when the operator has confirmed the intent; dry_run=true
+        (or cnc_dryrun_sr_policy alone) only previews. Stop rules: a failed dry run stops
+        before anything is created; a failed create stops and reports. Nothing is deleted
+        afterwards — remove the policy with cnc_delete_sr_policy(headend=..., endpoint=...,
+        color=...) when the answer says so (a PCE-initiated policy can be removed through
+        the PCE; a PCC-initiated one cannot).
 
         VERDICT: ``created-up`` (created and UP within wait_seconds), ``created-not-up``
-        (created; the wait timed out — the current state is quoted) or ``failed`` (stopped
-        at the dry run or the create). A degraded dry run (constraints relaxed) is a note
-        and the create proceeds.
+        (created; the wait timed out — the current state is quoted), ``failed`` (stopped
+        at the dry run or the create) or ``dry-run`` (dry_run=true: the dry run succeeded
+        and nothing was created; the create, oper-state and route sections read "skipped
+        — dry_run=true"). A degraded dry run (constraints relaxed) is a note and the
+        create proceeds.
 
-        Sub-tools called, in order: cnc_dryrun_sr_policy, cnc_create_sr_policy,
-        cnc_wait_for_sr_policy_oper_state(target='UP'), cnc_get_sr_policy_routes. The
-        parameters are the common ones of cnc_create_sr_policy (disjointness /
-        association groups are not exposed here — use cnc_create_sr_policy directly).
+        Sub-tools called, in order: cnc_dryrun_sr_policy, then — unless dry_run=true —
+        cnc_create_sr_policy, cnc_wait_for_sr_policy_oper_state(target='UP'),
+        cnc_get_sr_policy_routes. The parameters are the common ones of
+        cnc_create_sr_policy (disjointness / association groups are not exposed here —
+        use cnc_create_sr_policy directly).
 
         Args:
             headend, endpoint, color, path_name, description, path_type, objective, hops,
                 protected, sid_algorithm, bandwidth_mbps, binding_sid, network: as
                 cnc_create_sr_policy takes them.
             wait_seconds: oper-state wait budget.
+            dry_run: stop after the dry run with a DRY-RUN verdict; nothing is created.
             response_format: markdown (default) or json.
 
         Returns:
@@ -3930,6 +4075,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 binding_sid=binding_sid,
                 network=network.strip(),
                 wait_seconds=wait_seconds,
+                dry_run=dry_run,
+                global_dry_run=settings.dry_run,
             )
             return render(
                 f"SR policy creation: {headend.strip()} -> {endpoint.strip()} color {color}",

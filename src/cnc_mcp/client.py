@@ -78,6 +78,27 @@ class ApiClient:
             headers={"Accept": "application/json"},
         )
 
+    @property
+    def auth(self) -> AuthStrategy:
+        """The auth strategy in use (read-only). Tools reach it for the session's
+        identity — ``auth.bearer_token()`` decoded with ``cnc_mcp.auth.jwt_claims`` —
+        never to change it."""
+        return self._auth
+
+    async def ensure_authenticated(self) -> None:
+        """Log in now if the auth strategy has no session yet; a no-op otherwise.
+
+        A lazily-logging-in strategy (CrossworkCasAuth) has no token until its
+        first request. A tool that needs the session's identity before it
+        sends anything (cnc_check_permissions reads the JWT claims) calls this
+        instead of firing a probe request: a probe that answers 403
+        ``Unauthorized request`` — which an unknown path or a missing role
+        grant does — would be classified as an auth failure and cost a
+        re-login. Raises PlatformError when the login itself fails.
+        """
+        async with self._semaphore:
+            await self._auth.ensure_authenticated(self._http)
+
     async def request(
         self,
         method: str,

@@ -1595,6 +1595,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         read_only=False,
         destructive=True,
         idempotent=True,
+        # Names a READ-ONLY tool: in global dry-run mode the compare-config device
+        # action (a write with no dry_run form) is itself recorded, not run.
+        dry_run_hint=(
+            "cnc_check_nso_device_sync (read-only) says whether the device differs from "
+            "NSO's CDB; the diff itself is the compare-config device action — a write "
+            "too, so it needs CNC_MCP_DRY_RUN unset, and it shows the diff in the CNC UI"
+        ),
     )
     async def cnc_nso_sync_to_device(
         uuid: Annotated[

@@ -1,0 +1,4928 @@
+{
+ "apis": {
+  "aa_dss": {
+   "feature": "Automated Assurance DSS instance",
+   "listen_path": "/crosswork/aa/dss",
+   "name": "Data Store Service API"
+  },
+  "aa_dss_admin": {
+   "feature": "Automated Assurance DSS instance",
+   "listen_path": "/crosswork/aa/dss/admin",
+   "name": "Data Store Service Administrator settings"
+  },
+  "aaa_cw_role_read": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/aaaread/",
+   "name": "Know my role - Read only"
+  },
+  "aaa_cwaaa": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/aaa/",
+   "name": "Users and Roles Management"
+  },
+  "aaa_cwauthconfig": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/authconfig/",
+   "name": "Remote Authentication Servers Integration"
+  },
+  "aaa_cwpassword": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/password/",
+   "name": "Password Change"
+  },
+  "aaa_pref": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/aaa/preferences/",
+   "name": "User Preferences"
+  },
+  "aaa_selected_pref": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/aaa/v1/user-selected-preference",
+   "name": "User Selected Preferences"
+  },
+  "alarm-forwarding-service": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm-forwarding/",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-rest-create-delete-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/rest-dest",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-rest-dest-cache-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/rest-dest/cache",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-rest-dest-get-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/rest-dest/query",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-syslog-get-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/syslog-dest/query",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-syslog-post-delete-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/syslog-dest",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-trap-get-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/trap-dest/query",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-cw-trap-post-delete-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/trap-dest",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-email-destination": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/destination/email",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-external-kafka-destination": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/destination/externalkafka",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-notificationpolicy-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/notificationpolicy",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-restconf-destination": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/destination/restconf",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-syslog-destination": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/destination/syslog",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-forwarding-service-trap-destination": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/destination/trap",
+   "name": "Alarm Notification Policies"
+  },
+  "alarm-processing-service": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm-processing/",
+   "name": "Alarms &amp; Events"
+  },
+  "alarm-rest-service": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm-rest-service/",
+   "name": "Alarms &amp; Events"
+  },
+  "alarm-rest-service-networkinventory-rest-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/equipment",
+   "name": "Alarms &amp; Events"
+  },
+  "alarm-rest-service-summary-rest-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/summary",
+   "name": "Alarms &amp; Events"
+  },
+  "alarm-topics-filter": {
+   "feature": "Administrative Operations",
+   "listen_path": "/external/kafka/subscription/alarmTopics",
+   "name": "External Notification Subscription"
+  },
+  "cat-fp-deployment-manager": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/cat/cat-fp-deployment-manager-service/v1/",
+   "name": "CAT FP Deployment Manager APIs"
+  },
+  "cat-restconf-istp-rest-api": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/cat/istp/api/v1/",
+   "name": "CAT ISTP REST APIs"
+  },
+  "cat-service-overlay": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/cat/cat-service-overlay/v1/",
+   "name": "CAT Service Overlay"
+  },
+  "cnc_cat_aa_ui_service": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/cnc/api/v1/aa/",
+   "name": "CAT SH UI"
+  },
+  "cnc_cat_ui_service": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/cnc/",
+   "name": "CAT UI"
+  },
+  "collection_dg-manager": {
+   "feature": "Collection Infra",
+   "listen_path": "/crosswork/dg-manager/",
+   "name": "Data Gateway Manager APIs"
+  },
+  "cw-aa-ag-mgr": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/aa/agmgr/",
+   "name": "Assurance Graph Manager APIs"
+  },
+  "cw-aa-app": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/aa/aaapp/",
+   "name": "Archiver APIs"
+  },
+  "cw-aa-config-mgr": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/aa/cfgmgr/",
+   "name": "Config Manager APIs"
+  },
+  "cw-aa-hp-mgr": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/aa/hpmgr/",
+   "name": "Heuristic Package Manager APIs"
+  },
+  "cw-aa-ms": {
+   "feature": "Service Health",
+   "listen_path": "/crosswork/aa/ms/",
+   "name": "Metric Scheduler APIs"
+  },
+  "cw-clms": {
+   "feature": "Licensing",
+   "listen_path": "/crosswork/clms/",
+   "name": "Common Licensing Management Service (CLMS) APIs"
+  },
+  "cw-config-service": {
+   "feature": "Zero Touch Provisioning",
+   "listen_path": "/crosswork/ztpconfig/",
+   "name": "Config Service"
+  },
+  "cw-config-service-deprecated": {
+   "feature": "Zero Touch Provisioning",
+   "listen_path": "/crosswork/configsvc/",
+   "name": "Config Service"
+  },
+  "cw-distributed-cache": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/distcache/",
+   "name": "Diagnostic Information"
+  },
+  "cw-fault-ack-alarm": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/acknowledge",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-ack-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/ack",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-ack-api-v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/acknowledge",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-autoclear": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/autoclear",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarm-autoclear-revert": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/autoclear/revert",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarm-categories": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/category",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-custom-eventtype": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/custom/eventtype",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-custom-subeventtype": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/custom/subeventtype",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-custom-syslog": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/custom/syslog",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-custom-trap": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/custom/trap",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-eventtype": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/eventtype",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarm-manager-settings": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/manager/settings",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarm-recommended-action": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/recommended-action",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarm-settings": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/settings",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarm-severity-settings": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/severity-config",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-alarms-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/query",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-alarms-api-v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/query",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-clear-alarm": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/clear",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-clear-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/clear",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-clear-api-v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/clear",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-create_events_api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/event",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-create_events_api_v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/event",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-events-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/event/query",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-events-api-v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/event/query",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-get-alarms": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/alarms",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-get-events": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/events",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-gnmi-settings": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/gnmi/settings",
+   "name": "Alarm Settings"
+  },
+  "cw-fault-manifest_api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/manifest",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-manifest_api_v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/manifest",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-notes-alarm": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/platform/alarms/v1/notes",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-notes-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarms/v1/note",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-fault-notes-api-v2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/note",
+   "name": "Alarms &amp; Events"
+  },
+  "cw-geo-service": {
+   "feature": "Topology",
+   "listen_path": "/crosswork/geoserver/",
+   "name": "Geo"
+  },
+  "cw-grouping-service": {
+   "feature": "Platform",
+   "listen_path": "/crosswork/grouping/",
+   "name": "Grouping"
+  },
+  "cw-image-service": {
+   "feature": "Zero Touch Provisioning",
+   "listen_path": "/crosswork/ztpimage/",
+   "name": "Image Service"
+  },
+  "cw-image-service-deprecated": {
+   "feature": "Zero Touch Provisioning",
+   "listen_path": "/crosswork/imagesvc/",
+   "name": "Image Service"
+  },
+  "cw-inventory": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventoryRestServiceSub/ifm",
+   "name": "Device Inventory"
+  },
+  "cw-inventory-job-dashboard": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/",
+   "name": "Device Inventory"
+  },
+  "cw-inventory-job-dashboard-deprecated": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/rs/json/jobSchedulerServiceInv/",
+   "name": "Device Inventory"
+  },
+  "cw-nbi-alarm-notification-changeLogLevel": {
+   "feature": "Administrative Operations",
+   "listen_path": "/alarm/notification/logger/changeLogLevel/",
+   "name": "Logging"
+  },
+  "cw-nbi-alarm-notification-listAllLoggers": {
+   "feature": "Administrative Operations",
+   "listen_path": "/alarm/notification/logger/listAllLoggers/",
+   "name": "Logging"
+  },
+  "cw-probe-mgr": {
+   "feature": "Probe Manager",
+   "listen_path": "/crosswork/probemgr/",
+   "name": "Probe Manager APIs"
+  },
+  "cw-te-manager": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/te-manager/v1/",
+   "name": "TE Auto Policy Binding Service"
+  },
+  "cw-topo-visualization": {
+   "feature": "Topology",
+   "listen_path": "/crosswork/topology/",
+   "name": "Topology"
+  },
+  "cw-views-service": {
+   "feature": "Platform",
+   "listen_path": "/crosswork/views/",
+   "name": "Views"
+  },
+  "cw-ztp-service": {
+   "feature": "Zero Touch Provisioning",
+   "listen_path": "/crosswork/ztp/",
+   "name": "ZTP Service"
+  },
+  "cwcollection": {
+   "feature": "Collection Infra",
+   "listen_path": "/crosswork/collection/",
+   "name": "Collection APIs"
+  },
+  "cwm-solutions-automation": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/automations",
+   "name": "Automation APIs"
+  },
+  "cwm-solutions-fleetupgrade": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/fleetupgrade",
+   "name": "FleetUpgrade APIs"
+  },
+  "cwm-solutions-imagerepo": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/repository",
+   "name": "Image Repository APIs"
+  },
+  "cwm_adapter": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/adapter",
+   "name": "Adapter Handler"
+  },
+  "cwm_eventtype": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/eventType",
+   "name": "Event Type Handler"
+  },
+  "cwm_form_export": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/formExport",
+   "name": "Form Export Handler"
+  },
+  "cwm_form_import": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/formImport",
+   "name": "Form Import Handler"
+  },
+  "cwm_forms": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/form",
+   "name": "Form Handler"
+  },
+  "cwm_http_event": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/event/http",
+   "name": "Http Event Handler"
+  },
+  "cwm_jobs": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/job",
+   "name": "Jobs Handler"
+  },
+  "cwm_payload": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/payload",
+   "name": "Workflow Payload Handler"
+  },
+  "cwm_public_key": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/publicKey",
+   "name": "Workflow Public Key Handler"
+  },
+  "cwm_resource": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/resource",
+   "name": "Resource Handler"
+  },
+  "cwm_resource_export": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/resourceExport",
+   "name": "Resource Export Handler"
+  },
+  "cwm_resource_import": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/resourceImport",
+   "name": "Resource Import Handler"
+  },
+  "cwm_resource_type": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/resourceType",
+   "name": "Resource Type Handler"
+  },
+  "cwm_schedule": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/schedule",
+   "name": "Schedule Handler"
+  },
+  "cwm_secret": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/secret",
+   "name": "Secret Handler"
+  },
+  "cwm_secret_type": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/secretType",
+   "name": "Secret Type Handler"
+  },
+  "cwm_tasks": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/task",
+   "name": "Task Handler"
+  },
+  "cwm_worker": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/worker",
+   "name": "Worker Handler"
+  },
+  "cwm_worker_profile": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/workerProfile",
+   "name": "Worker Profile Handler"
+  },
+  "cwm_workflow": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/workflow",
+   "name": "Workflow Handler"
+  },
+  "cwm_workflow_default_settings": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/config/defaults",
+   "name": "Workflow Default Settings Handler"
+  },
+  "cwm_workflow_export": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/workflowExport",
+   "name": "Workflow Export Handler"
+  },
+  "cwm_workflow_import": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/workflowImport",
+   "name": "Workflow Import Handler"
+  },
+  "cwm_workflow_mcp": {
+   "feature": "Workflow Manager",
+   "listen_path": "/crosswork/cwm/v2/mcp",
+   "name": "Workflow MCP Handler"
+  },
+  "cwms-golden-config": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/gc/",
+   "name": "Golden Config APIs"
+  },
+  "cwms-inventory": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/inventory",
+   "name": "Inventory Lite APIs"
+  },
+  "cwms-mop": {
+   "feature": "Workflow Manager Solutions",
+   "listen_path": "/crosswork/cwms/mop",
+   "name": "Mop APIs"
+  },
+  "data-retention-service": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/data-retention/",
+   "name": "Alarms &amp; Events"
+  },
+  "device-config": {
+   "feature": "Device Configuration",
+   "listen_path": "/crosswork/config/",
+   "name": "Device Configuration"
+  },
+  "dg-manager-global-parameters-api": {
+   "feature": "Data Gateway Global Settings",
+   "listen_path": "/crosswork/dg-manager/v1/command/global-parameter",
+   "name": "Data Gateway Global Parameters API"
+  },
+  "dg-manager-global-resources-reset-api": {
+   "feature": "Data Gateway Global Settings",
+   "listen_path": "/crosswork/dg-manager/v1/oam/container/resources/reset",
+   "name": "Data Gateway Global Resources Reset API"
+  },
+  "dg-manager-global-resources-update-api": {
+   "feature": "Data Gateway Global Settings",
+   "listen_path": "/crosswork/dg-manager/v1/oam/container/resources",
+   "name": "Data Gateway Global Resources Update API"
+  },
+  "dg-manager-reboot-api": {
+   "feature": "Data Gateway Troubleshooting",
+   "listen_path": "/crosswork/dg-manager/v1/command/reboot",
+   "name": "Data Gateway Reboot API"
+  },
+  "dg-manager-showtech-api": {
+   "feature": "Data Gateway Troubleshooting",
+   "listen_path": "/crosswork/dg-manager/v1/command/showtech",
+   "name": "Data Gateway Showtech API"
+  },
+  "ems-inventory": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/v1/networkelement",
+   "name": "Device Inventory"
+  },
+  "ems-inventory-deprecated": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/ems/inventory/v1/nodes",
+   "name": "Device Inventory"
+  },
+  "ems-inventory-diagnostics": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/v1/diagnostics",
+   "name": "Device Inventory"
+  },
+  "ems-network-inventory": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/ems/inventory/v1/networkinventory",
+   "name": "Network Inventory"
+  },
+  "enso-tarball-download-https": {
+   "feature": "enso",
+   "listen_path": "/crosswork/platform/v1/geo/data-tarball/download",
+   "name": "Enso Geo Data Tarball Download API (HTTPS)"
+  },
+  "epnm-nbi-inv-notification-changeLogLevel": {
+   "feature": "Administrative Operations",
+   "listen_path": "/inventory/notification/logger/changeLogLevel/",
+   "name": "Logging"
+  },
+  "epnm-nbi-inv-notification-listAllLoggers": {
+   "feature": "Administrative Operations",
+   "listen_path": "/inventory/notification/logger/listAllLoggers/",
+   "name": "Logging"
+  },
+  "event-processing-service": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/event-processing/",
+   "name": "Alarms &amp; Events"
+  },
+  "event-processing-service-suppressionpolicy-api": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/v1/suppressionpolicy",
+   "name": "Alarm Suppression Policies"
+  },
+  "external-kafka-destination": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/v1/externalkafka/destination",
+   "name": "External Notification Subscription"
+  },
+  "external-kafka-destination-v2": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/v2/externalkafka/destination",
+   "name": "External Notification Subscription"
+  },
+  "external-kafka-subscription": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/v1/externalkafka/subscription",
+   "name": "External Notification Subscription"
+  },
+  "external-notification-subscription": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/v2/subscription",
+   "name": "External Notification Subscription"
+  },
+  "get-WebSocket-Subscription": {
+   "feature": "AAA",
+   "listen_path": "/websocket/subscriptions/data",
+   "name": "Users and Roles Management"
+  },
+  "get-WebSocket-Subscription-700": {
+   "feature": "AAA",
+   "listen_path": "/crosswork/notification/v2/websocket/subscriptions/data",
+   "name": "Users and Roles Management"
+  },
+  "inventory-job-rest": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/inventoryJobRestServiceInv/",
+   "name": "Inventory Job"
+  },
+  "inventory_cwinventory": {
+   "feature": "Inventory",
+   "listen_path": "/crosswork/inventory/",
+   "name": "Inventory APIs"
+  },
+  "kafka-destinations-to-cw-ui": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/v1/externalkafka/securedestination",
+   "name": "External Notification Subscription"
+  },
+  "metricmanager": {
+   "feature": "metric manager",
+   "listen_path": "/crosswork/metricmanager/",
+   "name": "Metric Manager"
+  },
+  "nb-api-alarm-1": {
+   "feature": "Alarms and Events",
+   "listen_path": "/restconf/data/v1/cisco-rtm:alarm",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-1-700": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/restconf/data/v2/rtm:alarm",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-2": {
+   "feature": "Alarms and Events",
+   "listen_path": "/restconf/data/v1/cisco-rtm:alarm-with-root-cause",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-3": {
+   "feature": "Alarms and Events",
+   "listen_path": "/restconf/data/v1/cisco-rtm:alarm-with-symptom",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-5": {
+   "feature": "Alarms and Events",
+   "listen_path": "/restconf/data/v1/cisco-alarm:handle-alarm",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-5-700": {
+   "feature": "Alarms and Events",
+   "listen_path": "/crosswork/alarm/restconf/data/v2/alarm:handle-alarm",
+   "name": "Alarms and Events RESTCONF"
+  },
+  "nb-api-alarm-nt-2": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/cisco-notifications:subscription-admin",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-2-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/notifications:subscription-admin",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-3": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/clear-by-topic",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-3-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/clear-by-topic",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-4": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/clear-all-subscriptions",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-4-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/clear-all-subscriptions",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-5": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/clear-sockets",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-5-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/clear-sockets",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-6": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/clear-connection-less",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-6-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/clear-connection-less",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-9": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/ietf-restconf-monitoring:restconf-state/streams",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-alarm-nt-9-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/ietf-restconf-monitoring:restconf-state/streams",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-inv-chassis": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-physical:chassis",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-chassis-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:chassis",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-equipment": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-physical:equipment",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-equipment-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:equipment",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-module": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-physical:module",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-module-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:module",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-node": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-physical:node",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-node-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:node",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-physicalconnector": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-physical:physical-connector",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-physicalconnector-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:physical-connector",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-tp": {
+   "feature": "Device Monitoring",
+   "listen_path": "/restconf/data/v1/cisco-resource-ems:termination-point",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-inv-tp-700": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/inventory/restconf/data/v2/resource-ems:termination-point",
+   "name": "Device Inventory RESTCONF"
+  },
+  "nb-api-pm-cpu-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-cpu-utilization",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-crc-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-crc",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-env-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-device-env-temperature",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-interface-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-interface-utilization",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-memory-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-memory-utilization",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-optical-sfps-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-optical-sfps",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-optics-lane-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-optics-lane",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-pm-otu-controller-api": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-otu-controller",
+   "name": "Performance Monitoring RESTCONF"
+  },
+  "nb-api-subscription-api": {
+   "feature": "Administrative Operations",
+   "listen_path": "/restconf/data/v1/cisco-notifications:subscription",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nb-api-subscription-api-700": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/notification/restconf/data/v2/notifications:subscription",
+   "name": "RESTCONF Notification Subscription"
+  },
+  "nso-connector": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/cat/nso-connector/v1/",
+   "name": "NSO Connector APIs"
+  },
+  "nso-fp-dep-mngr": {
+   "feature": "NSO Management",
+   "listen_path": "/crosswork/nso-fp-dep-mngr/",
+   "name": "Function Pack Deployment APIs"
+  },
+  "oam": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/oam/",
+   "name": "OAM Service APIs"
+  },
+  "optima_analytics_api": {
+   "feature": "Crosswork Optimization Engine",
+   "listen_path": "/crosswork/optima-analytics/",
+   "name": "OPTIMA Analytics"
+  },
+  "optima_analytics_service": {
+   "feature": "Crosswork Optimization Engine",
+   "listen_path": "/crosswork/optima-analytics-service/",
+   "name": "OPTIMA Analytics Service"
+  },
+  "optima_optima_ui_service": {
+   "feature": "Crosswork Optimization Engine",
+   "listen_path": "/crosswork/optima/",
+   "name": "Optimization Engine UI"
+  },
+  "optima_restconf": {
+   "feature": "Crosswork Optimization Engine",
+   "listen_path": "/crosswork/nbi/optimization/v3/restconf/",
+   "name": "Optimization Engine RESTCONF"
+  },
+  "optima_restconf_legacy": {
+   "feature": "Crosswork Optimization Engine",
+   "listen_path": "/crosswork/nbi/optima/v2/restconf/operations/",
+   "name": "Optimization Engine RESTCONF API for backwards compatibility"
+  },
+  "path-analytics-grpc-1": {
+   "feature": "Path Analytics",
+   "listen_path": "/rca.analytics.PathAnalytics/GetPaths",
+   "name": "Path Analytics - Get Paths"
+  },
+  "path-analytics-grpc-2": {
+   "feature": "Path Analytics",
+   "listen_path": "/rca.analytics.PathAnalytics/Subscribe",
+   "name": "Path Analytics - Subscribe"
+  },
+  "path-analytics-http": {
+   "feature": "Path Analytics",
+   "listen_path": "/crosswork/path_analytics/v1/pathmonitor",
+   "name": "Path Analytics - Get Registrations/Register/Unregister"
+  },
+  "performance-changeLogLevel-rest-api": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/performance/v{.}/logger/changeLogLevel/",
+   "name": "Diagnostic Information"
+  },
+  "performance-dataretention-apis": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/performance/v{.}/dataretention",
+   "name": "Performance Monitoring Data Retention"
+  },
+  "performance-export-apis": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/ems/data-export",
+   "name": "Performance Monitoring Export APIs"
+  },
+  "performance-listAllLoggers-rest-api": {
+   "feature": "Administrative Operations",
+   "listen_path": "/crosswork/performance/v{.}/logger/listAllLoggers",
+   "name": "Diagnostic Information"
+  },
+  "performance-policies-rest-apis": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/v{.}/policies",
+   "name": "Performance Monitoring Policies"
+  },
+  "performance-rest-apis": {
+   "feature": "Device Monitoring",
+   "listen_path": "/crosswork/performance/v{.}/dashboards/",
+   "name": "Performance Monitoring Dashboards"
+  },
+  "platform_cwplatform": {
+   "feature": "Platform",
+   "listen_path": "/crosswork/platform",
+   "name": "Platform APIs"
+  },
+  "proxy_cw-proxy": {
+   "feature": "Proxy",
+   "listen_path": "/crosswork/proxy/",
+   "name": "Crosswork Proxy APIs"
+  },
+  "ra_optima_ui_service": {
+   "feature": "Path Analytics",
+   "listen_path": "/crosswork/ra/",
+   "name": "Path Analytics UI"
+  },
+  "showtech_inventory": {
+   "feature": "Administrative Operations",
+   "listen_path": "/inventory/notification/showtech",
+   "name": "Diagnostic Information"
+  },
+  "swim-collection": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/json/SwimImageCollectionService",
+   "name": "SWIM"
+  },
+  "swim-jobrest": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/swim/jobSchedulerService",
+   "name": "SWIM"
+  },
+  "swim-nbi": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/api/v1/op/swim",
+   "name": "SWIM"
+  },
+  "swim-nbi-new": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/swim",
+   "name": "SWIM"
+  },
+  "swim-recommendation": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/json/SwimRecommendRestService",
+   "name": "SWIM"
+  },
+  "swim-repository": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/json/SwimRepositoryRestService",
+   "name": "SWIM"
+  },
+  "swim-rest": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/json/SwimRestService",
+   "name": "SWIM"
+  },
+  "swim-treetable": {
+   "feature": "Software Image Management",
+   "listen_path": "/crosswork/rs/swimTreetable/swimTreetableRestService/",
+   "name": "SWIM"
+  },
+  "topo_restconf": {
+   "feature": "Topology RESTCONF",
+   "listen_path": "/crosswork/nbi/topology/v3/restconf/",
+   "name": "Topology RESTCONF"
+  },
+  "topo_restconf_legacy": {
+   "feature": "Topology RESTCONF",
+   "listen_path": "/crosswork/nbi/optima/v2/restconf/data/",
+   "name": "Topo RESTCONF API for backwards compatibility"
+  },
+  "tsdn_cat-restconf-nbi": {
+   "feature": "CNC",
+   "listen_path": "/crosswork/nbi/cat-inventory/v1/restconf/",
+   "name": "CAT Inventory RESTCONF APIs"
+  }
+ },
+ "generated_from": {
+  "api_count": 217,
+  "catalogue": "GET /crosswork/aaaread/v2/api (feature grouping) + GET /crosswork/aaaread/v1/api (api_id, name, proxy.listen_path only)",
+  "catalogue_verified": "2026-09-14",
+  "feature_count": 27,
+  "generator": "scripts/rbac_map.py",
+  "platform": "CNC 7.2.0",
+  "routing": "a path is routed to the secured API with the longest matching listen path ({...} = one segment, trailing slash optional); a role's allowed_urls regex is an unanchored search on the full request path (Tyk v5.1.1 source); '{}' in a path is a runtime value; method '*' means the tool passes the method through (all five needed); 'any_of' lists groups of api_ids of which one group's rows suffice (the tool falls back from the first to the next)",
+  "tool_count": 245
+ },
+ "tools": {
+  "cnc_acknowledge_alarm": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-ack-api",
+     "method": "PUT",
+     "path": "/crosswork/alarms/v1/ack"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_alarm_triage": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_get_cluster_health",
+    "cnc_list_device_alarms",
+    "cnc_list_microservices",
+    "cnc_search_alarms"
+   ],
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-1-700",
+     "method": "GET",
+     "path": "/crosswork/alarm/restconf/data/v2/rtm:alarm"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/installedapplicationid/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/app/health/list"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/dc/node/details/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/infra/summary"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/microservice/list/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/summary/list"
+    }
+   ]
+  },
+  "cnc_annotate_alarm": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-notes-api",
+     "method": "PUT",
+     "path": "/crosswork/alarms/v1/note"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_assign_tags": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/nodes"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_backup_device_config": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/schedule-config-backup-job"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_check_certificate_expiry": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cert/renew/check-expiry"
+    }
+   ]
+  },
+  "cnc_check_device_nso_state": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_check_nso_device_sync": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/check-sync"
+    }
+   ]
+  },
+  "cnc_check_permissions": {
+   "any_of": [
+    [
+     "aaa_cw_role_read"
+    ],
+    [
+     "aaa_cwaaa"
+    ]
+   ],
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/role/{}"
+    },
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/roleAccess/{}"
+    },
+    {
+     "api_id": "aaa_cw_role_read",
+     "method": "GET",
+     "path": "/crosswork/aaaread/v1/role/{}"
+    },
+    {
+     "api_id": "aaa_cw_role_read",
+     "method": "GET",
+     "path": "/crosswork/aaaread/v1/roleAccess/{}"
+    }
+   ]
+  },
+  "cnc_clear_alarm": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-clear-api",
+     "method": "PUT",
+     "path": "/crosswork/alarms/v1/clear"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_clear_device_location": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/nodesgeocoord"
+    }
+   ]
+  },
+  "cnc_create_alarm_suppression_policy": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "event-processing-service-suppressionpolicy-api",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/suppressionpolicy"
+    }
+   ]
+  },
+  "cnc_create_config_template": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates"
+    }
+   ]
+  },
+  "cnc_create_credential_profile": {
+   "area": "credentials",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/credentials"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/credentials/query"
+    }
+   ]
+  },
+  "cnc_create_device": {
+   "area": "devices",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes"
+    }
+   ]
+  },
+  "cnc_create_l3vpn_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_create_odn_template": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_create_provider": {
+   "area": "providers",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/providers"
+    }
+   ]
+  },
+  "cnc_create_sid_list": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_create_sr_policy": {
+   "area": "sr_te_operations",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-create"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_create_sr_policy_e2e": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_create_sr_policy",
+    "cnc_dryrun_sr_policy",
+    "cnc_get_sr_policy_routes",
+    "cnc_wait_for_sr_policy_oper_state"
+   ],
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-routes"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-create"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-dryrun"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies/policy={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_create_sr_policy_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_create_tag": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/tags"
+    }
+   ]
+  },
+  "cnc_create_webhook_subscription": {
+   "area": "notifications",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "nb-api-subscription-api-700",
+     "method": "POST",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription"
+    }
+   ]
+  },
+  "cnc_delete_alarm_suppression_policy": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "event-processing-service-suppressionpolicy-api",
+     "method": "DELETE",
+     "path": "/crosswork/alarm/v1/suppressionpolicy/{}"
+    }
+   ]
+  },
+  "cnc_delete_config_backup_job": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "DELETE",
+     "path": "/crosswork/config/v1/config-backup-restore-job/{}"
+    }
+   ]
+  },
+  "cnc_delete_config_template": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "DELETE",
+     "path": "/crosswork/config/v1/templates"
+    }
+   ]
+  },
+  "cnc_delete_credential_profile": {
+   "area": "credentials",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "DELETE",
+     "path": "/crosswork/inventory/v1/credentials"
+    }
+   ]
+  },
+  "cnc_delete_device": {
+   "area": "devices",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "DELETE",
+     "path": "/crosswork/inventory/v1/nodes"
+    }
+   ]
+  },
+  "cnc_delete_device_backup": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "DELETE",
+     "path": "/crosswork/config/v1/config-backup/{}/{}"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_delete_notification_subscription": {
+   "area": "notifications",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "nb-api-subscription-api-700",
+     "method": "DELETE",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription/{}"
+    }
+   ]
+  },
+  "cnc_delete_odn_template": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "DELETE",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_provider": {
+   "area": "providers",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "DELETE",
+     "path": "/crosswork/inventory/v1/providers"
+    }
+   ]
+  },
+  "cnc_delete_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "DELETE",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_sid_list": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "DELETE",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_sr_policy": {
+   "area": "sr_te_operations",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies/policy={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_delete_sr_policy_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "DELETE",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_tag": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "DELETE",
+     "path": "/crosswork/inventory/v1/tags"
+    }
+   ]
+  },
+  "cnc_delete_template_deployment": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "DELETE",
+     "path": "/crosswork/config/v1/templates/deploy-template/{}"
+    }
+   ]
+  },
+  "cnc_delete_vpn_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "DELETE",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_deploy_config_template": {
+   "area": "device_config",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates/deploy-template"
+    },
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/templates/{}"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_dryrun_sr_policy": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-dryrun"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_enable_device_gnmi": {
+   "area": "devices",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/nodes"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_explain_service": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_get_probe_status",
+    "cnc_get_service",
+    "cnc_get_service_plan",
+    "cnc_get_vpn_service_health",
+    "cnc_get_vpn_underlay_transport",
+    "cnc_list_services",
+    "cnc_list_sub_services"
+   ],
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}/underlay-transport/{}:discovered-underlay-transport"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-all-services"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-sub-service-count"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-sub-service-paths"
+    },
+    {
+     "api_id": "cw-probe-mgr",
+     "method": "POST",
+     "path": "/crosswork/probemgr/v1/probeStatusReport"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    }
+   ]
+  },
+  "cnc_explain_sr_policy": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_find_services_on_transport",
+    "cnc_get_lsp_delay",
+    "cnc_get_lsp_utilization",
+    "cnc_get_nso_device_config",
+    "cnc_get_service",
+    "cnc_get_sr_policy",
+    "cnc_get_sr_policy_metrics",
+    "cnc_get_sr_policy_performance_metrics",
+    "cnc_get_sr_policy_routes",
+    "cnc_list_services",
+    "cnc_list_topology_nodes"
+   ],
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-all-services"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-associated-services-for-transport"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-metrics"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-routes"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-performance-metrics:sr-policies-performance-metrics/sr-policy-pm={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies/policy={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/delay"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/delayVariance"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/loss"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/max/delay"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/max/utilization"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/utilizations"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config/tailf-ned-cisco-ios-xr:{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    }
+   ]
+  },
+  "cnc_find_services_on_transport": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-associated-services-for-transport"
+    }
+   ]
+  },
+  "cnc_get_alarm": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_get_alarm_manager_settings": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-manager-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/manager/settings"
+    }
+   ]
+  },
+  "cnc_get_alarm_settings": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-gnmi-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/gnmi/settings"
+    },
+    {
+     "api_id": "cw-fault-alarm-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/settings"
+    }
+   ]
+  },
+  "cnc_get_cluster_health": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/app/health/list"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/infra/summary"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/summary/list"
+    }
+   ]
+  },
+  "cnc_get_cluster_node": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/dc/node/details/query"
+    }
+   ]
+  },
+  "cnc_get_collection_cadence": {
+   "area": "inventory_extras",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/devicepackage/cadence/query"
+    }
+   ]
+  },
+  "cnc_get_collection_health": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/count/query"
+    },
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/state/query"
+    },
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/summary/query"
+    }
+   ]
+  },
+  "cnc_get_collection_job_count": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/count/query"
+    }
+   ]
+  },
+  "cnc_get_collection_job_state": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/state/query"
+    }
+   ]
+  },
+  "cnc_get_collection_job_summary": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/summary/query"
+    }
+   ]
+  },
+  "cnc_get_config_backup_job": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/config-backup-job/{}"
+    }
+   ]
+  },
+  "cnc_get_config_template": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/templates/{}"
+    }
+   ]
+  },
+  "cnc_get_credential_profile": {
+   "area": "credentials",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/credentials/query"
+    }
+   ]
+  },
+  "cnc_get_data_gateway": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/dg/query"
+    }
+   ]
+  },
+  "cnc_get_data_gateway_global_parameters": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "dg-manager-global-parameters-api",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/command/global-parameter/query"
+    }
+   ]
+  },
+  "cnc_get_data_gateway_health": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/vitals/query"
+    }
+   ]
+  },
+  "cnc_get_data_gateway_load_metrics": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/device/load-metrics/query"
+    }
+   ]
+  },
+  "cnc_get_device": {
+   "area": "devices",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_get_device_backup": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/config-backup/{}/{}"
+    },
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/latest-config-backup/{}"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_get_device_collection_summary": {
+   "area": "devices",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "ems-inventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/networkelement/collectionstatussummary/query"
+    }
+   ]
+  },
+  "cnc_get_device_config_preferences": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/device-config-preferences/config-settings"
+    }
+   ]
+  },
+  "cnc_get_device_running_images": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/getDeviceRunningImages/{}"
+    }
+   ]
+  },
+  "cnc_get_device_summary": {
+   "area": "inventory_extras",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/count"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/operstatesummary"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/reachabilitysummary"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/sysoids/licensetype/count/query"
+    }
+   ]
+  },
+  "cnc_get_device_tags": {
+   "area": "inventory_extras",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_get_ems_interface": {
+   "area": "physical_inventory",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-inv-tp-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-ems:termination-point"
+    }
+   ]
+  },
+  "cnc_get_ems_inventory_summary": {
+   "area": "physical_inventory",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-inv-chassis-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:chassis"
+    },
+    {
+     "api_id": "nb-api-inv-equipment-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:equipment"
+    },
+    {
+     "api_id": "nb-api-inv-module-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:module"
+    },
+    {
+     "api_id": "nb-api-inv-node-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:node"
+    }
+   ]
+  },
+  "cnc_get_ems_node": {
+   "area": "physical_inventory",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-inv-node-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:node"
+    }
+   ]
+  },
+  "cnc_get_event_type_recommendation": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-recommended-action",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/recommended-action"
+    }
+   ]
+  },
+  "cnc_get_group_details": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/details"
+    }
+   ]
+  },
+  "cnc_get_group_hierarchy": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/groups/{}"
+    }
+   ]
+  },
+  "cnc_get_interface_delay": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/interface/delays"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/interface/loss"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/interface/max/delay"
+    }
+   ]
+  },
+  "cnc_get_inventory_config": {
+   "area": "inventory_extras",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/inventoryconfig/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/policies/query"
+    }
+   ]
+  },
+  "cnc_get_inventory_job": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/jobs/query"
+    }
+   ]
+  },
+  "cnc_get_inventory_scheduler_job": {
+   "area": "ems_jobs",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    }
+   ]
+  },
+  "cnc_get_lcm_config": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-function-pack-operations:get-lcm-config"
+    }
+   ]
+  },
+  "cnc_get_lcm_recommendation": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-recommendation"
+    }
+   ]
+  },
+  "cnc_get_lcm_recommendation_preview": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-msl-recommendation-preview"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:get-lcm-recommendation-preview"
+    }
+   ]
+  },
+  "cnc_get_link_performance_metrics": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-performance-metrics:igp-links-performance-metrics/igp-link-pm={}"
+    }
+   ]
+  },
+  "cnc_get_login_banner": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/banner/get"
+    }
+   ]
+  },
+  "cnc_get_lsp_delay": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/delay"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/delayVariance"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/loss"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/max/delay"
+    }
+   ]
+  },
+  "cnc_get_lsp_utilization": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/max/utilization"
+    },
+    {
+     "api_id": "optima_analytics_api",
+     "method": "POST",
+     "path": "/crosswork/optima-analytics/api/v1/lsp/utilizations"
+    }
+   ]
+  },
+  "cnc_get_maintenance_status": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/platform/balancer/status"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/platform/maintenance/status"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/upgrademanager"
+    }
+   ]
+  },
+  "cnc_get_node_interface": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks/network={}/node={}/ietf-network-topology-state:termination-point={}"
+    }
+   ]
+  },
+  "cnc_get_notification_subscription": {
+   "area": "notifications",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-subscription-api-700",
+     "method": "GET",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription/{}"
+    }
+   ]
+  },
+  "cnc_get_nso_device": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}"
+    }
+   ]
+  },
+  "cnc_get_nso_device_config": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config/tailf-ned-cisco-ios-xr:{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device={}/config/{}"
+    }
+   ]
+  },
+  "cnc_get_nso_policy": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/policy/query"
+    }
+   ]
+  },
+  "cnc_get_oam_settings": {
+   "area": "oam",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-delete-interval"
+    }
+   ]
+  },
+  "cnc_get_oam_trace_route": {
+   "area": "oam",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query-id"
+    }
+   ]
+  },
+  "cnc_get_p2mp_policy": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies/p2mp-policy={}"
+    }
+   ]
+  },
+  "cnc_get_password_policy": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/passwordPolicyConfig"
+    }
+   ]
+  },
+  "cnc_get_performance_health_settings": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/healthsettings"
+    }
+   ]
+  },
+  "cnc_get_performance_policy": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/{}"
+    }
+   ]
+  },
+  "cnc_get_performance_policy_history": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/{}/deployment-history"
+    }
+   ]
+  },
+  "cnc_get_performance_retention": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dataretention/all"
+    },
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dataretention/default"
+    }
+   ]
+  },
+  "cnc_get_performance_statistics": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/statistics"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/policy-templates"
+    }
+   ]
+  },
+  "cnc_get_performance_summary": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/summary"
+    }
+   ]
+  },
+  "cnc_get_performance_top_n": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/topn"
+    }
+   ]
+  },
+  "cnc_get_platform_version": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/version/show"
+    }
+   ]
+  },
+  "cnc_get_probe_status": {
+   "area": "oam",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-probe-mgr",
+     "method": "POST",
+     "path": "/crosswork/probemgr/v1/probeStatusReport"
+    }
+   ]
+  },
+  "cnc_get_provider": {
+   "area": "providers",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/providers/query"
+    }
+   ]
+  },
+  "cnc_get_role_permissions": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/userpermission"
+    },
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/userpermission/{}"
+    }
+   ]
+  },
+  "cnc_get_role_tasks": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/roleAccess/{}"
+    },
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/usertask/{}"
+    }
+   ]
+  },
+  "cnc_get_rsvp_te_tunnel": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels/rsvp-te-tunnel={}"
+    }
+   ]
+  },
+  "cnc_get_rsvp_tunnel_performance_metrics": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-performance-metrics:rsvp-policies-performance-metrics/rsvp-policy-pm={}"
+    }
+   ]
+  },
+  "cnc_get_service": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    }
+   ]
+  },
+  "cnc_get_service_counts": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-services-count"
+    }
+   ]
+  },
+  "cnc_get_service_plan": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    }
+   ]
+  },
+  "cnc_get_session_config": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/getSessionMgmtPermissions"
+    },
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/sessionconfig"
+    }
+   ]
+  },
+  "cnc_get_sr_policy": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies/policy={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_get_sr_policy_metrics": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-metrics"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_get_sr_policy_path_notification_state": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:get-interface-sr-policy-paths-notification-state"
+    }
+   ]
+  },
+  "cnc_get_sr_policy_performance_metrics": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-performance-metrics:sr-policies-performance-metrics/sr-policy-pm={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_get_sr_policy_routes": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-routes"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_get_swim_job": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/jobAllDetailsById/{}"
+    }
+   ]
+  },
+  "cnc_get_swim_preferences": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/getSwimPreference"
+    },
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/getSwimPreference/{}"
+    }
+   ]
+  },
+  "cnc_get_te_summary": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies"
+    }
+   ]
+  },
+  "cnc_get_template_deployment": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates/deploy-template/{}/query"
+    }
+   ]
+  },
+  "cnc_get_topology_link": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks/network={}/ietf-network-topology-state:link={}"
+    }
+   ]
+  },
+  "cnc_get_topology_node": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks/network={}/node={}"
+    }
+   ]
+  },
+  "cnc_get_topology_summary": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_get_user": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/user/{}"
+    }
+   ]
+  },
+  "cnc_get_vpn_service": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}"
+    }
+   ]
+  },
+  "cnc_get_vpn_service_health": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}"
+    }
+   ]
+  },
+  "cnc_get_vpn_underlay_transport": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}/underlay-transport/{}:discovered-underlay-transport"
+    }
+   ]
+  },
+  "cnc_get_ztp_device_policy": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/policies/query"
+    }
+   ]
+  },
+  "cnc_investigate_device": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_check_nso_device_sync",
+    "cnc_get_device",
+    "cnc_get_device_collection_summary",
+    "cnc_get_ems_node",
+    "cnc_get_performance_statistics",
+    "cnc_get_topology_node",
+    "cnc_list_device_alarms",
+    "cnc_list_device_backups",
+    "cnc_list_events",
+    "cnc_search_alarms"
+   ],
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-1-700",
+     "method": "GET",
+     "path": "/crosswork/alarm/restconf/data/v2/rtm:alarm"
+    },
+    {
+     "api_id": "cw-fault-events-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/event/query"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    },
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/config-backup/{}"
+    },
+    {
+     "api_id": "nb-api-inv-node-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:node"
+    },
+    {
+     "api_id": "ems-inventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/networkelement/collectionstatussummary/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/check-sync"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks/network={}/node={}"
+    },
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/statistics"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/policy-templates"
+    }
+   ]
+  },
+  "cnc_is_nso_configured": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/isNSOConfigured"
+    }
+   ]
+  },
+  "cnc_list_active_sessions": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/activeSessions"
+    }
+   ]
+  },
+  "cnc_list_alarm_suppression_policies": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "event-processing-service-suppressionpolicy-api",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/suppressionpolicy"
+    }
+   ]
+  },
+  "cnc_list_alarms": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_list_app_manager_events": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/events/query"
+    }
+   ]
+  },
+  "cnc_list_app_manager_jobs": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/jobs/query"
+    }
+   ]
+  },
+  "cnc_list_application_status": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/applicationstatus/query"
+    }
+   ]
+  },
+  "cnc_list_applications": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/applicationsummary/query"
+    }
+   ]
+  },
+  "cnc_list_certificates": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cert/summary/list"
+    }
+   ]
+  },
+  "cnc_list_cluster_nodes": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/dc/node/summary/list"
+    }
+   ]
+  },
+  "cnc_list_config_backup_jobs": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/config-backup-jobs"
+    }
+   ]
+  },
+  "cnc_list_config_templates": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates/query"
+    }
+   ]
+  },
+  "cnc_list_credential_profiles": {
+   "area": "credentials",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/credentials/query"
+    }
+   ]
+  },
+  "cnc_list_cs_policies_on_interface": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-csm-policy-operations:cs-policy-paths-on-interface"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_cs_policies_on_nodes": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-csm-policy-operations:cs-policy-paths-on-nodes"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_cs_policy_paths": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-csm-policy-operations:all-cs-policy-paths"
+    }
+   ]
+  },
+  "cnc_list_csm_bandwidth_pools": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-csm-config-operations:get-csm-interfaces-bandwidth-pool"
+    }
+   ]
+  },
+  "cnc_list_data_destinations": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/destinations/query"
+    }
+   ]
+  },
+  "cnc_list_data_gateway_files": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/system-files/query"
+    },
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/custom-files/query"
+    }
+   ]
+  },
+  "cnc_list_data_gateway_outages": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/device/outage-history/query"
+    }
+   ]
+  },
+  "cnc_list_data_gateway_pools": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/hapool/query"
+    }
+   ]
+  },
+  "cnc_list_data_gateways": {
+   "area": "data_gateway",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/dg/query"
+    }
+   ]
+  },
+  "cnc_list_device_alarms": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-1-700",
+     "method": "GET",
+     "path": "/crosswork/alarm/restconf/data/v2/rtm:alarm"
+    }
+   ]
+  },
+  "cnc_list_device_backups": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "GET",
+     "path": "/crosswork/config/v1/config-backup/{}"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_list_devices": {
+   "area": "devices",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_list_ems_interfaces": {
+   "area": "physical_inventory",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-inv-tp-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-ems:termination-point"
+    }
+   ]
+  },
+  "cnc_list_ems_nodes": {
+   "area": "physical_inventory",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-inv-node-700",
+     "method": "GET",
+     "path": "/crosswork/inventory/restconf/data/v2/resource-physical:node"
+    }
+   ]
+  },
+  "cnc_list_event_types": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-severity-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/severity-config"
+    }
+   ]
+  },
+  "cnc_list_events": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-events-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/event/query"
+    }
+   ]
+  },
+  "cnc_list_export_collection_jobs": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/jobs/query"
+    }
+   ]
+  },
+  "cnc_list_function_packs": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cat-fp-deployment-manager",
+     "method": "GET",
+     "path": "/crosswork/cat/cat-fp-deployment-manager-service/v1/twophasecommitrunner/getDeploymentInfo"
+    },
+    {
+     "api_id": "cat-fp-deployment-manager",
+     "method": "GET",
+     "path": "/crosswork/cat/cat-fp-deployment-manager-service/v1/twophasecommitrunner/packages"
+    }
+   ]
+  },
+  "cnc_list_group_devices": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/{}"
+    }
+   ]
+  },
+  "cnc_list_group_rule_conditions": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/rule/conditions"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/ports/rule/conditions"
+    }
+   ]
+  },
+  "cnc_list_inventory_jobs": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/jobs/query"
+    }
+   ]
+  },
+  "cnc_list_inventory_scheduler_jobs": {
+   "area": "ems_jobs",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    }
+   ]
+  },
+  "cnc_list_kafka_subscriptions": {
+   "area": "notifications",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "external-notification-subscription",
+     "method": "GET",
+     "path": "/crosswork/notification/v2/subscription"
+    }
+   ]
+  },
+  "cnc_list_lcm_domains": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-lcm-domain-operations:get-lcm-domains"
+    }
+   ]
+  },
+  "cnc_list_lcm_managed_interfaces": {
+   "area": "lcm_csm",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-function-pack-operations:get-lcm-managed-interfaces"
+    }
+   ]
+  },
+  "cnc_list_microservices": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/capp/installedapplicationid/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/dc/node/details/query"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/microservice/list/query"
+    }
+   ]
+  },
+  "cnc_list_node_interfaces": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks/network={}/node={}"
+    }
+   ]
+  },
+  "cnc_list_notification_streams": {
+   "area": "notifications",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-nt-9-700",
+     "method": "GET",
+     "path": "/crosswork/notification/restconf/data/v2/ietf-restconf-monitoring:restconf-state/streams"
+    }
+   ]
+  },
+  "cnc_list_notification_subscriptions": {
+   "area": "notifications",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-subscription-api-700",
+     "method": "GET",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription"
+    },
+    {
+     "api_id": "nb-api-alarm-nt-2-700",
+     "method": "GET",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription-admin"
+    }
+   ]
+  },
+  "cnc_list_nso_devices": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/tailf-ncs:devices/device"
+    }
+   ]
+  },
+  "cnc_list_oam_trace_routes": {
+   "area": "oam",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query"
+    }
+   ]
+  },
+  "cnc_list_p2mp_policies": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies"
+    }
+   ]
+  },
+  "cnc_list_performance_policies": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies"
+    }
+   ]
+  },
+  "cnc_list_performance_policy_devices": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/devices/{}"
+    }
+   ]
+  },
+  "cnc_list_performance_policy_templates": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/policy-templates"
+    }
+   ]
+  },
+  "cnc_list_performance_top_n_columns": {
+   "area": "performance",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "performance-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dashboards/topn/columns"
+    }
+   ]
+  },
+  "cnc_list_providers": {
+   "area": "providers",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/providers/query"
+    }
+   ]
+  },
+  "cnc_list_roles": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/role"
+    }
+   ]
+  },
+  "cnc_list_root_groups": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/root/{}/uuid"
+    }
+   ]
+  },
+  "cnc_list_rsvp_te_tunnels": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels"
+    }
+   ]
+  },
+  "cnc_list_secured_apis": {
+   "area": "admin",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v2/api"
+    }
+   ]
+  },
+  "cnc_list_sensor_templates": {
+   "area": "collection",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/template"
+    }
+   ]
+  },
+  "cnc_list_service_types": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-available-service-types"
+    }
+   ]
+  },
+  "cnc_list_services": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-all-services"
+    }
+   ]
+  },
+  "cnc_list_software_images": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/getImagesForRepository"
+    },
+    {
+     "api_id": "swim-nbi",
+     "method": "GET",
+     "path": "/crosswork/api/v1/op/swim/image/getImagesForRepository/{}"
+    }
+   ]
+  },
+  "cnc_list_sr_policies": {
+   "area": "te_state",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_sr_policies_on_interface": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policies-on-interface"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_sr_policies_on_nodes": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policies-on-node"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_sub_services": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-sub-service-count"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-sub-service-paths"
+    }
+   ]
+  },
+  "cnc_list_tags": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/tags/query"
+    }
+   ]
+  },
+  "cnc_list_template_deployments": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates/jobs/deployments/query"
+    }
+   ]
+  },
+  "cnc_list_topology_links": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_topology_nodes": {
+   "area": "topology",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_list_users": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "aaa_cwaaa",
+     "method": "GET",
+     "path": "/crosswork/aaa/v1/user"
+    }
+   ]
+  },
+  "cnc_list_vpn_services": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service"
+    }
+   ]
+  },
+  "cnc_list_ztp_config_files": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/configs"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/configs/count"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/platforms"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/types"
+    }
+   ]
+  },
+  "cnc_list_ztp_devices": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    }
+   ]
+  },
+  "cnc_list_ztp_images": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-image-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/imagesvc/v1/images"
+    },
+    {
+     "api_id": "cw-image-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/imagesvc/v1/images/count"
+    },
+    {
+     "api_id": "cw-image-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/imagesvc/v1/platforms"
+    }
+   ]
+  },
+  "cnc_list_ztp_profiles": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles/query"
+    }
+   ]
+  },
+  "cnc_list_ztp_serial_numbers": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/serialnumbers/query"
+    }
+   ]
+  },
+  "cnc_list_ztp_static_routes": {
+   "area": "swim_ztp",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/staticroutes/query"
+    }
+   ]
+  },
+  "cnc_lock_device": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/locknodes"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_map_devices_to_data_gateway": {
+   "area": "data_gateway",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/dg/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PUT",
+     "path": "/crosswork/inventory/v1/dg/devicemapping"
+    }
+   ]
+  },
+  "cnc_network_health_report": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_check_device_nso_state",
+    "cnc_get_cluster_health",
+    "cnc_get_collection_health",
+    "cnc_get_device_collection_summary",
+    "cnc_get_device_summary",
+    "cnc_get_te_summary",
+    "cnc_get_topology_summary",
+    "cnc_list_data_gateways",
+    "cnc_list_device_alarms",
+    "cnc_list_devices",
+    "cnc_list_providers",
+    "cnc_search_alarms"
+   ],
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-1-700",
+     "method": "GET",
+     "path": "/crosswork/alarm/restconf/data/v2/rtm:alarm"
+    },
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    },
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/count/query"
+    },
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/state/query"
+    },
+    {
+     "api_id": "cwcollection",
+     "method": "POST",
+     "path": "/crosswork/collection/v1/collectionjob/summary/query"
+    },
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v2/dg/query"
+    },
+    {
+     "api_id": "ems-inventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/networkelement/collectionstatussummary/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/count"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/operstatesummary"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/nodes/reachabilitysummary"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/providers/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "GET",
+     "path": "/crosswork/inventory/v1/sysoids/licensetype/count/query"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-rsvp-te-tunnel:rsvp-te-tunnels"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-p2mp-policy:p2mp-policies"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/app/health/list"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/infra/summary"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/cluster/summary/list"
+    }
+   ]
+  },
+  "cnc_nso_device_action": {
+   "area": "nso",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/{}"
+    }
+   ]
+  },
+  "cnc_nso_sync_to_device": {
+   "area": "nso",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/sync-to"
+    }
+   ]
+  },
+  "cnc_pause_lcm_recommendations": {
+   "area": "lcm_csm",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-lcm-recommendation-operations:set-lcm-recommendation-pause"
+    }
+   ]
+  },
+  "cnc_preview_sr_policy_route": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:sr-policy-route-preview"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_provision_l3vpn_e2e": {
+   "area": "composite",
+   "composed_from": [
+    "cnc_create_l3vpn_service",
+    "cnc_get_device",
+    "cnc_get_vpn_service_health",
+    "cnc_start_oam_trace_route",
+    "cnc_wait_for_oam_trace_route",
+    "cnc_wait_for_service_plan"
+   ],
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "GET",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/data/{}:{}/vpn-services/vpn-service={}"
+    },
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query-id"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:set-oam-trace-route-by-calc"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_provision_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PATCH",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PUT",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_reactivate_probe": {
+   "area": "oam",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-probe-mgr",
+     "method": "POST",
+     "path": "/crosswork/probemgr/v1/reactivateProbe"
+    }
+   ]
+  },
+  "cnc_restart_microservice": {
+   "area": "admin",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/microservice/restart"
+    }
+   ]
+  },
+  "cnc_resume_inventory_scheduler_job": {
+   "area": "ems_jobs",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    },
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "POST",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/resumeJob"
+    }
+   ]
+  },
+  "cnc_resync_service_inventory": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "nso-connector",
+     "method": "POST",
+     "path": "/crosswork/cat/nso-connector/v1/api/fullResync"
+    },
+    {
+     "api_id": "nso-connector",
+     "method": "POST",
+     "path": "/crosswork/cat/nso-connector/v1/api/serviceResync"
+    },
+    {
+     "api_id": "nso-connector",
+     "method": "POST",
+     "path": "/crosswork/cat/nso-connector/v1/api/typeResync"
+    }
+   ]
+  },
+  "cnc_run_inventory_scheduler_job": {
+   "area": "ems_jobs",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    },
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "POST",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/runJob"
+    }
+   ]
+  },
+  "cnc_search_alarms": {
+   "area": "fault",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarms-api",
+     "method": "POST",
+     "path": "/crosswork/alarms/v1/query"
+    }
+   ]
+  },
+  "cnc_set_device_location": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/nodesgeocoord"
+    }
+   ]
+  },
+  "cnc_set_login_banner": {
+   "area": "admin",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/banner/get"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/cluster/banner/set"
+    }
+   ]
+  },
+  "cnc_set_maintenance_mode": {
+   "area": "admin",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "platform_cwplatform",
+     "method": "POST",
+     "path": "/crosswork/platform/v2/platform/maintenance/set"
+    },
+    {
+     "api_id": "platform_cwplatform",
+     "method": "GET",
+     "path": "/crosswork/platform/v2/platform/maintenance/status"
+    }
+   ]
+  },
+  "cnc_set_sr_policy_path_notifications": {
+   "area": "sr_te_operations",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:get-interface-sr-policy-paths-notification-state"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-operations:set-interface-sr-policy-paths-notification-state"
+    }
+   ]
+  },
+  "cnc_start_oam_trace_route": {
+   "area": "oam",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:set-oam-trace-route-by-calc"
+    }
+   ]
+  },
+  "cnc_suspend_inventory_scheduler_job": {
+   "area": "ems_jobs",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    },
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "POST",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/suspendJob"
+    }
+   ]
+  },
+  "cnc_sync_inventory_with_nso": {
+   "area": "nso",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nso/sync"
+    }
+   ]
+  },
+  "cnc_unassign_tags": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PUT",
+     "path": "/crosswork/inventory/v1/nodes/unassigntag"
+    }
+   ]
+  },
+  "cnc_unlock_device": {
+   "area": "inventory_extras",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/locknodes"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_update_credential_profile": {
+   "area": "credentials",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PUT",
+     "path": "/crosswork/inventory/v1/credentials"
+    },
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/credentials/query"
+    }
+   ]
+  },
+  "cnc_update_device": {
+   "area": "devices",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/nodes"
+    }
+   ]
+  },
+  "cnc_update_provider": {
+   "area": "providers",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "PATCH",
+     "path": "/crosswork/inventory/v1/providers"
+    }
+   ]
+  },
+  "cnc_update_sr_policy": {
+   "area": "sr_te_operations",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-modify"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_update_sr_policy_service": {
+   "area": "service_provisioning",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "PATCH",
+     "path": "/crosswork/proxy/nso/restconf/data/{}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}-plan={}"
+    },
+    {
+     "api_id": "proxy_cw-proxy",
+     "method": "GET",
+     "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_wait_for_config_backup_job": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/config-backup-job/{}"
+    }
+   ]
+  },
+  "cnc_wait_for_device_nso_state": {
+   "area": "nso",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_wait_for_device_reachable": {
+   "area": "devices",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    }
+   ]
+  },
+  "cnc_wait_for_inventory_job": {
+   "area": "platform",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/jobs/query"
+    }
+   ]
+  },
+  "cnc_wait_for_inventory_scheduler_job": {
+   "area": "ems_jobs",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-inventory-job-dashboard",
+     "method": "GET",
+     "path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/getSystemLazyJobsSpecification"
+    }
+   ]
+  },
+  "cnc_wait_for_oam_trace_route": {
+   "area": "oam",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "inventory_cwinventory",
+     "method": "POST",
+     "path": "/crosswork/inventory/v1/nodes/query"
+    },
+    {
+     "api_id": "optima_restconf",
+     "method": "POST",
+     "path": "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-oam-operations:get-oam-trace-route-by-query-id"
+    }
+   ]
+  },
+  "cnc_wait_for_service_plan": {
+   "area": "services",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "tsdn_cat-restconf-nbi",
+     "method": "POST",
+     "path": "/crosswork/nbi/cat-inventory/v1/restconf/operations/cat-inventory-rpc:get-service-plan-data"
+    }
+   ]
+  },
+  "cnc_wait_for_sr_policy_oper_state": {
+   "area": "sr_te_operations",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/cisco-crosswork-segment-routing-policy:sr-policies/policy={}"
+    },
+    {
+     "api_id": "topo_restconf",
+     "method": "GET",
+     "path": "/crosswork/nbi/topology/v3/restconf/data/ietf-network-state:networks"
+    }
+   ]
+  },
+  "cnc_wait_for_template_deployment": {
+   "area": "device_config",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "device-config",
+     "method": "POST",
+     "path": "/crosswork/config/v1/templates/deploy-template/{}/query"
+    }
+   ]
+  }
+ },
+ "unresolved": []
+}

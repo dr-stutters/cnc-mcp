@@ -10,8 +10,23 @@ never hardcode them and never log them.
 
 from __future__ import annotations
 
+import re
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Separators accepted in the comma-separated list settings: commas and/or whitespace.
+_LIST_SEPARATORS = re.compile(r"[,\s]+")
+
+
+def parse_name_list(value: str) -> frozenset[str]:
+    """The names in a comma-separated setting: stripped, lower-cased, deduplicated.
+
+    ``"Fault, devices,,fault "`` -> ``frozenset({"fault", "devices"})``. Kept as a
+    plain ``str`` field parsed here (not ``list[str]``) so the environment variable is
+    ``CNC_MCP_WRITE_AREAS=fault,devices`` rather than a JSON document.
+    """
+    return frozenset(part.lower() for part in _LIST_SEPARATORS.split(value) if part)
 
 
 class Settings(BaseSettings):
@@ -50,6 +65,23 @@ class Settings(BaseSettings):
         default=False,
         description="When false (default), tools that modify the platform are not registered.",
     )
+    write_areas: str = Field(
+        default="",
+        description="Comma-separated tool areas (tools/ module names, e.g. 'fault,devices') "
+        "whose write tools are registered when enable_writes is true; empty (default) = "
+        "every area. Case- and whitespace-tolerant.",
+    )
+    disabled_tools: str = Field(
+        default="",
+        description="Comma-separated tool names that are never registered, read or write "
+        "(e.g. 'cnc_delete_device,cnc_restart_microservice'). Unknown names fail startup.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Global dry-run mode: write tools stay registered but a tool with a "
+        "dry_run argument is forced to preview and any other write answers with the "
+        "arguments it would have sent — nothing changes on the platform.",
+    )
     max_response_chars: int = Field(
         default=40_000, ge=1_000, description="Tool responses longer than this are truncated."
     )
@@ -62,3 +94,18 @@ class Settings(BaseSettings):
         if not v.startswith(("http://", "https://")):
             raise ValueError("base_url must start with http:// or https://")
         return v
+
+    @property
+    def env_prefix(self) -> str:
+        """The environment-variable prefix (``CNC_MCP_``), for messages naming a setting."""
+        return str(self.model_config.get("env_prefix", ""))
+
+    @property
+    def write_area_set(self) -> frozenset[str]:
+        """``write_areas`` parsed: the areas whose write tools register; empty = all."""
+        return parse_name_list(self.write_areas)
+
+    @property
+    def disabled_tool_set(self) -> frozenset[str]:
+        """``disabled_tools`` parsed: the tool names that are never registered."""
+        return parse_name_list(self.disabled_tools)

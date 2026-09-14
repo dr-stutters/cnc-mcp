@@ -21,7 +21,7 @@ analytics, run OAM trace routes and read SWIM / ZTP state — all
 through typed, documented tools with the platform's own error reasons surfaced
 verbatim.
 
-**244 tools** (181 read, 63 write) over 24 API areas plus six MCP prompts. Every tool was built from
+**245 tools** (182 read, 63 write) over 24 API areas plus six MCP prompts. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -30,6 +30,7 @@ alone — see [How it was verified](#how-it-was-verified).
 - [Quickstart](#quickstart)
 - [Tools](#tools)
 - [How it works](#how-it-works)
+- [Safety controls](#safety-controls)
 - [Configuration](#configuration)
 - [How it was verified](#how-it-was-verified)
 - [Platform facts that shaped the design](#platform-facts-that-shaped-the-design)
@@ -38,14 +39,15 @@ alone — see [How it was verified](#how-it-was-verified).
 - [Development](#development)
 - Project: [CHANGELOG](CHANGELOG.md) · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md)
 - Docs: [platform facts](docs/platform-facts.md) (the full verified list) ·
-  [API coverage](docs/COVERAGE.md) (every published CNC 7.2 operation against the tools)
+  [API coverage](docs/COVERAGE.md) (every published CNC 7.2 operation against the tools) ·
+  [RBAC](docs/RBAC.md) (the API rows a least-privilege account needs)
 
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/) (it fetches a Python 3.11+ on its
 own if none is installed) and a Crosswork user (the `admin` role covers
-everything; reads need the inventory, topology, alarm and AAA read tasks,
-writes need inventory write).
+everything; [docs/RBAC.md](docs/RBAC.md) lists the exact API rows a
+least-privilege account needs, and `cnc_check_permissions` verifies one).
 
 ### Run it without cloning
 
@@ -126,7 +128,9 @@ or `.cursor/mcp.json` (per project, shared if committed).
 `servers` and the entry carries `"type": "stdio"`.
 
 Write tools are not registered at all until `CNC_MCP_ENABLE_WRITES=true`,
-so a read-only registration cannot be talked into changing anything.
+so a read-only registration cannot be talked into changing anything;
+[Safety controls](#safety-controls) covers the area allowlist, the tool
+denylist and the dry-run mode that sit on top of that switch.
 
 ### Clone and run (development)
 
@@ -138,12 +142,14 @@ make test && make lint            # 2,000+ tests, all HTTP mocked — no CNC nee
 make run                          # start the server on stdio
 make inspect                      # MCP Inspector against it
 make cli ARGS="list"              # scripts/mcp_cli.py: list | schema | call | prompts | prompt
+make rbac-check                   # the packaged RBAC map still matches the tool source
 make build                        # wheel + sdist into dist/
 ```
 
 `scripts/mcp_cli.py` drives the server over the real MCP stdio protocol —
 `instructions`, `list [--writes]`, `schema <tool>`, `call <tool> '<json>'`,
-`prompts`, `prompt <name> '<json>'` — so what it prints is exactly what an
+`prompts`, `prompt <name> '<json>'`, each with `--env NAME=VALUE` to start
+the server under other settings — so what it prints is exactly what an
 agent sees. To register a checkout with
 a client, replace the `uvx` command above with
 `"command": "uv", "args": ["--directory", "/path/to/cnc-mcp", "run", "cnc-mcp"]`;
@@ -168,7 +174,7 @@ below; `.env.example` is the same list as a commented template.
 
 ## Tools
 
-Read tools — always registered:
+Read tools — registered in every mode:
 
 | Area | Tools |
 |---|---|
@@ -185,7 +191,7 @@ Read tools — always registered:
 | **Fault** | `cnc_get_alarm` · `cnc_search_alarms` · `cnc_list_events` · `cnc_list_device_alarms` · `cnc_get_alarm_settings` · `cnc_get_alarm_manager_settings` · `cnc_list_event_types` · `cnc_get_event_type_recommendation` · `cnc_list_alarm_suppression_policies` |
 | **Device configuration** | `cnc_get_device_config_preferences` · `cnc_list_device_backups` · `cnc_get_device_backup` · `cnc_list_config_backup_jobs` · `cnc_get_config_backup_job` · `cnc_list_config_templates` · `cnc_get_config_template` · `cnc_list_template_deployments` · `cnc_get_template_deployment` · `cnc_wait_for_config_backup_job` · `cnc_wait_for_template_deployment` |
 | **EMF inventory** | `cnc_list_ems_nodes` · `cnc_get_ems_node` · `cnc_list_ems_interfaces` · `cnc_get_ems_interface` · `cnc_get_ems_inventory_summary` |
-| **Platform admin & RBAC** | `cnc_get_platform_version` · `cnc_get_cluster_health` · `cnc_list_cluster_nodes` · `cnc_get_cluster_node` · `cnc_list_microservices` · `cnc_list_application_status` · `cnc_list_app_manager_jobs` · `cnc_list_app_manager_events` · `cnc_get_maintenance_status` · `cnc_list_certificates` · `cnc_check_certificate_expiry` · `cnc_get_login_banner` · `cnc_get_session_config` · `cnc_list_active_sessions` · `cnc_get_user` · `cnc_list_roles` · `cnc_get_role_tasks` · `cnc_get_role_permissions` · `cnc_get_password_policy` · `cnc_list_secured_apis` |
+| **Platform admin & RBAC** | `cnc_get_platform_version` · `cnc_get_cluster_health` · `cnc_list_cluster_nodes` · `cnc_get_cluster_node` · `cnc_list_microservices` · `cnc_list_application_status` · `cnc_list_app_manager_jobs` · `cnc_list_app_manager_events` · `cnc_get_maintenance_status` · `cnc_list_certificates` · `cnc_check_certificate_expiry` · `cnc_get_login_banner` · `cnc_get_session_config` · `cnc_list_active_sessions` · `cnc_get_user` · `cnc_list_roles` · `cnc_get_role_tasks` · `cnc_get_role_permissions` · `cnc_get_password_policy` · `cnc_list_secured_apis` · `cnc_check_permissions` |
 | **Notifications** | `cnc_list_notification_streams` · `cnc_list_notification_subscriptions` · `cnc_get_notification_subscription` · `cnc_list_kafka_subscriptions` |
 | **Collection service** | `cnc_get_collection_job_count` · `cnc_get_collection_job_summary` · `cnc_get_collection_job_state` · `cnc_list_export_collection_jobs` · `cnc_list_sensor_templates` · `cnc_get_collection_health` |
 | **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` |
@@ -197,8 +203,9 @@ Read tools — always registered:
 | **EMS inventory scheduler** | `cnc_list_inventory_scheduler_jobs` · `cnc_get_inventory_scheduler_job` · `cnc_wait_for_inventory_scheduler_job` |
 | **Playbooks** (one call, composed from the tools above) | `cnc_investigate_device` · `cnc_network_health_report` · `cnc_explain_sr_policy` · `cnc_alarm_triage` · `cnc_explain_service` |
 
-Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true`; deletes carry
-the MCP `destructive` annotation:
+Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true` (and, with
+`CNC_MCP_WRITE_AREAS`, only for the listed areas); deletes carry the MCP
+`destructive` annotation:
 
 | Area | Tools |
 |---|---|
@@ -217,7 +224,7 @@ the MCP `destructive` annotation:
 | **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
 | **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
 | **EMS inventory scheduler** | `cnc_run_inventory_scheduler_job` · `cnc_suspend_inventory_scheduler_job` · `cnc_resume_inventory_scheduler_job` |
-| **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) |
+| **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) — both take `dry_run=true` to stop after the preview |
 
 The playbook tools compose the others server-side: each answers with a
 **verdict** (healthy / degraded / red / deployed …, with the reasons), one
@@ -287,12 +294,78 @@ JSON for exactly `Accept: application/json`. Each dialect's verified quirks
 live in one helper module, so tool modules stay thin.
 
 **Safety.** `safety.register_tool()` is the only way a tool is registered: it
-forces a read-only/destructive/idempotent decision, and refuses to register
-write tools unless writes are enabled. POSTs are not auto-retried on 5xx
+forces a read-only/destructive/idempotent decision, refuses to register
+write tools unless writes are enabled (and their area allowed), never
+registers a disabled tool, and in dry-run mode swaps each write for its
+preview — see [Safety controls](#safety-controls). POSTs are not auto-retried on 5xx
 (a lost response might mean the write happened) unless a tool explicitly
 marks the call safe to re-send. Tools never raise: every failure is returned
 as an `Error: …` string with the platform's reason, and secrets never appear
 in logs, errors, or output beyond what the platform itself masks.
+
+## Safety controls
+
+Four layers, each an environment variable, each applied when the tools are
+registered: a tool a layer excludes is absent from the tool list the agent
+sees, not merely refused. (Dry-run mode is the exception by design — the
+write tools stay visible, but harmless.)
+
+1. **Writes are off by default.** `CNC_MCP_ENABLE_WRITES=true` registers the
+   63 write tools; without it the server is read-only, and the connect-time
+   instructions say so.
+2. **`CNC_MCP_WRITE_AREAS`** — a comma-separated allowlist of the areas whose
+   write tools are registered when writes are on (empty, the default, means
+   every area). An area is a module in `src/cnc_mcp/tools/`; the ones with
+   write tools are `devices`, `credentials`, `providers`, `sr_te_operations`,
+   `data_gateway`, `nso`, `admin`, `inventory_extras`, `fault`,
+   `device_config`, `notifications`, `lcm_csm`, `service_provisioning`,
+   `oam`, `ems_jobs` and `composite`. Read tools are never affected. The
+   write playbooks in `composite` need the sibling that commits for them:
+   `cnc_provision_l3vpn_e2e` needs `service_provisioning` (and `oam` for
+   its optional trace step), `cnc_create_sr_policy_e2e` needs
+   `sr_te_operations` — `CNC_MCP_WRITE_AREAS=composite` on its own registers
+   neither, and the startup log says which sibling each one lacks.
+3. **`CNC_MCP_DISABLED_TOOLS`** — a comma-separated denylist of tool names,
+   read or write, that are never registered whatever the other settings say
+   (`cnc_delete_device,cnc_restart_microservice`).
+4. **`CNC_MCP_DRY_RUN=true`** — the write tools stay registered but nothing
+   changes on the platform. A write tool that takes `dry_run` runs with it
+   forced to `true` and answers the preview (the device CLI NSO would push,
+   the path the PCE would compute); every other write tool is not executed
+   and answers `NOT EXECUTED` with the arguments it would have sent
+   (secret-looking values redacted); the two write playbooks stop after
+   their preview stage with a `dry-run` verdict. Each write tool's
+   description ends with which of the two applies to it.
+
+An unknown area or tool name is a configuration error at startup, with a
+"did you mean" hint, never a silent no-op; an allowlisted area whose tools
+are all read-only is logged as a warning. The startup log summarises the
+result (`Registered 187 of 245 tools (182 read, 5 write); writes on for
+areas fault; disabled tools: none; dry-run off`), the connect-time
+instructions tell the agent which mode it is in, and `cnc_check_permissions`
+repeats it next to the account's role.
+
+`scripts/mcp_cli.py --env NAME=VALUE` (repeatable) starts the server with
+extra variables, to try a mode without editing `.env`:
+
+```bash
+uv run python scripts/mcp_cli.py --writes --env CNC_MCP_WRITE_AREAS=fault list
+uv run python scripts/mcp_cli.py --writes --env CNC_MCP_DRY_RUN=true \
+    call cnc_create_tag '{"name": "site-a"}'
+```
+
+**Least-privilege account.** The Crosswork gateway checks every request
+against the account's role, per API and HTTP method, so the server can run
+under a role that grants only what its registered tools send.
+[docs/RBAC.md](docs/RBAC.md) — generated from the tool source by
+`scripts/rbac_map.py`, checked in CI against the packaged map — lists the
+exact API rows a read-only account needs and what each write area adds,
+with ready-made role bodies in `docs/rbac/`. `cnc_check_permissions` reads
+the running account's role and reports which registered tools it would
+refuse and the rows to grant; a 403 from any tool points at it. The two AAA
+rows in the recipes are anchored to the paths the tools send, because the
+broader listing behind them returns administrative data and must not be
+granted to a non-administrator.
 
 ## Configuration
 
@@ -305,6 +378,9 @@ Environment variables (or a `.env` file), prefix `CNC_MCP_`:
 | `CNC_MCP_API_TOKEN` | — | Alternative: a pre-issued JWT (cannot be refreshed; expires in ~8 h) |
 | `CNC_MCP_VERIFY_TLS` | `true` | `false` for self-signed lab certificates |
 | `CNC_MCP_ENABLE_WRITES` | `false` | **Write tools are not registered until `true`** |
+| `CNC_MCP_WRITE_AREAS` | (all) | Comma-separated areas whose write tools are registered when writes are on, e.g. `fault,service_provisioning` |
+| `CNC_MCP_DISABLED_TOOLS` | — | Comma-separated tool names never registered, read or write |
+| `CNC_MCP_DRY_RUN` | `false` | Write tools registered but not executed: forced preview where the tool has `dry_run`, recorded otherwise |
 | `CNC_MCP_TIMEOUT_SECONDS` | `30` | Per-request read timeout, seconds (>= 1) |
 | `CNC_MCP_CONNECT_TIMEOUT_SECONDS` | `10` | TCP connect timeout, seconds (>= 1) |
 | `CNC_MCP_MAX_RETRIES` | `3` | Retries for 429 / 5xx / transport errors (idempotent calls; 0-10) |
@@ -394,7 +470,7 @@ src/cnc_mcp/
   client.py       ApiClient: retries, re-auth, concurrency, raw bodies
   errors.py       PlatformError and the status/body → hint mapping
   config.py       Settings (env / .env)
-  safety.py       register_tool(): annotations + write gating
+  safety.py       register_tool(): annotations, write gating (areas, denylist), dry-run wrapper
   formatting.py   markdown/json response formats, pagination envelope, size cap
   polling.py      wait_until() for the wait_for_* tools
   crosswork.py    inventory query grammar, envelopes, job checks, enums, dg/collection/alarm helpers
@@ -404,16 +480,20 @@ src/cnc_mcp/
   tools/          devices, credentials, providers, inventory_extras, physical_inventory,
                   topology, te_state, sr_te_operations, platform, fault, device_config,
                   data_gateway, nso, admin, notifications, collection, grouping, lcm_csm,
-                  services, service_provisioning, performance, oam, swim_ztp, ems_jobs
+                  services, service_provisioning, performance, oam, swim_ztp, ems_jobs,
+                  composite (the playbooks)
+  data/rbac_map.json        which gateway API each tool needs (generated; read by cnc_check_permissions)
 scripts/
   live_smoke.py             live tool-call plan runner (read / write phases, $var chaining)
   live_plumbing_check.py    live verification of the dialect helpers
   mcp_cli.py                call the server over the real MCP stdio protocol (list/schema/call/prompts)
   api_coverage.py           maps the published OpenAPI operations onto the tools -> docs/COVERAGE.md
+  rbac_map.py               tool -> gateway API map -> data/rbac_map.json, docs/RBAC.md, docs/rbac/
   smoke_plan.example.json   sanitised smoke plan
 docs/
   platform-facts.md         the verified platform behaviours the client is built around
   COVERAGE.md               every published CNC 7.2 operation against the tools (generated)
+  RBAC.md, rbac/            the API rows a least-privilege role needs, ready-made role bodies (generated)
 tests/                      one test module per source module; respx-mocked
 ```
 
@@ -423,13 +503,16 @@ tests/                      one test module per source module; respx-mocked
 make test          # pytest (respx-mocked HTTP)
 make lint          # ruff check
 make fmt           # ruff format + autofix
+make rbac          # regenerate the RBAC map and docs/RBAC.md from the tool source (offline)
+make rbac-check    # exit 1 when they are stale (CI runs this)
 make docker-build  # stdio server image; run with: docker run -i --rm --env-file .env cnc-mcp
 ```
 
 To add a tool module: read `CLAUDE.md` (the conventions are non-negotiable),
 copy the pattern of an existing module in `src/cnc_mcp/tools/`, register it
 in `tools/__init__.py`, give every tool a happy-path and an error-path test,
-add its calls to the smoke plan, and run the live smoke before merging.
+add its calls to the smoke plan, run `make rbac` (a new tool without a
+regenerated map fails CI), and run the live smoke before merging.
 
 ## License
 
