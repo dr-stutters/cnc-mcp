@@ -1241,7 +1241,7 @@ def render_doc(
     w("")
     w(
         "**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, "
-        "`mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by a "
+        "`mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by "
         "users carrying the generated roles (read-only, 2026-09-15: 262 read calls answered, "
         "the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was "
         "refused, two writes and the `/v1/api` listings refused as predicted; operator, "
