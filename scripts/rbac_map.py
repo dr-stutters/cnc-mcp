@@ -9,8 +9,8 @@ secured API with the LONGEST matching listen path (a gorilla-mux pattern such as
 refused (403) when the role has no entry for it or none of the entry's
 ``allowed_urls`` covers the path and method — each ``url`` is evaluated as an
 UNANCHORED regex search against the FULL request path (per the Tyk v5.1.1
-gateway source, ``mw_granular_access.go``; the refusal itself is not observed
-live — no restricted user has logged in yet). This script joins the two sides:
+gateway source, ``mw_granular_access.go``, and observed live 2026-09-15 with a
+user carrying the generated read-only role). This script joins the two sides:
 
 - the tool side: every ``register_tool(...)`` function's ``(METHOD, path
   template)`` endpoints, extracted statically by ``scripts/api_coverage.py``'s
@@ -96,9 +96,10 @@ Usage::
 Limits (a static heuristic — read them before trusting one row): the endpoint
 extraction is api_coverage.py's (a request built from platform data folds to
 ``{}``; a probe counts as a use); the routing and ``allowed_urls`` semantics
-come from the Tyk v5.1.1 source, not from a refusal observed live; the
-``/crosswork/aaaread/`` mirror is assumed readable by every role (verified as
-admin only). The task-checkbox bundles in section 5 are the five the lab's
+come from the Tyk v5.1.1 source and were confirmed by a user on the generated
+read-only role (2026-09-15: every predicted refusal answered 403, nothing
+unpredicted did, and the ``/crosswork/aaaread/`` mirror served that user its
+own role). The task-checkbox bundles in section 5 are the five the lab's
 ``taskAPIPermission/admin`` returned (verified 2026-09-14); the other tasks map
 to no API grant there.
 """
@@ -1240,9 +1241,10 @@ def render_doc(
     w("")
     w(
         "**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, "
-        "`mw_access_rights.go`, `mw_granular_access.go` — read, not observed live: no "
-        "restricted **user** has logged in yet, so no refusal by a role grant was ever "
-        "captured):"
+        "`mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by a "
+        "user carrying the generated read-only role (the read smoke: 262 read calls "
+        "answered, the 7 predicted refusals it exercised answered 403, nothing unpredicted "
+        "was refused; two writes and the `/v1/api` listings refused as predicted):"
     )
     w("")
     w(
@@ -1263,21 +1265,22 @@ def render_doc(
         "has no path restriction."
     )
     w(
-        "- A request the role does not permit (no entry for the API, or no matching "
-        "`allowed_urls` entry) is refused with a **403**; the body Crosswork puts on that "
-        "403 was not observed. Two fail-open cases: an `allowed_urls` regex that does not "
-        "compile is let through, and so is a role whose `access_rights` map is empty — "
+        "- A request the role does not permit is refused with a **403** whose body names "
+        'which check failed (observed 2026-09-15): `{"error": "Access to this API has been '
+        'disallowed"}` when the role has no entry for the API at all (`PUT '
+        '/crosswork/alarms/v1/ack` under the read-only role), `{"error": "Access to this '
+        'resource has been disallowed"}` when the API is granted but no `allowed_urls` '
+        "entry covers the path and method (`POST /crosswork/inventory/v1/tags`, and the "
+        "`/v1/api` listings excluded by the anchored AAA rows). Neither is an "
+        "authentication failure: the server does not re-login on them. Two fail-open "
+        "cases: an `allowed_urls` regex that does not compile is let through, and so is a "
+        "role whose `access_rights` map is empty — "
         "cnc_check_permissions reports both as refusals (the role as it should be "
         "configured)."
     )
     w("")
     w("**Not verified (assumed — say so when it bites):**")
     w("")
-    w(
-        "- The gateway's refusal itself: that a request outside a stored role's entries is "
-        "answered 403 as the Tyk source says. The stored roles above were read back through "
-        "an admin session; no user carrying one has logged in yet."
-    )
     w(
         "- The role editor's own wire shape. No UI-built role exists on the lab, so what "
         "ticking **Read / Write / Delete** submits was never read back; the generated bodies "
@@ -1287,9 +1290,11 @@ def render_doc(
         "columns on this page describe the bodies, not the editor."
     )
     w(
-        "- Whether `/crosswork/aaaread/` is readable by every role (verified as admin only). "
-        "cnc_check_permissions falls back to `/crosswork/aaa/v1` and says which one answered "
-        "— either grant suffices for it."
+        "- Whether `/crosswork/aaaread/` is readable by **every** role: verified for the "
+        "admin role and for the generated read-only role (its user read its own role and "
+        "roleAccess through the mirror, 2026-09-15); a role built without the "
+        "`aaa_cw_role_read` row is untested. cnc_check_permissions falls back to "
+        "`/crosswork/aaa/v1` and says which one answered — either grant suffices for it."
     )
     write_only_rows = sorted(api_id for api_id, t in operator_ticks.items() if "R" not in t)
     w(
@@ -1688,9 +1693,9 @@ def render_doc(
     )
     w(
         "- A device access group other than ALL-ACCESS restricts devices, not APIs; it is "
-        "reported, not evaluated. `/crosswork/aaaread/` is assumed readable by every role. "
-        "The two gateway fail-open cases (a regex that does not compile, an empty "
-        "`access_rights` map) are reported as refusals."
+        "reported, not evaluated. `/crosswork/aaaread/` is verified readable by the admin "
+        "and the generated read-only roles. The two gateway fail-open cases (a regex that "
+        "does not compile, an empty `access_rights` map) are reported as refusals."
     )
     w("")
     w("### Ready-made role bodies")

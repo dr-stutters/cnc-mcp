@@ -1308,8 +1308,7 @@
         "color": 100,
         "from_time": "2026-09-13T12:00:00Z",
         "to_time": "2026-09-13T18:00:00Z"
-      },
-      "expect_error": true
+      }
     },
     {
       "tool": "cnc_get_lsp_utilization",

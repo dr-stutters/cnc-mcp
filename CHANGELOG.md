@@ -75,6 +75,13 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ### Changed
 
+- Verified with a user on the generated read-only role (2026-09-15): the
+  read smoke answered 262 read calls, every predicted refusal answered 403
+  and nothing unpredicted did; `cnc_check_permissions` predicted the same
+  14 tools. `errors.py` now explains Tyk's two refusal bodies ("Access to
+  this API has been disallowed" = the API is not in the role; "Access to
+  this resource has been disallowed" = the path/method is not covered) and
+  neither triggers a re-login.
 - The RBAC map, `docs/RBAC.md` and the `docs/rbac/*.role.json` bodies now
   follow how Crosswork's AAA service actually stores a role (verified live
   2026-09-14 by storing a test role through an admin session and reading it

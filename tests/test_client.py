@@ -231,19 +231,27 @@ async def test_crosswork_403_unauthorized_request_triggers_reauth(make_settings)
 
 
 @respx.mock
-async def test_crosswork_genuine_403_does_not_reauth(make_settings):
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "User lacks role for this operation"},
+        # Tyk's two role-grant refusals, observed live 2026-09-15 with a read-only user:
+        # the API is not in the role / the path+method is not covered by its entries.
+        {"error": "Access to this API has been disallowed"},
+        {"error": "Access to this resource has been disallowed"},
+    ],
+)
+async def test_crosswork_genuine_403_does_not_reauth(make_settings, body):
     from cnc_mcp.auth import CrossworkCasAuth
 
     settings = make_settings(api_token="", username="mcp-admin", password="secret")
     tickets = f"{BASE_URL}/crosswork/sso/v1/tickets"
     respx.post(tickets).mock(return_value=httpx.Response(201, text="TGT-1-x"))
     leg2 = respx.post(f"{tickets}/TGT-1-x").mock(return_value=httpx.Response(200, text="a.b.c"))
-    respx.get(f"{BASE_URL}/crosswork/aaa/v1/user").mock(
-        return_value=httpx.Response(403, json={"error": "User lacks role for this operation"})
-    )
+    respx.get(f"{BASE_URL}/crosswork/aaa/v1/user").mock(return_value=httpx.Response(403, json=body))
     client = ApiClient(settings, CrossworkCasAuth("mcp-admin", "secret"))
     try:
-        with pytest.raises(PlatformError, match="Permission denied"):
+        with pytest.raises(PlatformError, match="status 403"):
             await client.request_json("GET", "/crosswork/aaa/v1/user")
         assert leg2.call_count == 1  # logged in once; no re-auth storm on real RBAC denials
     finally:
@@ -259,6 +267,13 @@ async def test_crosswork_genuine_403_does_not_reauth(make_settings):
         (500, {"error": "NATS request failed"}, "malformed request body"),
         (500, {"error": "something else"}, "server error"),
         (403, {"error": "no such role"}, "Permission denied"),
+        # The two role-grant refusals observed live 2026-09-15 with a read-only user.
+        (403, {"error": "Access to this API has been disallowed"}, "no entry for the gateway API"),
+        (
+            403,
+            {"error": "Access to this resource has been disallowed"},
+            "none of its allowed_urls entries covers this path and method",
+        ),
     ],
 )
 def test_crosswork_error_hints(status, body, fragment):

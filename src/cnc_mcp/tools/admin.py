@@ -200,8 +200,10 @@ _PERMISSIONS_HINT = "Use markdown for the summary, or fix the listed grants and 
 # ``/crosswork/performance/v{.}/dashboards/``) claims it — Tyk registers the definitions
 # longest listen path first (gateway/api_loader.go) — and is refused with a 403 when the
 # role has no entry for the API or none of its ``allowed_urls`` covers the path and
-# method (gateway/mw_access_rights.go, mw_granular_access.go; the body Crosswork puts
-# on that 403 was not observed live — the lab had no restricted role). The packaged map
+# method (gateway/mw_access_rights.go, mw_granular_access.go; observed live 2026-09-15
+# with a user on the generated read-only role: 403 "Access to this API has been
+# disallowed" when the API is not in the role, "Access to this resource has been
+# disallowed" when the path/method is not covered). The packaged map
 # records, per tool, the (method, path template, api_id) requirements the tool's source
 # sends, plus ``any_of`` groups of api_ids for a tool that tries one API and falls back
 # to another; cnc_check_permissions evaluates them against the calling account's role.
@@ -2445,7 +2447,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         path template + the gateway api_id the path routes to) needs the
         api_id granted and an allowed_urls entry whose regex matches the FULL
         request path as an unanchored search and lists the method — per the
-        Tyk v5.1.1 gateway source (mw_granular_access.go), not observed live
+        Tyk v5.1.1 gateway source (mw_granular_access.go), confirmed live with
+        a user on the generated read-only role (2026-09-15)
         ('/nodes' permits /crosswork/inventory/v1/nodes/query; '^/v1/nodes'
         permits nothing); a method of '*' needs all five.
 
@@ -2583,9 +2586,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "rbac_map.py) and matched against the role's access_rights — no tool endpoint "
                 "was called. Each allowed_urls regex is evaluated as an unanchored search "
                 "against the full request path, per the Tyk v5.1.1 gateway source "
-                "(mw_granular_access.go), not observed live. How the AAA service stores a "
-                "role was verified 2026-09-14 (a Read row is GET /.* plus the platform's "
-                "read-by-POST templates, so POST .../query reads run under Read); that the "
+                "(mw_granular_access.go), confirmed live 2026-09-15 by a user on the "
+                "generated read-only role (every predicted refusal answered 403, nothing "
+                "unpredicted did). How the AAA service stores a role was verified "
+                "2026-09-14 (a Read row is GET /.* plus the platform's read-by-POST "
+                "templates, so POST .../query reads run under Read); that the "
                 "role editor's Read/Write/Delete ticks emit that shape is inferred, not "
                 "observed."
             )

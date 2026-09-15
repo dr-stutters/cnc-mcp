@@ -953,7 +953,11 @@ def test_doc_names_the_refused_tools_and_the_permitted_write(rbac):
         + ", ".join(f"`{api_id}`" for api_id in rbac_map.VERBATIM_POST_BESIDE_GET_APIS)
         in text
     )
-    assert "no user carrying one has logged in yet" in text
+    # The refusal itself was observed 2026-09-15 with a user on the read-only role.
+    assert "no user carrying one has logged in yet" not in text
+    assert "Access to this API has been disallowed" in text
+    assert "Access to this resource has been disallowed" in text
+    assert "confirmed live 2026-09-15 by a user carrying the generated read-only role" in text
     # the UI equivalence is an inference, said so in every place it is used
     assert "The role editor's own wire shape. No UI-built role exists on the lab" in text
     assert "is taken to produce (inferred, section 1)" in text

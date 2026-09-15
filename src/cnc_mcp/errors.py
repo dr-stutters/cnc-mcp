@@ -191,6 +191,21 @@ _DETAIL_HINTS: list[tuple[int, str, str]] = [
         "lacks.",
     ),
     (
+        403,
+        "access to this api has been disallowed",
+        "The account's role has no entry for the gateway API this path belongs to "
+        "(verified live: this is Tyk's access-rights refusal). cnc_check_permissions names "
+        "the API row (feature / api_id) to grant.",
+    ),
+    (
+        403,
+        "access to this resource has been disallowed",
+        "The account's role grants this gateway API but none of its allowed_urls entries "
+        "covers this path and method — typically a Read row (GET plus the platform's "
+        "read-by-POST templates) asked to POST/PUT/DELETE. cnc_check_permissions lists the "
+        "rows and methods to add.",
+    ),
+    (
         500,
         "middleware error",
         "The Crosswork gateway rejected the bearer token before it reached the service "
