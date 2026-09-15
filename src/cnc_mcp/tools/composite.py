@@ -54,6 +54,33 @@ also cope with a sibling that is absent at call time (the audit line says so).
 Both take ``dry_run``: true stops after the preview stage (NSO's dry run / the
 Optimization Engine's dry run) with a ``dry-run`` verdict and nothing committed;
 global dry-run mode (``CNC_MCP_DRY_RUN=true``) forces it.
+
+SRv6 (added 2026-09-15, ahead of the lab's SRv6 uSID underlay). Facts by
+provenance, so an agent knows what each answer rests on:
+
+- VERIFIED LIVE on the SR-MPLS-only lab (2026-09-15): ``cnc_srv6_readiness``
+  answers ``none`` there — the topology's ``network-types`` carries only
+  ``sr-mpls``, no node carries an ``srv6-node-sid``, no link an End.X SID, no
+  policy an ``srv6-binding-sid`` / IPv6 key, no SRV6LOCATOR performance policy
+  exists, and every router is IOS XR (``product_info.software_type "IOS XR"``,
+  the family that can run SRv6 here). ``cnc_provision_l3vpn_e2e`` with
+  ``srv6_locator`` and ``dry_run=true`` renders the L3NM's SRv6 block
+  (``segment-routing srv6 / locator <name> / alloc mode per-vrf`` under
+  ``router bgp / vrf / address-family ipv4 unicast`` — NSO ``?dry-run=native``,
+  nothing committed) and stops.
+- SPEC-ONLY (7.2 OpenAPI shapes, never observed live — they await the
+  underlay): the ``srv6-node-sid`` / ``srv6-adjacency-sid`` members the
+  readiness playbook reads from the raw topology nodes and links, the
+  ``srv6-binding-sid`` / ``srv6-node-sid`` hop objects ``cnc_explain_sr_policy``
+  renders, IPv6 policy keys (an SRv6 policy is keyed by the nodes' IPv6 TE
+  router-ids), and whether NPM / the sr-policy-pm entry answer anything for an
+  IPv6-keyed policy. The READY / PARTIAL branches of the readiness verdict are
+  therefore exercised by spec-shaped fixtures only.
+- NOT IN 7.2 (documented, so the playbooks do not pretend): the OAM trace route
+  is MPLS LSP-ping (no dataplane input; ``transport-type`` other than 0 is
+  rejected), so the L3VPN playbook skips the trace for an SRv6 VPN and says so;
+  a PCE-initiated SRv6 policy cannot be created through the Optimization Engine
+  RPCs (SRv6 policies come from the NSO SR-TE CFP only).
 """
 
 from __future__ import annotations
@@ -61,6 +88,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -84,7 +112,13 @@ from cnc_mcp.tools.fault import alarm_line as shared_alarm_line
 from cnc_mcp.tools.performance import series_stats, stats_text
 from cnc_mcp.tools.services import VPN_LAYERS, vpn_layer
 from cnc_mcp.tools.sr_te_operations import group_route_by_node
-from cnc_mcp.tools.te_state import node_text, router_id_names
+from cnc_mcp.tools.te_state import (
+    hop_srv6_sid,
+    node_text,
+    policy_bsid,
+    policy_dataplane,
+    router_id_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +217,7 @@ COMPOSITE_TOOLS = (
     "cnc_explain_sr_policy",
     "cnc_alarm_triage",
     "cnc_explain_service",
+    "cnc_srv6_readiness",
     "cnc_provision_l3vpn_e2e",
     "cnc_create_sr_policy_e2e",
 )
@@ -293,6 +328,17 @@ SIBLING_CALLS: dict[str, dict[str, frozenset[str]]] = {
         "cnc_list_sub_services": frozenset({"service_yang_path", "response_format"}),
         "cnc_get_probe_status": frozenset({"service_id"}),
     },
+    "cnc_srv6_readiness": {
+        "cnc_get_topology_summary": frozenset({"network"}),
+        "cnc_list_srv6_locators": frozenset({"network", "response_format"}),
+        "cnc_list_topology_nodes": frozenset({"network", "page_size", "response_format"}),
+        "cnc_list_topology_links": frozenset(
+            {"link_type", "network", "page_size", "response_format"}
+        ),
+        "cnc_list_sr_policies": frozenset({"dataplane", "network", "response_format"}),
+        "cnc_list_performance_policies": frozenset({"response_format"}),
+        "cnc_list_devices": frozenset({"page_size", "response_format"}),
+    },
     "cnc_provision_l3vpn_e2e": {
         "cnc_create_l3vpn_service": frozenset(
             {
@@ -302,6 +348,7 @@ SIBLING_CALLS: dict[str, dict[str, frozenset[str]]] = {
                 "endpoints",
                 "topology",
                 "profile_id",
+                "srv6_locator",
                 "dry_run",
             }
         ),
@@ -1818,11 +1865,17 @@ def constraints_text(path: dict[str, Any]) -> str:
 def policy_lines(
     policy: dict[str, Any], names: dict[str, str] | None = None, now: datetime | None = None
 ) -> tuple[list[str], dict[str, Any]]:
-    """Curated lines plus the facts (origin, delegated, ...) the verdict uses.
+    """Curated lines plus the facts (origin, delegated, dataplane, ...) the verdict uses.
 
     ``names`` (router-id -> host name, from the topology nodes) renders every
     router-id as ``PE2 (10.0.0.3)`` — the ends, the hops — so the NBI section
-    reads like the title.
+    reads like the title. The dataplane is DERIVED (the NBI has no dataplane
+    leaf — :func:`cnc_mcp.tools.te_state.policy_dataplane`): ``sr-mpls`` for
+    the lab's policies (MPLS ``binding-sid``, ``IPV4-NODE-SID`` hops with a
+    ``label``; verified live), ``srv6`` for a policy carrying an
+    ``srv6-binding-sid`` or ``srv6-node-sid`` / ``srv6-adjacency-sid`` hop
+    objects (7.2 document shapes, never observed live). An SRv6 hop renders
+    as ``<sid> <behavior>@<node>`` (:func:`hop_text_for`).
     """
     now = now or datetime.now(UTC)
     details = _dict(policy.get("policy-details"))
@@ -1835,6 +1888,7 @@ def policy_lines(
         "service matches below, else on the box outside NSO's service layer)"
     )
     delegated = bool(details.get("pce-controlled"))
+    dataplane = policy_dataplane(policy)
     updated = epoch_datetime(details.get("update-time"))
     head = node_text(policy.get("headend"), names)
     end = node_text(policy.get("endpoint"), names)
@@ -1842,25 +1896,74 @@ def policy_lines(
         f"- {head} -> {end} "
         f"color {policy.get('color')}: admin {policy.get('admin-state')}, oper "
         f"{policy.get('oper-state')}, type {policy.get('sr-policy-type')}, binding-sid "
-        f"{details.get('binding-sid')}",
+        f"{policy_bsid(policy)}",
+        f"- dataplane: {dataplane_text(policy, dataplane)}",
         f"- origin: {origin}",
         f"- delegated to the PCE (pce-controlled): {'yes' if delegated else 'no'}",
         f"- updated {stamp_text(updated, now)} (update-time: the PCC's last report of the policy)",
     ]
     for path in _dicts(details.get("path")):
         metric = _dict(path.get("optimization-metric"))
-        hops = ", ".join(
-            f"{h.get('label')}@"
-            f"{node_text(h.get('local-ip-addr') or h.get('remote-ip-addr') or '?', names)}"
-            for h in _dicts(path.get("hop"))
-        )
+        hops = ", ".join(hop_text_for(h, names) for h in _dicts(path.get("hop")))
         lines.append(
             f"- candidate path {path.get('path-name')} ({path.get('path-type')}, preference "
             f"{path.get('preference')}, oper {path.get('oper-state')}, metric "
             f"{metric.get('metric-type')}={metric.get('metric-value')}): hops {hops or '-'}"
         )
         lines.append(f"  constraints: {constraints_text(path)}")
-    return lines, {"origin": origin, "delegated": delegated, "flag_c": _int(flag_c)}
+    return lines, {
+        "origin": origin,
+        "delegated": delegated,
+        "flag_c": _int(flag_c),
+        "dataplane": dataplane,
+    }
+
+
+def hop_text_for(hop: dict[str, Any], names: dict[str, str] | None) -> str:
+    """``16003@PE2 (10.0.0.3)`` for an MPLS hop (verified live); ``fc00:0:3:: uN@PE2
+    (2001:db8::3)`` for an SRv6 hop — the SID string and endpoint behaviour of its
+    ``srv6-node-sid`` / ``srv6-adjacency-sid`` object (7.2 document shape, never seen
+    live; :func:`cnc_mcp.tools.te_state.hop_srv6_sid` reads both prefix spellings)."""
+    node = node_text(
+        hop.get("local-ip-addr")
+        or hop.get("remote-ip-addr")
+        or hop.get("local-ipv6-router-id")
+        or hop.get("local-ipv4-router-id")
+        or "?",
+        names,
+    )
+    srv6 = hop_srv6_sid(hop)
+    if srv6 is None:
+        return f"{hop.get('label')}@{node}"
+    _kind, container = srv6
+    behavior = _text(field_of(container, "endpoint-behavior"))
+    sid = _text(field_of(container, "sid")) or "?"
+    return f"{sid}{' ' + behavior if behavior else ''}@{node}"
+
+
+def dataplane_text(policy: dict[str, Any], dataplane: str) -> str:
+    """The ``dataplane:`` line — the derived value plus the evidence it rests on and, for
+    SRv6, the caveats that hold until an SRv6 policy has been observed live."""
+    details = _dict(policy.get("policy-details"))
+    if dataplane != "srv6":
+        return "sr-mpls (MPLS binding-sid / labelled hops — derived, the NBI has no dataplane leaf)"
+    evidence = []
+    if _dict(field_of(details, "srv6-binding-sid")):
+        evidence.append("srv6-binding-sid present")
+    if any(
+        hop_srv6_sid(h) is not None
+        for path in _dicts(details.get("path"))
+        for h in _dicts(path.get("hop"))
+    ):
+        evidence.append("srv6-node-sid / srv6-adjacency-sid hop objects")
+    if not evidence:
+        evidence.append("IPV6-* hop types or an IPv6 policy key")
+    return (
+        f"srv6 ({', '.join(evidence)} — derived, the NBI has no dataplane leaf; the SRv6 "
+        "shapes come from the 7.2 document and have not been observed live yet). In 7.2 an "
+        "SRv6 policy is configured through the NSO SR-TE CFP (cnc_create_sr_policy_service "
+        "with srv6_locator) — the Optimization Engine RPCs are SR-MPLS only"
+    )
 
 
 def route_lines(output: dict[str, Any]) -> list[str]:
@@ -1940,7 +2043,10 @@ def onbox_policy(
     """``(the matching on-box SR-TE policy, PCE peer addresses)`` from NSO's CDB copy of a
     head-end's ``segment-routing`` subtree (``tailf-ned-cisco-ios-xr:segment-routing``
     -> ``traffic-eng`` -> ``policy[]`` with ``color.value`` / ``color.end-point.ipv4``,
-    and ``pcc.pce.address.ipv4[].address``)."""
+    and ``pcc.pce.address.ipv4[].address``). An SRv6 policy's end-point is the
+    ``end-point.ipv6`` leaf (the CFP renders ``end-point ipv6 <addr>``; the NED's JSON
+    spelling of it is assumed from the ipv4 analogue — unverified until an SRv6 policy
+    is on a router)."""
     root = _dict(config)
     sr = _dict(root.get("tailf-ned-cisco-ios-xr:segment-routing") or root.get("segment-routing"))
     te = _dict(sr.get("traffic-eng"))
@@ -1948,7 +2054,7 @@ def onbox_policy(
     for policy in _dicts(te.get("policy")):
         colour = _dict(policy.get("color"))
         if _int(colour.get("value")) == color and (
-            not endpoint_ids or _text(_dict(colour.get("end-point")).get("ipv4")) in endpoint_ids
+            not endpoint_ids or onbox_endpoint(policy) in endpoint_ids
         ):
             match = policy
             break
@@ -1985,6 +2091,31 @@ def origin_text(
             "another controller, or the copy is stale (cnc_check_nso_device_sync)"
         )
     return f"{base} — by NSO/CAT if a policy service matches, else on the box (unverified)"
+
+
+def onbox_endpoint(policy: dict[str, Any]) -> str:
+    """The on-box policy's end-point address: ``color.end-point.ipv4`` (verified live) or
+    ``color.end-point.ipv6`` (an SRv6 policy; NED spelling assumed, see :func:`onbox_policy`)."""
+    end_point = _dict(_dict(policy.get("color")).get("end-point"))
+    return _text(end_point.get("ipv4")) or _text(end_point.get("ipv6"))
+
+
+def onbox_srv6_text(policy: dict[str, Any]) -> str:
+    """``; srv6 locator LOC1`` when the on-box policy carries an ``srv6`` container (the CFP
+    renders ``srv6 / locator <name> binding-sid dynamic behavior ub6-insert-reduced``; the
+    NED's JSON nesting of the locator name is assumed — every string under ``srv6`` is
+    searched), else ``""``."""
+    srv6 = policy.get("srv6")
+    if srv6 is None:
+        return ""
+    locator = _dict(_dict(srv6).get("locator"))
+    name = _text(locator.get("name")) or _text(locator.get("locator-name"))
+    if not name:
+        for value in locator.values():
+            if isinstance(value, str) and value.strip():
+                name = value.strip()
+                break
+    return f"; srv6 locator {name or '?'}"
 
 
 def onbox_path_text(policy: dict[str, Any]) -> str:
@@ -2068,8 +2199,20 @@ async def explain_sr_policy(
     sections.append(section)
     head_id = _text(_dict(record).get("headend"))
     end_id = _text(_dict(record).get("endpoint"))
-    # The head-end's host name: the topology's spelling for its router-id, else the
-    # caller's argument when that is not itself a router-id.
+    srv6 = facts.get("dataplane") == "srv6"
+    if srv6:
+        notes.append(
+            "SRv6 policy: keyed by the nodes' IPv6 TE router-ids "
+            f"({head_id or headend} -> {end_id or endpoint}); the NPM series and the "
+            "sr-policy-pm entry below were read with those IPv6 keys, and whether NPM keys "
+            "SRv6 LSPs that way (its lspType is 'SR' / 'RSVP' only in the 7.2 document) is "
+            "UNVERIFIED until an SRv6 policy exists on a lab — an empty series here may be "
+            "the key, not the data. The Optimization Engine route / metrics sections key the "
+            "policy by the nodes' IPv4 router-ids (the OE is SR-MPLS only), so they do not "
+            "describe this policy's SRv6 path"
+        )
+    # The head-end's host name: the topology's spelling for its router-id (IPv4 or IPv6),
+    # else the caller's argument when that is not itself a router-id.
     head_host = names.get(head_id) or names.get(headend) or ""
     if not head_host and not re.fullmatch(r"[\d.:a-fA-F]+", headend):
         head_host = headend
@@ -2091,7 +2234,18 @@ async def explain_sr_policy(
         ]
     sections.append(section)
 
-    pm = await composer.call("cnc_get_sr_policy_performance_metrics", **key, response_format="json")
+    # An SRv6 policy's NPM series and sr-policy-pm entry are keyed by the IPv6 TE
+    # router-ids the NBI record carries — a host name would resolve to the IPv4 ones —
+    # so the record's own keys are used for those reads (SR-MPLS: the caller's spelling,
+    # exactly as before).
+    measure_key = (
+        {"headend": head_id, "endpoint": end_id, "color": color, "network": network}
+        if srv6 and head_id and end_id
+        else key
+    )
+    pm = await composer.call(
+        "cnc_get_sr_policy_performance_metrics", **measure_key, response_format="json"
+    )
     section = Section.from_call("performance_metrics", "Performance metrics (topology NBI)", pm)
     if section.usable and isinstance(pm.data, dict):
         measured = [k for k in pm.data if str(k).endswith("-telemetry")]
@@ -2108,7 +2262,7 @@ async def explain_sr_policy(
             notes.append("the NBI delay is the PCE's modelled figure, not a measurement")
     sections.append(section)
 
-    npm_key = {"headend": headend, "endpoint": endpoint, "color": color, "network": network}
+    npm_key = dict(measure_key)
     util = await composer.call(
         "cnc_get_lsp_utilization", **npm_key, hours=hours, response_format="json"
     )
@@ -2137,9 +2291,13 @@ async def explain_sr_policy(
         section.lines = [f"- {delay.text.split(chr(10), 1)[0]}"]
     sections.append(section)
 
+    # The CAT RPC keys the head-end by its NSO device name and resolves an IP literal
+    # through the inventory's IPv4 te_router_id — which an IPv6 (SRv6) key would not
+    # match — so for an SRv6 policy the topology's host name is passed when it is known;
+    # an SR-MPLS policy keeps the caller's spelling (its rendering is unchanged).
     riding = await composer.call(
         "cnc_find_services_on_transport",
-        headend=headend,
+        headend=head_host if srv6 and head_host else headend,
         color=color,
         endpoint=endpoint,
         response_format="json",
@@ -2256,11 +2414,11 @@ async def explain_sr_policy(
             onbox, pce_peers = onbox_policy(config.data, color, endpoint_ids)
             peers_text = ", ".join(node_text(p, names) for p in pce_peers) or "none configured"
             if onbox:
-                colour = _dict(onbox.get("color"))
-                tail = _text(_dict(colour.get("end-point")).get("ipv4")) or end_id
+                tail = onbox_endpoint(onbox) or end_id
                 section.lines = [
                     f"- on-box policy '{onbox.get('name')}' color {color} end-point "
                     f"{node_text(tail, names)}: candidate path(s) {onbox_path_text(onbox)}"
+                    f"{onbox_srv6_text(onbox)}"
                 ]
             else:
                 tail = node_text(end_id or endpoint, names)
@@ -2288,6 +2446,15 @@ async def explain_sr_policy(
         oper = _text(record.get("oper-state")).upper()
         status = "up" if oper == "UP" else "down" if oper == "DOWN" else oper.lower() or "unknown"
         reasons.append(f"oper-state {oper or '?'}, admin-state {record.get('admin-state')}")
+        reasons.append(
+            f"dataplane {facts.get('dataplane', '?')}"
+            + (
+                " (SRv6: binding SID / hops are SRv6 SIDs — 7.2 document shapes, not yet "
+                "observed live)"
+                if srv6
+                else " (SR-MPLS: MPLS binding SID and labelled hops)"
+            )
+        )
         reasons.append(
             f"created by: {origin_text(facts, twin, onbox, onbox_read, head_host or head_id)}"
         )
@@ -2833,17 +3000,109 @@ async def explain_service(
 # --- 6. provision L3VPN end to end ------------------------------------------------------
 
 
-def first_two_nodes(endpoints: str) -> list[str]:
+def endpoint_entries(endpoints: str) -> list[dict[str, Any]]:
+    """The endpoint objects of the ``endpoints`` JSON — a list, or the single object
+    cnc_create_l3vpn_service accepts as a one-entry list; ``[]`` when it is not JSON."""
     try:
         parsed = json.loads(endpoints)
     except ValueError:
         return []
+    return _dicts(parsed if isinstance(parsed, list) else [parsed])
+
+
+def endpoint_nodes(endpoints: str) -> list[str]:
+    """The distinct endpoint node names, in order of first appearance."""
     nodes: list[str] = []
-    for entry in _dicts(parsed):
+    for entry in endpoint_entries(endpoints):
         node = _text(entry.get("node"))
         if node and node not in nodes:
             nodes.append(node)
-    return nodes[:2]
+    return nodes
+
+
+def first_two_nodes(endpoints: str) -> list[str]:
+    return endpoint_nodes(endpoints)[:2]
+
+
+def endpoint_locators(endpoints: str) -> bool:
+    """True when any endpoint entry carries its own ``srv6_locator`` (the per-node override
+    cnc_create_l3vpn_service accepts) — the VPN is then SRv6 even without the service-wide
+    ``srv6_locator``."""
+    return any(_text(entry.get("srv6_locator")) for entry in endpoint_entries(endpoints))
+
+
+# The L3NM's SRv6 block as NSO's dry run renders it for IOS XR (verified 2026-09-15 with
+# ?dry-run=native: ``segment-routing srv6`` / ``locator <name>`` / ``alloc mode per-vrf``
+# under ``router bgp <as> / vrf <vpn-id> / address-family ipv4 unicast``; without a
+# locator-name the ``locator`` line is absent and the router's global locator applies).
+SRV6_CLI_BLOCK = re.compile(r"^\s*segment-routing srv6\s*$", re.MULTILINE)
+SRV6_CLI_LOCATOR = re.compile(r"^\s*locator\s+(\S+)\s*$", re.MULTILINE)
+# The per-device heading of the create tool's dry-run text ("### PE1" above each CLI block).
+DRY_RUN_DEVICE_HEADING = re.compile(r"^### (\S+)\s*$", re.MULTILINE)
+OAM_MPLS_ONLY = (
+    "the OAM trace route on 7.2 is MPLS LSP-ping (the RPC has no dataplane input; "
+    "transport-type other than 0 is rejected — verified live), so for an SRv6 VPN it would "
+    "trace the SR-MPLS LSP to the PE loopback, not the SRv6 path the VRF's per-VRF SIDs use; "
+    "skipped rather than reported as a data-path verdict"
+)
+
+
+def srv6_devices_with_block(cli: str) -> set[str] | None:
+    """The device names whose CLI section of a dry-run text carries the ``segment-routing
+    srv6`` block, or ``None`` when the text has no per-device headings (a bare CLI)."""
+    parts = DRY_RUN_DEVICE_HEADING.split(cli)
+    if len(parts) < 3:
+        return None
+    return {parts[i] for i in range(1, len(parts) - 1, 2) if SRV6_CLI_BLOCK.search(parts[i + 1])}
+
+
+def srv6_dry_run_text(cli: str, locator: str, nodes: Sequence[str] = ()) -> tuple[str, list[str]]:
+    """``(step suffix, notes)`` for an SRv6 dry run: how many ``segment-routing srv6`` blocks
+    the rendered CLI carries and which ``locator`` names, and a note when the block is
+    missing altogether, rendered on fewer of the endpoint ``nodes`` (the distinct PEs)
+    than all of them, or names another locator than the one asked for."""
+    blocks = len(SRV6_CLI_BLOCK.findall(cli))
+    locators = sorted({m for m in SRV6_CLI_LOCATOR.findall(cli)})
+    if not blocks:
+        return (
+            "; SRv6: NO 'segment-routing srv6' block in the rendered CLI",
+            [
+                f"srv6_locator '{locator}' was given but the dry-run CLI carries no "
+                "'segment-routing srv6' block — the function pack ignored it (an address-family "
+                "the profile lacks?) or the rendering changed; do not commit before "
+                "cnc_create_l3vpn_service(dry_run=true) shows the block"
+            ],
+        )
+    text = (
+        f"; SRv6: 'segment-routing srv6 / alloc mode per-vrf' rendered {blocks} time(s), "
+        f"locator {', '.join(locators) or '(none: the router-global locator applies)'}"
+    )
+    notes: list[str] = []
+    with_block = srv6_devices_with_block(cli)
+    if nodes:
+        if with_block is not None:
+            missing = [n for n in nodes if n not in with_block]
+            covered = len(nodes) - len(missing)
+        else:
+            missing = []
+            covered = min(blocks, len(nodes))
+        if covered < len(nodes):
+            text += f", on {covered} of {len(nodes)} PE(s)"
+            notes.append(
+                f"the 'segment-routing srv6' block is rendered on {covered} of {len(nodes)} "
+                "endpoint PE(s)"
+                + (f" — missing for {', '.join(missing)}" if missing else "")
+                + " (no BGP process / local_as on that endpoint, an address-family the "
+                "profile lacks, or no CLI rendered for it); do not commit before "
+                "cnc_create_l3vpn_service(dry_run=true) shows the block on every PE"
+            )
+    if locator and locator not in locators:
+        notes.append(
+            f"the rendered CLI names locator {', '.join(locators) or 'none'}, not the "
+            f"srv6_locator '{locator}' asked for — check the endpoints' per-node srv6_locator "
+            "overrides before committing"
+        )
+    return text, notes
 
 
 async def provision_l3vpn_e2e(
@@ -2857,6 +3116,7 @@ async def provision_l3vpn_e2e(
     profile_id: str,
     trace: bool,
     wait_seconds: int,
+    srv6_locator: str = "",
     dry_run: bool = False,
     global_dry_run: bool = False,
 ) -> tuple[Verdict, list[Section]]:
@@ -2871,6 +3131,12 @@ async def provision_l3vpn_e2e(
         "topology": topology,
         "profile_id": profile_id,
     }
+    # Forwarded only when given, so an MPLS VPN's audit line and body are unchanged.
+    if srv6_locator:
+        args["srv6_locator"] = srv6_locator
+    srv6 = bool(srv6_locator) or endpoint_locators(endpoints)
+    # Named in the headlines for an SRv6 VPN only: an MPLS VPN reads exactly as before.
+    transport = f" (SRv6 transport, locator {srv6_locator or 'per endpoint'})" if srv6 else ""
     service_path = f"{L3VPN_SERVICE_LIST}={vpn_id}"
 
     def stop(status: str, headline: str) -> tuple[Verdict, list[Section]]:
@@ -2881,7 +3147,12 @@ async def provision_l3vpn_e2e(
     if not dry.ok:
         steps.append(f"dry run: FAILED — {dry.error}")
         return stop("failed", f"Stopped at the dry run; nothing was committed for '{vpn_id}'.")
-    steps.append("dry run: ok (CLI rendered below, nothing committed)")
+    dry_step = "dry run: ok (CLI rendered below, nothing committed)"
+    if srv6:
+        suffix, srv6_notes = srv6_dry_run_text(dry.text, srv6_locator, endpoint_nodes(endpoints))
+        dry_step += suffix
+        notes.extend(srv6_notes)
+    steps.append(dry_step)
     if dry_run:
         steps.append("commit: not attempted (dry_run=true)")
         why = "dry_run=true"
@@ -2904,8 +3175,8 @@ async def provision_l3vpn_e2e(
         )
         return stop(
             DRY_RUN_STATUS,
-            f"Dry run only for '{vpn_id}': the device CLI NSO would push is rendered below; "
-            f"nothing was committed. {next_step(global_dry_run, 'provision it')}",
+            f"Dry run only for '{vpn_id}'{transport}: the device CLI NSO would push is "
+            f"rendered below; nothing was committed. {next_step(global_dry_run, 'provision it')}",
         )
 
     commit = await composer.call("cnc_create_l3vpn_service", **args, dry_run=False)
@@ -2947,10 +3218,21 @@ async def provision_l3vpn_e2e(
         steps.append(f"verify: CAT inventory read failed — {health.error}")
 
     trace_ok: bool | None = None
-    trace_tool_absent = trace and not await composer.has("cnc_start_oam_trace_route")
+    trace_tool_absent = trace and not srv6 and not await composer.has("cnc_start_oam_trace_route")
     if not trace:
         sections.append(
             Section.skipped("trace", "OAM trace route", "cnc_start_oam_trace_route", "trace=false")
+        )
+    elif srv6:
+        sections.append(
+            Section.skipped("trace", "OAM trace route", "cnc_start_oam_trace_route", OAM_MPLS_ONLY)
+        )
+        steps.append(f"trace: skipped — {OAM_MPLS_ONLY}")
+        notes.append(
+            "verify the SRv6 data path on the routers ('show segment-routing srv6 locator', "
+            "'show bgp vrf <vpn-id> ipv4 unicast' for the per-VRF SIDs, 'traceroute srv6') or "
+            "through cnc_get_srv6_locator_statistics once an SRV6LOCATOR performance policy "
+            "collects — not through the MPLS OAM trace"
         )
     elif trace_tool_absent:
         why = (
@@ -3039,12 +3321,14 @@ async def provision_l3vpn_e2e(
     else:
         status = "deployed-unverified"
     headline = (
-        f"L3VPN '{vpn_id}' {status}: committed by NSO, plan "
+        f"L3VPN '{vpn_id}' {status}{transport}: committed by NSO, plan "
         f"{'completed' if plan_ok else 'not completed' if plan.ok else 'FAILED'}, oper-status "
         f"{oper or 'unknown'}"
         + (
             ""
             if not trace
+            else ", trace skipped (MPLS OAM only — no SRv6 trace on 7.2)"
+            if srv6
             else ", trace skipped (tool not registered)"
             if trace_tool_absent
             else f", trace {'ok' if trace_ok else 'not ok' if trace_ok is False else 'pending'}"
@@ -3199,6 +3483,587 @@ async def create_sr_policy_e2e(
         f"color={color}) when done."
     )
     return Verdict(status, headline, steps, notes), sections
+
+
+# --- 8. SRv6 readiness -------------------------------------------------------------------
+
+# Wire spellings of the topology members the readiness playbook reads from the raw node /
+# link objects the listing siblings answer in JSON. The L3 / SR-MPLS containers are the
+# verified live spellings; the SRv6 / IPv6 members are the 7.2 topology OpenAPI's (module
+# cisco-crosswork-srv6-topology-state / cisco-crosswork-l3-te-topology), read by their bare
+# names through field_of() so the RFC 7951 wire form (prefixed list, bare children) and the
+# document's fully prefixed form both match — none of them has been seen live yet.
+L3_NODE_ATTRIBUTES = "ietf-l3-unicast-topology-state:l3-node-attributes"
+L3_LINK_ATTRIBUTES = "ietf-l3-unicast-topology-state:l3-link-attributes"
+IGP_NODE_ATTRIBUTES = ("isis-node-attributes", "ospf-node-attributes")
+IGP_LINK_ATTRIBUTES = ("isis-link-attributes", "ospf-link-attributes")
+SRV6_NODE_SID = "srv6-node-sid"
+SRV6_ADJACENCY_SID = "srv6-adjacency-sid"
+IPV6_ROUTER_ID = "ipv6-router-id"
+ETHERNET_SUFFIX = "ETHERNET"
+# The performance template whose policy collects per-locator traffic (verified live: the
+# template catalogue lists SRV6LOCATOR with the one metric outBitRate; no policy uses it).
+SRV6_PM_TEMPLATE = "SRV6LOCATOR"
+# The inventory's software family of an SRv6-capable router here ("IOS XR" on every lab
+# device, verified live 2026-09-15 — product_info.software_type); matched as a substring
+# so "IOS-XR" / "IOSXR" spellings count too.
+XR_MARK = "xr"
+# Topology nodes / links read in one page (the listing siblings' maximum).
+READINESS_TOPOLOGY_PAGE = 500
+# Devices read in one page (cnc_list_devices' maximum) to learn each router's family.
+READINESS_DEVICE_PAGE = 100
+# Names listed in a reason before "+ N more".
+NAMED_LIMIT = 10
+READINESS_NONE_TEXT = (
+    "the underlay is SR-MPLS only: configure segment-routing srv6 locators + IS-IS IPv6 on the "
+    "routers (an IPv6 loopback / router-id per node, 'segment-routing srv6 locators locator "
+    "<name> prefix <block>::/48' with the micro-segment behaviour for uSID, and IS-IS "
+    "'address-family ipv6 unicast segment-routing srv6 locator <name>') — the SR-PCE topology "
+    "feed (IS-IS / BGP-LS link-state into the PCE, LSLib gRPC into Crosswork) carries the "
+    "locators, End SIDs and End.X SIDs automatically; nothing is configured on Crosswork"
+)
+
+
+def node_srv6_facts(node: dict[str, Any]) -> dict[str, Any]:
+    """What one raw topology node says about SRv6: ``{"name", "l3", "sr_mpls",
+    "srv6_sids": [sid, ...], "ipv6_router_ids": [...]}``.
+
+    ``srv6_sids`` are the ``srv6-node-sid[].sid`` values under EVERY IS-IS /
+    OSPF instance entry of ``l3-node-attributes`` (the 7.2 document's nesting
+    — not under ``l3-node-attributes`` directly and not inside ``sr-mpls``);
+    ``sr_mpls`` is the ``ietf-sr-mpls-topology-state:sr-mpls`` presence
+    container (verified live). An LLDP-only node has ``l3`` False.
+    """
+    l3 = _dict(node.get(L3_NODE_ATTRIBUTES))
+    sids: list[str] = []
+    for key in IGP_NODE_ATTRIBUTES:
+        for entry in _dicts(field_of(l3, key)):
+            sids.extend(
+                _text(field_of(sid, "sid")) or "?" for sid in _dicts(field_of(entry, SRV6_NODE_SID))
+            )
+    v6 = field_of(l3, IPV6_ROUTER_ID)
+    return {
+        "name": _text(node.get("node-id")) or "?",
+        "l3": bool(l3),
+        "sr_mpls": field_of(l3, "sr-mpls") is not None,
+        "srv6_sids": sids,
+        "ipv6_router_ids": [_text(v) for v in (v6 if isinstance(v6, list) else []) if _text(v)],
+    }
+
+
+def node_dataplane_of(facts: dict[str, Any]) -> str:
+    """``sr-mpls`` / ``srv6`` / ``both`` / ``none`` from one node's facts (the same rule the
+    topology summary's ``node_dataplanes`` counts use: SR-MPLS = the sr-mpls container,
+    SRv6 = at least one srv6-node-sid)."""
+    if facts["sr_mpls"] and facts["srv6_sids"]:
+        return "both"
+    if facts["srv6_sids"]:
+        return "srv6"
+    if facts["sr_mpls"]:
+        return "sr-mpls"
+    return "none"
+
+
+def node_facts_text(facts: dict[str, Any]) -> str:
+    """One node's line of the readiness "nodes" section."""
+    if not facts["l3"]:
+        return "LLDP-only node (no L3 attributes from the SR-PCE feed)"
+    sids = facts["srv6_sids"]
+    shown = f" ({', '.join(sids[:4])})" if sids else ""
+    return (
+        f"dataplane {node_dataplane_of(facts)}, {len(sids)} SRv6 node SID(s){shown}, IPv6 "
+        f"router-id {', '.join(facts['ipv6_router_ids']) or '-'}"
+    )
+
+
+def link_srv6_facts(link: dict[str, Any]) -> dict[str, Any]:
+    """What one raw topology link says about SRv6: ``{"id", "l3", "srv6_adj_sids"}``.
+
+    ``srv6_adj_sids`` are the End.X SIDs — ``srv6-adjacency-sid[].sid`` under
+    the link's IS-IS / OSPF link attributes (7.2 document nesting; NOT the
+    SR-MPLS ``sr-mpls.sids[]`` list). ``l3`` is True for an IGP adjacency: the
+    link carries ``l3-link-attributes`` (verified live for ISIS_IPV4_L2 links)
+    or its id's type suffix is not ETHERNET — so an IPv6 IS-IS adjacency with
+    an unverified suffix still counts as an adjacency that should carry End.X.
+    """
+    link_id = _text(link.get("link-id"))
+    l3 = _dict(link.get(L3_LINK_ATTRIBUTES))
+    sids: list[str] = []
+    for key in IGP_LINK_ATTRIBUTES:
+        attrs = _dict(field_of(l3, key))
+        sids.extend(
+            _text(field_of(s, "sid")) or "?" for s in _dicts(field_of(attrs, SRV6_ADJACENCY_SID))
+        )
+    suffix = link_id.rsplit(" : ", 1)[-1].strip().upper() if " : " in link_id else ""
+    return {
+        "id": link_id or "?",
+        "l3": bool(l3) or bool(suffix and suffix != ETHERNET_SUFFIX),
+        "srv6_adj_sids": sids,
+    }
+
+
+def locator_rows(payload: Any) -> list[dict[str, Any]]:
+    """The rows of a cnc_list_srv6_locators JSON answer (``items``; ``locators`` / ``rows``
+    and a bare list are accepted too), each ``{"node", "locator", ...}``."""
+    if isinstance(payload, list):
+        return _dicts(payload)
+    data = _dict(payload)
+    for key in ("items", "locators", "rows"):
+        rows = _dicts(data.get(key))
+        if rows:
+            return rows
+    return []
+
+
+def device_family(record: dict[str, Any]) -> str:
+    """``IOS XR`` / ``Cisco XR Routers`` — the inventory's software type, else the product
+    family, else ``?``."""
+    info = _dict(record.get("product_info"))
+    return _text(info.get("software_type")) or _text(info.get("product_family")) or "?"
+
+
+def is_xr(record: dict[str, Any]) -> bool:
+    info = _dict(record.get("product_info"))
+    blob = f"{info.get('software_type') or ''} {info.get('product_family') or ''}".lower()
+    return XR_MARK in blob
+
+
+def named(items: list[str], limit: int = NAMED_LIMIT) -> str:
+    """``a, b, c`` or ``a, b, ... (+ N more)`` for a reason line."""
+    if len(items) <= limit:
+        return ", ".join(items)
+    return ", ".join(items[:limit]) + f" (+ {len(items) - limit} more)"
+
+
+def summary_locator_coverage(counts: dict[str, Any] | None) -> tuple[int, int] | None:
+    """``(SR-capable nodes, of them without an SRv6 node SID)`` from the topology summary's
+    counts — the fallback when the node list could not be read. Prefers the
+    ``node_dataplanes`` counters (``sr-mpls`` = nodes with the sr-mpls container and no
+    srv6-node-sid, the exact gap; ``srv6`` / ``both`` complete the SR-capable set), else
+    ``sr_capable_nodes - srv6_capable_nodes``. ``None`` when the summary was not read or
+    carries neither. Non-XR routers cannot be excluded from these counts."""
+    if counts is None:
+        return None
+    planes = _dict(counts.get("node_dataplanes"))
+    if "sr-mpls" in planes:
+        gap = _int(planes.get("sr-mpls"))
+        return gap + _int(planes.get("srv6")) + _int(planes.get("both")), gap
+    sr, v6 = counts.get("sr_capable_nodes"), counts.get("srv6_capable_nodes")
+    if sr is None or v6 is None:
+        return None
+    return _int(sr), max(0, _int(sr) - _int(v6))
+
+
+def summary_endx_coverage(counts: dict[str, Any] | None) -> tuple[int, int] | None:
+    """``(IGP adjacencies, of them without an End.X SID)`` from the topology summary's
+    counts (``links.isis_ipv4_l2 + links.other`` — every non-Ethernet link — against
+    ``srv6_adjacency_links``) — the fallback when the link list could not be read; ``None``
+    when the summary was not read or carries no link counts."""
+    if counts is None:
+        return None
+    links = _dict(counts.get("links"))
+    if "isis_ipv4_l2" not in links and "other" not in links:
+        return None
+    total = _int(links.get("isis_ipv4_l2")) + _int(links.get("other"))
+    return total, max(0, total - _int(counts.get("srv6_adjacency_links")))
+
+
+async def srv6_readiness(composer: Composer, network: str) -> tuple[Verdict, list[Section]]:
+    reasons: list[str] = []
+    notes: list[str] = []
+    sections: list[Section] = []
+
+    summary = await composer.call("cnc_get_topology_summary", network=network)
+    section = Section.from_call("topology", "Topology summary (SR-PCE feed)", summary)
+    counts: dict[str, Any] | None = summary.data if isinstance(summary.data, dict) else None
+    if counts is not None:
+        links = _dict(counts.get("links"))
+        planes = _dict(counts.get("node_dataplanes"))
+        section.lines = [
+            f"- {counts.get('nodes')} node(s), {counts.get('sr_capable_nodes')} SR-MPLS-capable, "
+            f"{counts.get('srv6_capable_nodes', 0)} SRv6-capable (srv6-node-sid), "
+            f"{counts.get('ipv6_router_id_nodes', 0)} with an IPv6 TE router-id; node "
+            f"dataplanes {', '.join(f'{k} {v}' for k, v in planes.items()) or '-'}",
+            f"- network-types srv6 presence: "
+            f"{'present' if counts.get('srv6_network_type') else 'absent'} "
+            f"(SR-MPLS-capable nodes: {counts.get('sr_capable_nodes', '?')} — the summary "
+            "exposes no sr-mpls network-type flag)",
+            f"- {links.get('total')} link(s): {links.get('isis_ipv4_l2')} ISIS_IPV4_L2, "
+            f"{links.get('ethernet')} Ethernet, {links.get('other')} other; "
+            f"{counts.get('srv6_adjacency_links', 0)} carrying End.X SIDs (srv6-adjacency-sid)",
+            f"- Flex-Algos advertised: "
+            f"{', '.join(str(a) for a in counts.get('flex_algos') or []) or 'none'}",
+        ]
+        note = _text(counts.get("note"))
+        if note:
+            section.lines.append(f"- {note}")
+            notes.append(f"topology: {note}")
+    sections.append(section)
+
+    locators = await composer.call(
+        "cnc_list_srv6_locators", network=network, response_format="json"
+    )
+    section = Section.from_call("locators", "SRv6 locators (derived from srv6-node-sid)", locators)
+    rows: list[dict[str, Any]] = []
+    if section.usable:
+        rows = locator_rows(locators.data)
+        section.lines = [
+            f"- {r.get('node')}: {r.get('locator') or '?'} format {r.get('format') or '?'}, "
+            f"algorithms {', '.join(str(a) for a in r.get('algorithms') or []) or '-'}, "
+            f"behaviors {', '.join(str(b) for b in r.get('endpoint_behaviors') or []) or '-'}, "
+            f"{r.get('sid_count', '?')} SID(s)"
+            for r in rows
+        ] or [
+            "- none: no node advertises an srv6-node-sid, so no locator can be derived (the "
+            "7.2 topology model has no locator object — a locator is a node SID masked to its "
+            "block + node lengths)"
+        ]
+    sections.append(section)
+    locator_nodes = {_text(r.get("node")) for r in rows} - {""}
+
+    nodes = await composer.call(
+        "cnc_list_topology_nodes",
+        network=network,
+        page_size=READINESS_TOPOLOGY_PAGE,
+        response_format="json",
+    )
+    section = Section.from_call("nodes", "Per-node SRv6 state (topology nodes)", nodes)
+    node_facts: list[dict[str, Any]] | None = None
+    if section.usable:
+        payload = _dict(nodes.data)
+        node_facts = [node_srv6_facts(n) for n in _dicts(payload.get("items"))]
+        section.lines = [f"- {f['name']}: {node_facts_text(f)}" for f in node_facts] or [
+            "- no nodes"
+        ]
+        if payload.get("has_more"):
+            section.lines.append(
+                f"- more than {READINESS_TOPOLOGY_PAGE} nodes: only the first page was checked"
+            )
+            notes.append(
+                f"only the first {READINESS_TOPOLOGY_PAGE} topology nodes were checked "
+                "(cnc_list_topology_nodes page=1, ...)"
+            )
+        section.data = node_facts
+    sections.append(section)
+
+    links = await composer.call(
+        "cnc_list_topology_links",
+        link_type="all",
+        network=network,
+        page_size=READINESS_TOPOLOGY_PAGE,
+        response_format="json",
+    )
+    section = Section.from_call("links", "End.X coverage (topology links)", links)
+    link_facts: list[dict[str, Any]] | None = None
+    if section.usable:
+        payload = _dict(links.data)
+        link_facts = [link_srv6_facts(ln) for ln in _dicts(payload.get("items"))]
+        adjacencies = [f for f in link_facts if f["l3"]]
+        with_endx = [f for f in adjacencies if f["srv6_adj_sids"]]
+        section.lines = [
+            f"- {len(adjacencies)} IGP adjacency(ies) (directed, one per direction) of "
+            f"{len(link_facts)} link(s); {len(with_endx)} carry an End.X SID"
+        ]
+        section.lines.extend(
+            f"- {f['id']}: End.X {', '.join(f['srv6_adj_sids'])}" for f in with_endx[:NAMED_LIMIT]
+        )
+        without = [f["id"] for f in adjacencies if not f["srv6_adj_sids"]]
+        if without:
+            section.lines.append(f"- without End.X: {named(without)}")
+        if payload.get("has_more"):
+            section.lines.append(
+                f"- more than {READINESS_TOPOLOGY_PAGE} links: only the first page was checked"
+            )
+            notes.append(
+                f"only the first {READINESS_TOPOLOGY_PAGE} topology links were checked "
+                "(cnc_list_topology_links page=1, ...)"
+            )
+        section.data = {
+            "adjacencies": len(adjacencies),
+            "with_endx": len(with_endx),
+            "without_endx": without,
+        }
+    sections.append(section)
+
+    policies = await composer.call(
+        "cnc_list_sr_policies", dataplane="srv6", network=network, response_format="json"
+    )
+    section = Section.from_call("policies", "SRv6 SR policies (dataplane=srv6)", policies)
+    srv6_policies: list[dict[str, Any]] | None = None
+    if section.usable:
+        payload = _dict(policies.data)
+        srv6_policies = _dicts(payload.get("items"))
+        section.lines = [
+            f"- {len(srv6_policies)} SRv6 policy(ies) of {payload.get('total', '?')} SR policies "
+            "(dataplane derived: srv6-binding-sid / SRv6 hop objects / IPV6-* hop types / IPv6 "
+            "keys — the NBI has no dataplane leaf)"
+        ]
+        section.lines.extend(
+            f"- {p.get('headend')} -> {p.get('endpoint')} color {p.get('color')}: oper "
+            f"{p.get('oper-state')}, bsid {policy_bsid(p)} (cnc_explain_sr_policy)"
+            for p in srv6_policies[:NAMED_LIMIT]
+        )
+    sections.append(section)
+
+    pm = await composer.call("cnc_list_performance_policies", response_format="json")
+    section = Section.from_call("pm_policy", "SRV6LOCATOR performance policy", pm)
+    pm_policies: list[dict[str, Any]] | None = None
+    if section.usable:
+        views = _dicts(_dict(pm.data).get("policies"))
+        pm_policies = [v for v in views if _text(v.get("template")).upper() == SRV6_PM_TEMPLATE]
+        section.lines = [
+            f"- {v.get('name')} (id {v.get('id')}): {'active' if v.get('active') else 'inactive'}"
+            f", collection {v.get('collection_status') or '?'}, "
+            + ", ".join(f"{k} every {s} s" for k, s in _dict(v.get("schemas_interval")).items())
+            for v in pm_policies
+        ] or [
+            f"- none of the {len(views)} performance policy(ies) uses the {SRV6_PM_TEMPLATE} "
+            "template, so no per-locator traffic (outBitRate) is collected: "
+            f"cnc_create_performance_policy(template='{SRV6_PM_TEMPLATE}', ...) once "
+            "locators exist, then cnc_get_srv6_locator_statistics(host_name=...)"
+        ]
+    sections.append(section)
+
+    devices = await composer.call(
+        "cnc_list_devices", page_size=READINESS_DEVICE_PAGE, response_format="json"
+    )
+    section = Section.from_call("devices", "Router families (inventory)", devices)
+    families: dict[str, str] | None = None
+    xr_hosts: set[str] = set()
+    devices_more = False
+    if section.usable:
+        payload = _dict(devices.data)
+        records = _dicts(payload.get("items"))
+        families = {_text(r.get("host_name")): device_family(r) for r in records}
+        families.pop("", None)
+        xr_hosts = {_text(r.get("host_name")) for r in records if is_xr(r)} - {""}
+        non_xr = sorted(h for h in families if h not in xr_hosts)
+        devices_more = bool(payload.get("has_more"))
+        section.lines = [
+            f"- {len(records)} device(s), {len(xr_hosts)} IOS XR (the SRv6-capable family here): "
+            f"{named(sorted(xr_hosts)) or 'none'}"
+        ]
+        if non_xr:
+            section.lines.append(
+                "- not IOS XR (not expected to advertise SRv6): "
+                + ", ".join(f"{h} ({families[h]})" for h in non_xr)
+            )
+        if devices_more:
+            section.lines.append(
+                f"- more than {READINESS_DEVICE_PAGE} devices: only the first page was checked "
+                "(a topology node absent from it has an unknown family)"
+            )
+            notes.append(
+                f"only the first {READINESS_DEVICE_PAGE} inventory devices were checked for "
+                "their family (cnc_list_devices page=1, ...); a topology node absent from that "
+                "page has an unknown family and is counted as expected to advertise SRv6"
+            )
+    sections.append(section)
+
+    # --- the verdict ---
+    if counts is None and node_facts is None and not rows:
+        return Verdict(
+            "unknown",
+            "SRv6 readiness is unknown: neither the topology summary nor the node list could "
+            "be read, so nothing is known about locators.",
+            reasons,
+            notes,
+        ), sections
+
+    l3_nodes = [f for f in (node_facts or []) if f["l3"]]
+    srv6_nodes = [f for f in l3_nodes if f["srv6_sids"]]
+    sr_capable = [f for f in l3_nodes if f["sr_mpls"] or f["srv6_sids"]]
+    srv6_node_count = max(
+        len(srv6_nodes), _int(_dict(counts).get("srv6_capable_nodes")), len(locator_nodes)
+    )
+    srv6_anywhere = (
+        bool(_dict(counts).get("srv6_network_type"))
+        or srv6_node_count > 0
+        or bool(rows)
+        or bool(srv6_policies)
+        or _int(_dict(counts).get("srv6_adjacency_links")) > 0
+        or any(f["srv6_adj_sids"] for f in link_facts or [])
+    )
+    all_xr = families is not None and set(families) <= xr_hosts
+    if families is not None:
+        if all_xr:
+            notes.append(
+                f"all {len(xr_hosts)} inventoried router(s) are IOS XR — the family that runs "
+                "SRv6 here"
+            )
+        else:
+            non_xr = sorted(h for h in families if h and h not in xr_hosts)
+            notes.append(
+                "not IOS XR, so not expected to advertise SRv6: "
+                + ", ".join(f"{h} ({families[h]})" for h in non_xr)
+            )
+
+    if not srv6_anywhere:
+        sr_count = (
+            len(sr_capable)
+            if node_facts is not None
+            else _dict(counts).get("sr_capable_nodes", "?")
+        )
+        evidence = ["network-types carries no srv6 presence"] if counts is not None else []
+        evidence.append(
+            f"0 of {sr_count} SR-capable node(s) advertise an srv6-node-sid (no locator to derive)"
+        )
+        if counts is not None or link_facts is not None:
+            evidence.append("no link carries an End.X SID")
+        reasons.append("no SRv6 anywhere in the topology: " + ", ".join(evidence))
+        if srv6_policies is not None:
+            reasons.append("0 SRv6 SR policies (every policy is SR-MPLS)")
+        if pm_policies is not None:
+            reasons.append(
+                f"no {SRV6_PM_TEMPLATE} performance policy (not needed until locators exist)"
+            )
+        notes.append(
+            "once the routers advertise locators, re-run this tool; the provisioning tools "
+            "take srv6_locator (cnc_create_l3vpn_service, cnc_create_sr_policy_service, "
+            "cnc_create_odn_template — all with dry_run=true first) and "
+            f"cnc_create_performance_policy(template='{SRV6_PM_TEMPLATE}') starts the "
+            "per-locator collection"
+        )
+        return Verdict("none", f"SRv6 readiness NONE — {READINESS_NONE_TEXT}.", reasons, notes), (
+            sections
+        )
+
+    # Locator coverage: from the node list when it was read (the nodes are named; routers
+    # the inventory positively reports as non-XR are excluded — a node the inventory page
+    # does not list has an UNKNOWN family and stays expected), else from the summary's
+    # counts (nothing named, non-XR routers not excludable), else unknown.
+    missing_locators: list[str] = []
+    locator_gap: int | None
+    if node_facts is not None:
+        expected = [
+            f
+            for f in sr_capable
+            if not families or f["name"] not in families or f["name"] in xr_hosts
+        ]
+        skipped = [
+            f["name"]
+            for f in sr_capable
+            if families and f["name"] in families and f["name"] not in xr_hosts
+        ]
+        unlisted = [f["name"] for f in sr_capable if families and f["name"] not in families]
+        missing_locators = [f["name"] for f in expected if not f["srv6_sids"]]
+        locator_gap = len(missing_locators)
+        reasons.append(
+            f"locators: {len(expected) - len(missing_locators)} of {len(expected)} SR-capable "
+            "IOS XR node(s) advertise an SRv6 locator (srv6-node-sid)"
+            + (f"; missing on {named(missing_locators)}" if missing_locators else "")
+            + (f"; not expected on non-XR {named(skipped)}" if skipped else "")
+            + (
+                f"; family unknown for {named(unlisted)} (not in the inventory page read"
+                + (" — only the first page was" if devices_more else "")
+                + "), counted as expected"
+                if unlisted
+                else ""
+            )
+        )
+    else:
+        coverage = summary_locator_coverage(counts)
+        if coverage is None:
+            locator_gap = None
+            reasons.append(
+                f"locators: coverage UNKNOWN — {srv6_node_count} node(s) are known to advertise "
+                "one from the locator rows, but neither the node list nor the topology summary "
+                "could be read, so the nodes without one can be neither counted nor named"
+            )
+        else:
+            sr_total, locator_gap = coverage
+            reasons.append(
+                f"locators: {sr_total - locator_gap} of {sr_total} SR-capable node(s) advertise "
+                f"an SRv6 locator per the summary's counts — {locator_gap} without one (the "
+                "node list was unavailable, so they cannot be named and non-XR routers cannot "
+                "be excluded)"
+            )
+    missing_endx: list[str] = []
+    endx_gap: int | None
+    if link_facts is not None:
+        adjacencies = [f for f in link_facts if f["l3"]]
+        missing_endx = [f["id"] for f in adjacencies if not f["srv6_adj_sids"]]
+        endx_gap = len(missing_endx)
+        reasons.append(
+            f"End.X: {len(adjacencies) - len(missing_endx)} of {len(adjacencies)} IGP "
+            "adjacency(ies) carry an srv6-adjacency-sid"
+            + (f"; missing on {named(missing_endx)}" if missing_endx else "")
+        )
+    else:
+        coverage = summary_endx_coverage(counts)
+        if coverage is None:
+            endx_gap = None
+            reasons.append(
+                "End.X: coverage UNKNOWN — neither the link list nor the topology summary "
+                "could be read, so the adjacencies without an End.X SID can be neither counted "
+                "nor named"
+            )
+        else:
+            adjacency_total, endx_gap = coverage
+            reasons.append(
+                f"End.X: {adjacency_total - endx_gap} of {adjacency_total} IGP adjacency(ies) "
+                f"carry an srv6-adjacency-sid per the summary's counts — {endx_gap} without one "
+                "(the link list was unavailable, so they cannot be named)"
+            )
+    if srv6_policies is not None:
+        reasons.append(
+            f"SRv6 SR policies: {len(srv6_policies)}"
+            + (
+                " (none required for readiness — L3VPNs over SRv6 need locators, not a policy)"
+                if not srv6_policies
+                else ""
+            )
+        )
+    pm_missing = pm_policies is not None and not pm_policies
+    if pm_policies is not None:
+        reasons.append(
+            f"performance: {len(pm_policies)} {SRV6_PM_TEMPLATE} policy(ies)"
+            + (
+                f" — missing: cnc_create_performance_policy(template='{SRV6_PM_TEMPLATE}', ...) "
+                "so per-locator traffic is collected"
+                if pm_missing
+                else ""
+            )
+        )
+    # A gap that cannot be counted (listing AND summary unread) is never "ready".
+    partial = locator_gap != 0 or endx_gap != 0 or pm_missing
+    status = "partial" if partial else "ready"
+    if partial:
+        coverage_text = (
+            f"; {'?' if locator_gap is None else locator_gap} node(s) without a locator"
+            + (" (coverage unknown)" if locator_gap is None else "")
+            + ("" if node_facts is not None or locator_gap is None else " per the summary")
+            + f", {'?' if endx_gap is None else endx_gap} adjacency(ies) without End.X"
+            + (" (coverage unknown)" if endx_gap is None else "")
+            + ("" if link_facts is not None or endx_gap is None else " per the summary")
+            + f", {SRV6_PM_TEMPLATE} policy {'missing' if pm_missing else 'present'}"
+        )
+    else:
+        # Only a listing that was read earns the "every ..." clause; the summary's counts
+        # earn their own wording, so the headline never asserts more than was read.
+        coverage_text = (
+            "; "
+            + ", ".join(
+                [
+                    "every SR-capable IOS XR node has a locator"
+                    if node_facts is not None
+                    else "no SR-capable node without a locator per the summary's counts (the node "
+                    "list was unavailable)",
+                    "every IGP adjacency an End.X SID"
+                    if link_facts is not None
+                    else "no IGP adjacency without End.X per the summary's counts (the link list "
+                    "was unavailable)",
+                ]
+            )
+            + (f", a {SRV6_PM_TEMPLATE} policy collects" if pm_policies else "")
+        )
+    headline = (
+        f"SRv6 readiness {status.upper()}: {srv6_node_count} node(s) advertise SRv6 locators"
+        + coverage_text
+        + ". The SRv6 members are read as the 7.2 topology document shapes them; this branch "
+        "has not been exercised against a live SRv6 feed yet."
+    )
+    return Verdict(status, headline, reasons, notes), sections
 
 
 # --- registration -----------------------------------------------------------------------
@@ -3431,7 +4296,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description="Head-end of the policy: a host name (e.g. 'PE1') or its TE "
-                "router-id (e.g. '10.0.0.1').",
+                "router-id — IPv4 (e.g. '10.0.0.1') or, for an SRv6 policy, the IPv6 TE "
+                "router-id (e.g. '2001:db8::1').",
                 min_length=1,
                 max_length=253,
             ),
@@ -3440,7 +4306,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             str,
             Field(
                 description="Endpoint (tail-end) of the policy: a host name (e.g. 'PE2') or its "
-                "TE router-id (e.g. '10.0.0.3').",
+                "TE router-id — IPv4 (e.g. '10.0.0.3') or, for an SRv6 policy, the IPv6 TE "
+                "router-id (e.g. '2001:db8::3').",
                 min_length=1,
                 max_length=253,
             ),
@@ -3465,11 +4332,27 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     ) -> str:
         """Explain one SR policy in one call: who created it (PCE-initiated, pcep-flag-c
         1, vs PCC-initiated / router-configured, 0), whether it is delegated to the PCE
-        (pce-controlled), its candidate paths and hops, the route the Optimization
-        Engine computes, its path metrics, the NBI performance metrics (modelled unless
-        SR-PM telemetry is present), the NPM measured utilization and delay, which
-        services ride it, and — for a PCC-initiated policy — the NSO/CAT policy service
-        that configured it, if any.
+        (pce-controlled), its dataplane (SR-MPLS or SRv6), its candidate paths and hops,
+        the route the Optimization Engine computes, its path metrics, the NBI
+        performance metrics (modelled unless SR-PM telemetry is present), the NPM
+        measured utilization and delay, which services ride it, and — for a
+        PCC-initiated policy — the NSO/CAT policy service that configured it, if any.
+
+        SRv6 (added 2026-09-15; the SRv6 shapes are the 7.2 document's and have NOT been
+        observed live — the lab is SR-MPLS only): headend / endpoint accept IPv6 TE
+        router-ids (an SRv6 policy is keyed by them) and host names resolve through the
+        topology's IPv4 and IPv6 router-ids alike; the NBI section carries a
+        "dataplane:" line — sr-mpls (MPLS binding-sid, labelled hops; verified live) or
+        srv6 (srv6-binding-sid / srv6-node-sid / srv6-adjacency-sid hop objects, IPV6-*
+        hop types, IPv6 keys — DERIVED, the NBI has no dataplane leaf) — and renders an
+        SRv6 hop as "<sid> <behavior>@<node>"; the binding-sid column falls back to the
+        SRv6 BSID. For an SRv6 policy a NOTE says the NPM series and the sr-policy-pm
+        entry were read with the IPv6 keys and that NPM keying SRv6 LSPs that way is
+        unverified (an empty series may be the key, not the data). In 7.2 an SRv6 policy
+        is always PCC-initiated through the NSO SR-TE CFP (cnc_create_sr_policy_service
+        with srv6_locator): the Optimization Engine RPCs are SR-MPLS only, so the CAT twin
+        search and the on-box read (end-point ipv6, "srv6 locator <name>") are where its
+        origin is found.
 
         Use it for "explain policy PE1 -> PE2 colour 100", "who created this policy?",
         "is that policy delegated?", "what rides it?". Drill in with cnc_get_sr_policy
@@ -3730,6 +4613,108 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     @register_tool(
         mcp,
         ctx,
+        name="cnc_srv6_readiness",
+        title="SRv6 Readiness (one call)",
+        read_only=True,
+        idempotent=True,
+    )
+    async def cnc_srv6_readiness(
+        network: Annotated[str, Field(description=_NETWORK_DESC, min_length=1, max_length=200)] = (
+            DEFAULT_NETWORK
+        ),
+        response_format: Annotated[ResponseFormat, Field(description=_FORMAT_DESC)] = (
+            ResponseFormat.MARKDOWN
+        ),
+    ) -> str:
+        """Is this network ready for SRv6 services? One read-only call: the topology
+        summary's SRv6 flags, the locators derived from every node's SRv6 node SIDs,
+        per-node and per-adjacency SRv6 state (End.X coverage), the SRv6 SR policies,
+        whether an SRV6LOCATOR performance policy collects locator traffic, and which
+        routers are IOS XR (the family that runs SRv6 here) — with a READY / PARTIAL /
+        NONE verdict.
+
+        Use it FIRST for "can I provision an L3VPN / SR policy over SRv6?", "is SRv6
+        deployed?", "which nodes still lack a locator?", and before
+        cnc_provision_l3vpn_e2e / cnc_create_l3vpn_service / cnc_create_sr_policy_service /
+        cnc_create_odn_template with srv6_locator. Drill in with cnc_get_topology_node
+        (a node's SRv6 node SIDs, structure and Flex-Algos), cnc_get_topology_link (one
+        adjacency's End.X SIDs), cnc_list_srv6_locators, cnc_list_sr_policies(
+        dataplane='srv6'), cnc_get_srv6_locator_statistics(host_name=...) for locator
+        traffic and cnc_list_performance_policies / cnc_create_performance_policy(
+        template='SRV6LOCATOR') for its collection.
+
+        VERDICT rules: ``none`` when nothing SRv6 exists anywhere — the topology's
+        network-types carries no srv6 presence, no node advertises an srv6-node-sid (so
+        no locator can be derived), no link an srv6-adjacency-sid, no policy is SRv6 —
+        and the headline says what to configure ON THE ROUTERS (locators + IS-IS IPv6;
+        the SR-PCE feed carries the rest, nothing on Crosswork). VERIFIED LIVE 2026-09-15:
+        the SR-MPLS-only lab answers none, with every router IOS XR. ``ready`` when every
+        SR-capable IOS XR node advertises a locator, every IGP adjacency (directed, one per
+        direction; a link with l3-link-attributes or a non-ETHERNET id suffix) carries an
+        End.X SID, and an SRV6LOCATOR performance policy exists — SRv6 policies are
+        reported but not required (an L3VPN over SRv6 needs locators, not a policy).
+        ``partial`` otherwise: the reasons NAME the nodes without a locator, the
+        adjacencies without End.X and the missing performance policy. Routers the
+        inventory positively reports as non-XR are not expected to advertise SRv6: they
+        are excluded from the locator count and listed in a note; a topology node the
+        inventory page does NOT list (a second page, or a node not inventoried) has an
+        unknown family and stays expected — the reason says "family unknown for ...".
+        When the node or link list is unavailable the coverage comes from the topology
+        summary's counts instead (node_dataplanes / sr_capable_nodes -
+        srv6_capable_nodes; links.isis_ipv4_l2 + links.other - srv6_adjacency_links) —
+        the gaps are counted, not named, non-XR routers cannot be excluded, and the
+        headline says "per the summary's counts" rather than "every node / adjacency";
+        with the summary unavailable too the coverage is UNKNOWN and the verdict is
+        partial, never ready. ``unknown`` when neither the topology summary nor the node
+        list could be read and no locator row exists. The ready / partial branches read
+        the 7.2 topology document's shapes (srv6-node-sid under each IS-IS / OSPF instance
+        entry, srv6-adjacency-sid under the link's IS-IS / OSPF attributes, both spellings
+        of the module prefix) and have NOT been exercised against a live SRv6 feed yet —
+        the headline says so. Locators are DERIVED (a node SID masked to its block + node
+        lengths; the 7.2 model has no locator object — the rows carry the locator PREFIX,
+        never a locator NAME: confirm a name maps to a prefix on the router with
+        cnc_get_nso_device_config(host_name=..., subtree='segment-routing/srv6'), whose
+        locators/locator[name]/prefix is the map — a 404 'uri keypath not found' there
+        means the router has no 'segment-routing srv6' at all, verified live 2026-09-15).
+        Unavailable sections are listed and not covered: the verdict then rests on what
+        was read (the summary alone can still answer none).
+
+        Sub-tools called, in order: cnc_get_topology_summary, cnc_list_srv6_locators(json),
+        cnc_list_topology_nodes(page_size=500, json), cnc_list_topology_links(
+        link_type='all', page_size=500, json), cnc_list_sr_policies(dataplane='srv6', json),
+        cnc_list_performance_policies(json), cnc_list_devices(page_size=100, json). A
+        topology or inventory larger than one page is noted as partially checked.
+
+        Args:
+            network: topology network id (default 'Default-network').
+            response_format: markdown (default) or json.
+
+        Returns:
+            str: Markdown "# SRv6 readiness: <network>" with the VERDICT block (status
+            none / partial / ready / unknown, headline, reasons, notes, unavailable
+            sections), one "## <section> — <tool>" block per sub-tool and "## Calls made";
+            or JSON {"verdict", "sections" (the "nodes" section's data lists {"name",
+            "l3", "sr_mpls", "srv6_sids", "ipv6_router_ids"} per node; the "links"
+            section's data {"adjacencies", "with_endx", "without_endx"}), "calls"}. Never
+            "Error: ..." for a sub-tool failure — the section says so.
+        """
+        try:
+            composer = Composer(mcp)
+            verdict, sections = await srv6_readiness(composer, network.strip())
+            return render(
+                f"SRv6 readiness: {network.strip()}",
+                verdict,
+                sections,
+                composer,
+                response_format,
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
         name="cnc_provision_l3vpn_e2e",
         title="Provision an L3VPN End to End (dry run, commit, verify, trace)",
         read_only=False,
@@ -3801,6 +4786,17 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 le=600,
             ),
         ] = 120,
+        srv6_locator: Annotated[
+            str,
+            Field(
+                description="SRv6 transport for the VPN, exactly as cnc_create_l3vpn_service "
+                "takes it: the SRv6 locator name every PE uses for the VRF's per-VRF SIDs "
+                "(e.g. 'LOC1' — the name under 'segment-routing srv6 locators' on the "
+                'routers; an endpoint\'s own "srv6_locator" key overrides it per node). '
+                "Blank (default) = MPLS transport. Check cnc_srv6_readiness first.",
+                max_length=64,
+            ),
+        ] = "",
         dry_run: Annotated[
             bool,
             Field(
@@ -3834,25 +4830,52 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         on the endpoints) and must be in sync with NSO (a 502 means run
         cnc_nso_device_action sync-from first).
 
-        VERDICT: ``deployed`` (commit ok, plan completed, CAT inventory read, trace ok or
-        not requested), ``deployed-unverified`` (committed but the plan did not complete
-        in wait_seconds, the CAT read failed or the trace did not succeed — the reasons
-        say which), ``failed`` (stopped at the dry run / commit / plan) or ``dry-run``
-        (dry_run=true: the dry run succeeded and nothing was committed; the commit, plan,
-        health and trace sections read "skipped — dry_run=true"). A trace the platform
-        reports FAILED is the platform's verdict on the network (gNMI / 'mpls oam' on the
-        devices), not an API error.
+        SRv6 (``srv6_locator``, or a per-endpoint ``srv6_locator`` key): forwarded to
+        cnc_create_l3vpn_service, which puts the L3NM's ``cisco-l3vpn-ntw:srv6``
+        container on the vpn-instance-profile. VERIFIED by NSO dry run (2026-09-15,
+        ``?dry-run=native``, nothing committed): the rendered CLI gains
+        ``segment-routing srv6 / locator <name> / alloc mode per-vrf`` under ``router bgp
+        <as> / vrf <vpn-id> / address-family ipv4 unicast`` on every PE — the dry-run step
+        counts those blocks and names the locator(s) rendered, and a NOTE says when the
+        block is missing altogether, rendered on fewer PEs than the endpoints name (the
+        per-device CLI sections are checked against the distinct endpoint nodes — a PE
+        without a BGP process / local_as renders none) or names another locator than
+        asked (do not commit then). NSO does not check the name against the routers: a
+        locator no PE holds renders fine and fails on the box — run cnc_srv6_readiness
+        first: every endpoint PE must advertise an SRv6 locator there (the topology
+        carries the locator PREFIX, never its name), and confirm the name maps to that
+        prefix on each PE with cnc_get_nso_device_config(host_name=<PE>,
+        subtree='segment-routing/srv6') — its locators/locator[name]/prefix is the map;
+        a 404 'uri keypath not found' there means the router has no 'segment-routing
+        srv6' at all (verified live 2026-09-15 on the SR-MPLS-only lab). The commit path
+        of an SRv6 VPN is UNVERIFIED until the lab has its SRv6 underlay; the playbook's
+        flow is the MPLS one. The OAM trace is SKIPPED for an
+        SRv6 VPN with the reason in the verdict: on 7.2 the trace route is MPLS LSP-ping
+        (no dataplane input, transport-type other than 0 rejected — verified live), so it
+        would trace the SR-MPLS LSP to the PE, not the SRv6 path — verify on the routers
+        or with cnc_get_srv6_locator_statistics instead.
 
-        Sub-tools called, in order: cnc_create_l3vpn_service(dry_run=true), then — unless
-        dry_run=true — the same with dry_run=false, cnc_wait_for_service_plan(
-        target='completed'), cnc_get_vpn_service_health(layer='l3'), then for the trace
-        cnc_get_device(host_name=<node>) for the first two endpoint nodes,
-        cnc_start_oam_trace_route and cnc_wait_for_oam_trace_route(timeout_seconds=90).
+        VERDICT: ``deployed`` (commit ok, plan completed, CAT inventory read, trace ok or
+        not requested / skipped for SRv6), ``deployed-unverified`` (committed but the plan
+        did not complete in wait_seconds, the CAT read failed or the trace did not succeed
+        — the reasons say which), ``failed`` (stopped at the dry run / commit / plan) or
+        ``dry-run`` (dry_run=true: the dry run succeeded and nothing was committed; the
+        commit, plan, health and trace sections read "skipped — dry_run=true"). A trace
+        the platform reports FAILED is the platform's verdict on the network (gNMI /
+        'mpls oam' on the devices), not an API error. The headlines name the transport
+        for an SRv6 VPN ("(SRv6 transport, locator <name>)"); an MPLS VPN reads as before.
+
+        Sub-tools called, in order: cnc_create_l3vpn_service(dry_run=true; srv6_locator
+        only when given), then — unless dry_run=true — the same with dry_run=false,
+        cnc_wait_for_service_plan(target='completed'), cnc_get_vpn_service_health(
+        layer='l3'), then for the trace (MPLS VPNs only) cnc_get_device(host_name=<node>)
+        for the first two endpoint nodes, cnc_start_oam_trace_route and
+        cnc_wait_for_oam_trace_route(timeout_seconds=90).
 
         Args:
-            vpn_id, route_distinguisher, route_target, endpoints, topology, profile_id:
-                exactly what cnc_create_l3vpn_service takes.
-            trace: run the OAM trace route after the plan completes.
+            vpn_id, route_distinguisher, route_target, endpoints, topology, profile_id,
+                srv6_locator: exactly what cnc_create_l3vpn_service takes.
+            trace: run the OAM trace route after the plan completes (MPLS VPNs).
             wait_seconds: plan wait budget.
             dry_run: stop after the dry run with a DRY-RUN verdict; nothing is committed.
             response_format: markdown (default) or json.
@@ -3875,6 +4898,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 profile_id=profile_id,
                 trace=trace,
                 wait_seconds=wait_seconds,
+                srv6_locator=srv6_locator.strip(),
                 dry_run=dry_run,
                 global_dry_run=settings.dry_run,
             )

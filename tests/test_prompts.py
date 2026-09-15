@@ -41,9 +41,13 @@ ARGUMENTS = {
     "troubleshoot_device": ({"device"}, {"hours"}),
     "network_health_check": (set(), set()),
     "explain_sr_policy": ({"headend", "endpoint", "color"}, {"hours"}),
-    "provision_l3vpn": ({"vpn_id", "endpoints"}, {"route_target", "route_distinguisher"}),
+    "provision_l3vpn": (
+        {"vpn_id", "endpoints"},
+        {"route_target", "route_distinguisher", "srv6_locator"},
+    ),
     "alarm_triage": (set(), set()),
     "explain_service": ({"service"}, set()),
+    "srv6_readiness": (set(), set()),
 }
 
 # Arguments that render every prompt (the required ones plus one optional).
@@ -59,7 +63,11 @@ SAMPLE_ARGUMENTS = {
     },
     "alarm_triage": {},
     "explain_service": {"service": "customer-a-vpn"},
+    "srv6_readiness": {},
 }
+# The SRv6 rendering of the provisioning playbook (an optional argument, so exercised on
+# its own next to the MPLS one above).
+SRV6_L3VPN_ARGUMENTS = {**SAMPLE_ARGUMENTS["provision_l3vpn"], "srv6_locator": "LOCATOR-A"}
 
 # Names that belong to one lab and must never leak into a prompt (the platform-wide
 # conventions 'MD=CISCO_EMS!ND=<host name>' and ROBOT_* states are fine).
@@ -98,10 +106,14 @@ async def prompt_text(mcp: MCPServer, name: str, arguments: dict[str, str]) -> s
 
 
 async def all_prompt_texts(mcp: MCPServer) -> dict[str, str]:
-    return {name: await prompt_text(mcp, name, args) for name, args in SAMPLE_ARGUMENTS.items()}
+    texts = {name: await prompt_text(mcp, name, args) for name, args in SAMPLE_ARGUMENTS.items()}
+    texts["provision_l3vpn (srv6)"] = await prompt_text(
+        mcp, "provision_l3vpn", SRV6_L3VPN_ARGUMENTS
+    )
+    return texts
 
 
-async def test_build_server_registers_the_six_prompts_with_their_arguments(make_settings):
+async def test_build_server_registers_the_seven_prompts_with_their_arguments(make_settings):
     mcp = build_server(make_settings(enable_writes=False))
     prompts = {p.name: p for p in await mcp.list_prompts()}
     assert set(prompts) == set(PROMPT_NAMES) == set(ARGUMENTS)
@@ -352,7 +364,7 @@ async def test_without_the_composites_each_prompt_starts_from_the_individual_too
     for name, text in texts.items():
         assert "Start with ONE call" not in text, name
         assert not set(TOOL_TOKEN.findall(text)) & COMPOSITE_TOOLS, name
-        if name != "provision_l3vpn":  # a stepwise workflow; its composite is step 4's option
+        if not name.startswith("provision_l3vpn"):  # stepwise; its composite is step 4's option
             assert "This build has no one-call" in text, name
 
     text = texts["troubleshoot_device"]
@@ -613,3 +625,90 @@ def test_instructions_name_the_prompts(make_settings):
     text = build_instructions(make_settings(enable_writes=False))
     for name in PROMPT_NAMES:
         assert name in text, name
+
+
+async def test_srv6_readiness_prompt_starts_from_the_composite_and_falls_back(make_settings):
+    mcp = build_server(make_settings(enable_writes=False))
+    await with_composites(mcp, enable_writes=False)
+    text = await prompt_text(mcp, "srv6_readiness", {})
+    assert "Start with ONE call: cnc_srv6_readiness" in text
+    assert text.index("cnc_srv6_readiness") < text.index("cnc_get_topology_node(node_id=...)")
+    for heading in ("Verdict", "Evidence", "What the routers still need", "Not checked"):
+        assert heading in text, heading
+    assert "READY / PARTIAL / NONE" in text
+    # The rules an agent gets wrong without them: derived locators, per-direction End.X,
+    # non-XR routers, the derived dataplane, CFP-only SRv6 policies, MPLS-only OAM.
+    assert "the topology model has no locator object" in text
+    assert "both directions need an End.X SID" in text
+    assert "Only IOS XR routers are\n   expected to advertise SRv6" in text
+    assert "never from the Optimization Engine, which is SR-MPLS only" in text
+    assert "The OAM trace\n   route is MPLS-only on this release" in text
+    assert "nothing is configured on Crosswork" in text
+    assert "cnc_list_sr_policies" not in text  # the composite reads them; no drill-in needed
+    assert "This is a read-only check" in text and "dry_run=true first" in text
+    await without_composites(mcp)
+    text = await prompt_text(mcp, "srv6_readiness", {})
+    assert "This build has no one-call readiness tool" in text
+    assert "cnc_srv6_readiness" not in text
+    for tool in (
+        "cnc_get_topology_summary",
+        "cnc_list_srv6_locators",
+        "cnc_list_topology_links",
+        "cnc_list_sr_policies(dataplane='srv6')",
+        "cnc_list_performance_policies",
+        "cnc_list_devices",
+        "cnc_get_srv6_locator_statistics(host_name=...)",
+    ):
+        assert tool in text, tool
+    assert text.index("cnc_get_topology_summary") < text.index("cnc_get_topology_node(")
+
+
+async def test_provision_prompt_renders_the_srv6_transport_only_when_asked(make_settings):
+    """srv6_locator is optional: without it the playbook is the MPLS one (the input line
+    says so and no SRv6 step appears); with it the head, the inputs, the pre-flight (the
+    readiness composite when registered, else the locator list), the dry-run call and the
+    trace rule say SRv6 — and the locator name is never invented."""
+    mcp = build_server(make_settings(enable_writes=True))
+    await with_composites(mcp, enable_writes=True)
+    mpls = await prompt_text(mcp, "provision_l3vpn", SAMPLE_ARGUMENTS["provision_l3vpn"])
+    assert "over MPLS through Crosswork's NSO L3VPN" in mpls
+    assert "- srv6_locator: (not given — MPLS transport)" in mpls
+    assert "SRv6 pre-flight" not in mpls and "skip the OAM trace" not in mpls
+    assert "srv6_locator='" not in mpls
+    assert '"srv6_locator" (optional per-node override)' in mpls  # the endpoint key exists
+    srv6 = await prompt_text(mcp, "provision_l3vpn", SRV6_L3VPN_ARGUMENTS)
+    assert "over SRv6 (locator 'LOCATOR-A') through Crosswork's NSO L3VPN" in srv6
+    assert "- srv6_locator: LOCATOR-A (SRv6 transport: pass it as srv6_locator" in srv6
+    assert "'segment-routing srv6 / locator LOCATOR-A / alloc mode per-vrf'" in srv6
+    # The pre-flight never asks for something no tool can show: the topology carries the
+    # locator PREFIX, not its name, so the name is confirmed on the router through NSO.
+    assert (
+        "SRv6 pre-flight: cnc_srv6_readiness must show every endpoint node advertising an SRv6\n"
+        "   locator (the topology carries the locator PREFIX, never its name — no tool can show\n"
+        "   the name 'LOCATOR-A' there); confirm the name 'LOCATOR-A' maps to that prefix on "
+        "each\n   PE with cnc_get_nso_device_config(host_name=<PE>, subtree='segment-routing/srv6')"
+        in srv6
+    )
+    assert "advertising the\n   locator 'LOCATOR-A'" not in srv6
+    assert "never provision over a locator that does not exist" in srv6
+    assert "endpoints=<the JSON list>, srv6_locator='LOCATOR-A', dry_run=true)" in srv6
+    assert "For an SRv6 VPN skip the OAM trace" in srv6
+    assert "cnc_provision_l3vpn_e2e skips it and says so" in srv6
+    assert "cnc_get_srv6_locator_statistics(host_name=...)" in srv6
+    # The order of the playbook is unchanged: pre-flight, dry run, confirmation, commit.
+    assert (
+        srv6.index("SRv6 pre-flight")
+        < srv6.index("2. Dry run")
+        < srv6.index("STOP and ask for confirmation")
+        < srv6.index("cnc_provision_l3vpn_e2e (it commits")
+    )
+    # Without the readiness composite the pre-flight names the locator list instead.
+    await without_composites(mcp)
+    srv6 = await prompt_text(mcp, "provision_l3vpn", SRV6_L3VPN_ARGUMENTS)
+    assert (
+        "SRv6 pre-flight: cnc_list_srv6_locators must show every endpoint node advertising an "
+        "SRv6\n   locator (the topology carries the locator PREFIX, never its name" in srv6
+    )
+    assert "subtree='segment-routing/srv6'" in srv6
+    assert "cnc_srv6_readiness" not in srv6 and "cnc_provision_l3vpn_e2e" not in srv6
+    assert "For an SRv6 VPN skip the OAM trace" in srv6

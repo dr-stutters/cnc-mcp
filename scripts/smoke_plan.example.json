@@ -1,5 +1,5 @@
 {
-  "_comment": "Live smoke plan for the cnc-lab instance (5 XRd devices, SR-PCE provider cml-pce, credential profile cml-xrd). Read phase is side-effect free. Write phase creates smoke-* objects and removes them again (create -> verify -> delete), leaving the platform as found. Data Gateway steps target the embedded gateway: mapping 'remove' really unmaps but the embedded pool re-maps within ~2 s, and 'add' immediately after a remove succeeds (verified), so the write phase leaves mappings as found. NSO steps act on P2 only (check-sync, sync-from) and prove the zero-match and wildcard guards; sync-to and the inventory-wide sync are not run. Phase D (2026-09-15) appended the tier-1 write chains: device groups/rules, PM policy + retention, ZTP objects, external subscriptions (refusal diagnosis + clear-by-topic; the Kafka create chain needs an application-dispatch destination the lab lacks), alarm settings \u2014 each creates phase-d-* objects and removes them.",
+  "_comment": "Live smoke plan for the cnc-lab instance (5 XRd devices, SR-PCE provider cml-pce, credential profile cml-xrd). Read phase is side-effect free. Write phase creates smoke-* objects and removes them again (create -> verify -> delete), leaving the platform as found. Data Gateway steps target the embedded gateway: mapping 'remove' really unmaps but the embedded pool re-maps within ~2 s, and 'add' immediately after a remove succeeds (verified), so the write phase leaves mappings as found. NSO steps act on P2 only (check-sync, sync-from) and prove the zero-match and wildcard guards; sync-to and the inventory-wide sync are not run. Phase D (2026-09-15) appended the tier-1 write chains: device groups/rules, PM policy + retention, ZTP objects, external subscriptions (refusal diagnosis + clear-by-topic; the Kafka create chain needs an application-dispatch destination the lab lacks), alarm settings \u2014 each creates phase-d-* objects and removes them. SRv6 (2026-09-15) appended read steps (locators, dataplane, readiness) that answer 'no SRv6' on the SR-MPLS lab and dry-run-only provisioning steps; re-run after the SRv6 underlay is committed.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -4673,6 +4673,802 @@
         "name": "phase-d-policy"
       },
       "_phase_d": "fault"
+    },
+    {
+      "tool": "cnc_get_topology_summary",
+      "args": {},
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_topology_nodes",
+      "args": {},
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_topology_nodes",
+      "args": {
+        "dataplane": "sr-mpls",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_topology_nodes",
+      "args": {
+        "dataplane": "srv6"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_topology_nodes",
+      "args": {
+        "dataplane": "mpls"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_node",
+      "args": {
+        "node_id": "PE1"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_node",
+      "args": {
+        "node_id": "P1",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_topology_links",
+      "args": {
+        "link_type": "isis",
+        "node": "PE1"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "P2 : GigabitEthernet0/0/0/0 : PE2 : GigabitEthernet0/0/0/1 : ISIS_IPV4_L2"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "PE1 : GigabitEthernet0/0/0/0 : P1 : GigabitEthernet0/0/0/0 : ISIS_IPV4_L2",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "PE1 : GigabitEthernet0/0/0/0 : P1 : GigabitEthernet0/0/0/0 : ETHERNET"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_topology_link",
+      "args": {
+        "link_id": "does : not : exist : a : b : ISIS_IPV4_L2"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_srv6_locators",
+      "args": {},
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_srv6_locators",
+      "args": {
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_list_srv6_locators",
+      "args": {
+        "network": "nope"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "topology"
+    },
+    {
+      "tool": "cnc_get_te_summary",
+      "args": {},
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {},
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "dataplane": "sr-mpls",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "dataplane": "srv6"
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "headend": "PE1",
+        "dataplane": "SR-MPLS",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "endpoint": "2001:db8::3",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_list_sr_policies",
+      "args": {
+        "dataplane": "ipv6"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "2001:db8::1",
+        "endpoint": "2001:db8::3",
+        "color": 6001
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 6001
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_sr_policy_performance_metrics",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      },
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_sr_policy_performance_metrics",
+      "args": {
+        "headend": "2001:db8::1",
+        "endpoint": "2001:db8::3",
+        "color": 6001
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "te"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "metrics": "all",
+        "prefix": "fc00:0:1::/48"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "pe1",
+        "metrics": "outbitrate",
+        "from_time": "2026-09-14T00:00:00Z",
+        "to_time": "2026-09-15T00:00:00Z",
+        "page_size": 5,
+        "page": 2
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "device_uuid": "af1986fa-e1cb-4f8c-aa83-4f05a00472e7",
+        "length": 48
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "device_uuid": "00000000-0000-4000-8000-000000000001"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "metrics": "bogusMetric"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "device_uuid": "not-a-uuid"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {},
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "prefix": "not-a-prefix"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "from_time": "2026-09-15T00:00:00Z",
+        "to_time": "2026-09-14T00:00:00Z"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "SRV6LOCATOR",
+        "hours": 24
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "SRV6LOCATOR",
+        "metrics": "bogus",
+        "hours": 24
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "metrics": "outBitRate,outbitrate"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "page": 2,
+        "page_size": 50
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "prefix": "FC00:0000:0001::/48",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "prefix": "fc00:0:1::1/48"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "prefix": "fc00:0:1::1",
+        "length": 48
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_srv6_locator_statistics",
+      "args": {
+        "host_name": "PE1",
+        "metrics": "out/bit"
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CPU",
+        "metrics": "cpuUtilization,bogus",
+        "hours": 1
+      },
+      "expect_error": true,
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "tool": "cnc_get_performance_statistics",
+      "args": {
+        "schema": "CEPMINTERFACE",
+        "metrics": "ifinbitsrate",
+        "hours": 1,
+        "page_size": 2
+      },
+      "phase": "read",
+      "_srv6": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pol-600",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3",
+        "color": 600,
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "_comment": "Review fix: a mixed-case, uncompressed IPv6 tail_end is sent canonical; NSO renders 'policy srte_c_620_ep_2001:db8::3 / end-point ipv6 2001:db8::3' (verified 2026-09-15 through this very step).",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-review-pol-620",
+        "head_end": "PE1",
+        "tail_end": "2001:DB8:0:0::3",
+        "color": 620,
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "_comment": "Review fix: a zone id is refused client-side (nothing sent).",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-review-pol-621",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3%eth0",
+        "color": 621,
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pol-602",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3",
+        "color": 602,
+        "srv6_locator": "LOC1",
+        "delegate_to_pce": false,
+        "metric_type": "latency",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "srv6-tool-odn-601",
+        "color": 601,
+        "head_ends": "PE1,PE2",
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-l3-1",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback91\", \"address\": \"10.91.2.1\", \"prefix_length\": 30, \"local_as\": 65000}]",
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-l3-2",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback91\", \"address\": \"10.91.2.1\", \"prefix_length\": 30, \"local_as\": 65000, \"srv6_locator\": \"LOC2\"}]",
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pre-1",
+        "head_end": "PE1",
+        "tail_end": "10.0.0.3",
+        "color": 600,
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pre-2",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3",
+        "color": 600,
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pre-3",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3",
+        "color": 600,
+        "srv6_locator": "LOC1",
+        "path_type": "explicit",
+        "sid_list": "nope",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pre-4",
+        "head_end": "PE1",
+        "tail_end": "2001:db8::3",
+        "color": 600,
+        "srv6_locator": "LOC1",
+        "bandwidth_kbps": 1000,
+        "binding_sid": 15600,
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_odn_template",
+      "args": {
+        "name": "srv6-tool-pre-6",
+        "color": 601,
+        "head_ends": "PE1",
+        "srv6_locator": "LOC1",
+        "bandwidth_kbps": 1000,
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_l3vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-pre-7",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"srv6_locator\": \"LOC1\"}, {\"node\": \"PE1\", \"interface\": \"Loopback92\", \"address\": \"10.92.1.1\", \"prefix_length\": 30, \"srv6_locator\": \"LOC2\"}]",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_provision_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/cisco-sr-te-cfp-sr-policies:policy=srv6-tool-plat-1",
+        "body_json": "{\"cisco-sr-te-cfp-sr-policies:policy\": [{\"name\": \"srv6-tool-plat-1\", \"head-end\": [{\"name\": \"PE1\"}], \"tail-end\": \"10.0.0.3\", \"color\": 600, \"path\": [{\"preference\": 100, \"dynamic\": {\"metric-type\": \"igp\", \"pce\": {}}}], \"srv6\": {\"locator\": {\"locator-name\": \"LOC1\"}}}]}",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_provision_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/cisco-sr-te-cfp-sr-policies:policy=srv6-tool-plat-3",
+        "body_json": "{\"cisco-sr-te-cfp-sr-policies:policy\": [{\"name\": \"srv6-tool-plat-3\", \"head-end\": [{\"name\": \"PE1\"}], \"tail-end\": \"2001:db8::3\", \"color\": 600, \"path\": [{\"preference\": 100, \"explicit\": {\"sid-list\": [{\"name\": \"nope\"}]}}], \"srv6\": {\"locator\": {\"locator-name\": \"LOC1\"}}}]}",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_provision_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/cisco-sr-te-cfp-sr-odn:odn-template=srv6-tool-plat-7",
+        "body_json": "{\"cisco-sr-te-cfp-sr-odn:odn-template\": [{\"name\": \"srv6-tool-plat-7\", \"color\": 601, \"head-end\": [{\"name\": \"PE1\"}], \"source-address\": \"2001:db8::1\", \"dynamic\": {\"metric-type\": \"igp\", \"pce\": {}}}]}",
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_sr_policy_service",
+      "args": {
+        "name": "srv6-tool-pol-600",
+        "bandwidth_kbps": 1000,
+        "dry_run": true
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/policy=srv6-tool-pol-600"
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-odn:odn/odn-template=srv6-tool-odn-601"
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_service",
+      "args": {
+        "yang_path": "cisco-sr-te-cfp:sr-te/cisco-sr-te-cfp-sr-policies:policies/cisco-sr-te-cfp-sr-policies:policy=srv6-review-pol-620"
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-l3-1"
+      },
+      "expect_error": true,
+      "_srv6": "provisioning"
+    },
+    {
+      "tool": "cnc_srv6_readiness",
+      "args": {},
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_srv6_readiness",
+      "args": {
+        "network": "Default-network",
+        "response_format": "json"
+      },
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_srv6_readiness",
+      "args": {
+        "network": "no-such-network"
+      },
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_get_nso_device_config",
+      "args": {
+        "host_name": "PE1",
+        "subtree": "segment-routing/srv6"
+      },
+      "expect_error": true,
+      "_note": "404 until the SRv6 underlay is committed; then drop expect_error and check locators/locator LOC1 / prefix fc00:0:1::/48",
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_explain_sr_policy",
+      "args": {
+        "headend": "PE1",
+        "endpoint": "PE2",
+        "color": 100
+      },
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_explain_sr_policy",
+      "args": {
+        "headend": "2001:db8::1",
+        "endpoint": "2001:db8::3",
+        "color": 6001
+      },
+      "phase": "read",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_provision_l3vpn_e2e",
+      "args": {
+        "vpn_id": "srv6-tool-l3-1",
+        "route_distinguisher": "0:65091:91",
+        "route_target": "0:65091:91",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback91\", \"address\": \"10.91.1.1\", \"prefix_length\": 30, \"local_as\": 65000}, {\"node\": \"PE2\", \"interface\": \"Loopback91\", \"address\": \"10.91.2.1\", \"prefix_length\": 30, \"local_as\": 65000}]",
+        "srv6_locator": "LOC1",
+        "dry_run": true
+      },
+      "phase": "write",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_provision_l3vpn_e2e",
+      "args": {
+        "vpn_id": "srv6-tool-l3-2",
+        "route_distinguisher": "0:65091:92",
+        "route_target": "0:65091:92",
+        "endpoints": "[{\"node\": \"PE1\", \"interface\": \"Loopback92\", \"address\": \"10.92.1.1\", \"prefix_length\": 30, \"local_as\": 65000, \"srv6_locator\": \"LOC1\"}, {\"node\": \"PE2\", \"interface\": \"Loopback92\", \"address\": \"10.92.2.1\", \"prefix_length\": 30, \"local_as\": 65000, \"srv6_locator\": \"LOC2\"}]",
+        "dry_run": true,
+        "response_format": "json"
+      },
+      "phase": "write",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_get_vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-l3-1"
+      },
+      "expect_error": true,
+      "phase": "write",
+      "_srv6": "composite"
+    },
+    {
+      "tool": "cnc_get_vpn_service",
+      "args": {
+        "vpn_id": "srv6-tool-l3-2"
+      },
+      "expect_error": true,
+      "phase": "write",
+      "_srv6": "composite"
     }
   ]
 }

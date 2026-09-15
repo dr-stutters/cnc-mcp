@@ -13,6 +13,11 @@ answers. The SRPOLICY statistics row (color 0, endpoint "", unit NUMBER) is
 verbatim from the live answer of 2026-09-14, as are the template unit facts:
 CEPMCRC crc is PACKETS_PER_SECOND, and OTUCONTROLLERSINFO uc is the only
 metric whose template unit is NUMBER (27 metrics have no unitType at all).
+The srv6locator section at the end mirrors the 2026-09-15 scout: the metric
+catalogue, the empty ``[]`` graph answer and the 400 / 500 envelopes are
+verbatim from the SR-MPLS-only lab; the POPULATED graph entry is the
+lsp-traffic envelope (the only populated one the lab has) with the spec's
+srv6locator keys, so its key set is a stand-in until a locator is collected.
 """
 
 from __future__ import annotations
@@ -669,6 +674,7 @@ TOOLS = {
     "cnc_get_lsp_utilization",
     "cnc_get_lsp_delay",
     "cnc_get_interface_delay",
+    "cnc_get_srv6_locator_statistics",
 }
 
 
@@ -714,6 +720,7 @@ async def test_paging_is_one_based_and_flat(make_settings):
         "cnc_list_performance_policy_devices",
         "cnc_get_performance_statistics",
         "cnc_get_performance_top_n",
+        "cnc_get_srv6_locator_statistics",
     ):
         props = tools[name].input_schema["properties"]
         assert props["page"]["default"] == 1 and props["page"]["minimum"] == 1, name
@@ -764,6 +771,7 @@ async def test_every_pm_window_says_either_time_form_is_accepted(make_settings):
         "cnc_get_lsp_utilization": 6,
         "cnc_get_lsp_delay": 6,
         "cnc_get_interface_delay": 24,
+        "cnc_get_srv6_locator_statistics": 24,
     }
     for name, default_hours in windowed.items():
         schema = tools[name].input_schema
@@ -781,7 +789,9 @@ async def test_every_pm_window_says_either_time_form_is_accepted(make_settings):
                 assert "default 6" in text and "5-minute samples" in text, name
                 assert "e.g. 24, answer hourly roll-ups" in text, name
             assert props["from_time"]["default"] == "" and props["to_time"]["default"] == ""
-            assert "from_time" not in schema["required"], name
+            # (the srv6locator tool has NO required argument: host_name / device_uuid are
+            # exclusive and checked inside, so its schema carries no "required" at all)
+            assert "from_time" not in schema.get("required", []), name
         else:
             assert "hours" not in props, name
             assert {"from_time", "to_time"} <= set(schema["required"]), name
@@ -1072,6 +1082,21 @@ def test_error_envelope_and_performance_error():
     assert str(err) == "no performance policy 999 (MISSING_POLICY_ID). List."
     assert str(performance_error(response, {"MISSING_POLICY_ID": "gone"})) == (
         "gone (MISSING_POLICY_ID)."
+    )
+    # A callable hint is given the parsed envelope and returns either form — for a meaning
+    # that names what the platform rejected (its parameters) rather than what was sent.
+    seen: list[dict] = []
+
+    def from_envelope(env: dict) -> tuple[str, str]:
+        seen.append(env)
+        return f"policy {env['parameters'][0]} is unknown", "List."
+
+    assert str(performance_error(response, {"MISSING_POLICY_ID": from_envelope})) == (
+        "policy 999 is unknown (MISSING_POLICY_ID). List."
+    )
+    assert seen == [error_envelope(response)]
+    assert str(performance_error(response, {"MISSING_POLICY_ID": lambda env: "plain"})) == (
+        "plain (MISSING_POLICY_ID)."
     )
     # An enveloped code without a hint renders the platform's details.
     assert str(performance_error(response)) == (
@@ -3990,3 +4015,682 @@ async def test_reset_retention_errors(make_settings):
     assert text.startswith(
         "Error: the platform answered false instead of true; 0 table(s) read back changed"
     )
+
+
+# --- cnc_get_srv6_locator_statistics (scouted live 2026-09-15) ----------------
+
+from cnc_mcp.tools.performance import (  # noqa: E402
+    GRAPH_ALL_METRICS,
+    GRAPH_PAGE_SIZE,
+    SRV6_LOCATOR_DEFAULT_METRIC,
+    graph_entry_lines,
+    graph_entry_view,
+    graph_page_full,
+    graph_points,
+    locator_keys_label,
+    parse_graph_metrics,
+    parse_locator_prefix,
+    srv6_locator_policy_text,
+)
+
+SRV6_TOOL = "cnc_get_srv6_locator_statistics"
+SRV6_METRICS_URL = f"{PERF}/dashboards/srv6locator/metrics"
+SRV6_GRAPH_URL = f"{PERF}/dashboards/srv6locator/graph"
+# Verbatim live answers of the SR-MPLS-only lab (no locator, no SRV6LOCATOR policy).
+SRV6_CATALOGUE = [{"name": "outBitRate", "unit": "bps"}]
+SRV6_LOCATOR_TEMPLATE = {
+    "policyTemplate": "SRV6LOCATOR",
+    "schemasInterval": {
+        "SRV6LOCATOR": {"defaultInterval": 900, "pollingIntervals": [0, 300, 600, 900, 1800, 3600]}
+    },
+    "schemasFieldMetadata": {"SRV6LOCATOR": {"outBitRate": {"TCAEnabled": False}}},
+    "schemaDisplayMap": {},
+    "portGroupSupported": False,
+}
+DEVICE_UUID_ILLEGAL = envelope("DEVICE_UUID_ILLEGAL_ARGUMENT", "Invalid device", "not-a-uuid")
+WRONG_START_END = envelope("WRONG_START_END_TIME", "Endtime must be greater than startTime!")
+# An unknown metric ALONE in the path: a 500 whose message is a sentence (no code).
+UNKNOWN_METRIC_500 = {
+    "timestamp": "15-09-2026 07:45:42",
+    "code": 500,
+    "status": "Internal Server Error",
+    "message": "Failed to find any of the given metrics: [bogusMetric]",
+    "details": None,
+    "parameters": None,
+}
+# A POPULATED GraphResponseGraphEntry[]: the lsp-traffic envelope the lab serialises
+# (one element per metric, one metrics[] entry per key tuple, samples oldest first,
+# ``events`` null, the top-level unit an enum) with the spec's srv6locator keys — the
+# real key set of a locator series is unverified until the SRv6 underlay is up.
+SRV6_SAMPLES = [
+    {"value": 0, "timestamp": "2026-09-15T15:16:48.947Z"},
+    {"value": 1200, "timestamp": "2026-09-15T15:31:48.939Z"},
+    {"value": 600, "timestamp": "2026-09-15T15:46:48.940Z"},
+]
+SRV6_GRAPH_ENTRY = [
+    {
+        "metricName": "outBitRate",
+        "metricClassificationId": "SRV6LOCATOR",
+        "metrics": [
+            {
+                "keys": {
+                    "hostname": "PE1",
+                    "prefix": "fc00:0:1::",
+                    "length": 48,
+                    "device": PE1_UUID,
+                },
+                "data": SRV6_SAMPLES,
+                "avg": 600,
+                "min": 0,
+                "max": 1200,
+                "events": None,
+            }
+        ],
+        "thresholds": [],
+        "avg": 600,
+        "min": 0,
+        "max": 1200,
+        "unit": "BITS_PER_SECOND",
+    }
+]
+SRV6_POLICY_DTO = {
+    "monitoringPolicy": {
+        "id": 5,
+        "policyTemplate": "SRV6LOCATOR",
+        "name": "srv6-locators",
+        "description": "",
+        "schemasInterval": {"SRV6LOCATOR": 900},
+        "devices": PE1_UUID,
+        "deviceGroups": "",
+        "portGroups": "",
+        "tag": "",
+        "thresholds": {},
+        "active": True,
+        "creationTimestamp": 1789483081382,
+        "lastChangedTimestamp": 1789483081382,
+    },
+    "monitoringPolicyTemplate": SRV6_LOCATOR_TEMPLATE,
+    "policyCollectionStatus": "OK",
+}
+SRV6_EMPTY_POLICY_TEXT = (
+    "no SRV6LOCATOR monitoring policy exists (cnc_list_performance_policies), so no locator "
+    "is being collected: create one with cnc_create_performance_policy(template='SRV6LOCATOR', "
+    "schemas_interval='900', devices=<host name>) and activate it"
+)
+
+
+async def test_srv6_locator_tool_schema(make_settings):
+    tools = {t.name: t for t in await build(make_settings()).list_tools()}
+    schema = tools[SRV6_TOOL].input_schema
+    props = schema["properties"]
+    assert not schema.get("required")  # exactly one of host_name / device_uuid, checked inside
+    assert props["host_name"]["default"] == "" and props["device_uuid"]["default"] == ""
+    assert props["metrics"]["default"] == SRV6_LOCATOR_DEFAULT_METRIC == "outBitRate"
+    assert "'all'" in props["metrics"]["description"]
+    assert props["prefix"]["default"] == "" and "fc00:0:1::/48" in props["prefix"]["description"]
+    assert props["length"]["default"] is None
+    assert props["page_size"]["default"] == GRAPH_PAGE_SIZE == 100
+    assert props["page_size"]["maximum"] == 10000
+    assert tools[SRV6_TOOL].annotations.read_only_hint is True
+    assert tools[SRV6_TOOL].annotations.idempotent_hint is True
+
+
+def test_parse_locator_prefix():
+    assert parse_locator_prefix("", None) == (None, None)
+    assert parse_locator_prefix("", 48) == (None, 48)
+    assert parse_locator_prefix("fc00:0:1::", 48) == ("fc00:0:1::", 48)
+    assert parse_locator_prefix(" FC00:0:1:: ", None) == ("fc00:0:1::", None)
+    assert parse_locator_prefix("fc00:0:1::/48", None) == ("fc00:0:1::", 48)
+    assert parse_locator_prefix("fc00:0:1:: / 48", 48) == ("fc00:0:1::", 48)
+    # Sent compressed lower-case (whether the platform's match survives the re-spelling is
+    # unverified until a locator is collected).
+    assert parse_locator_prefix("FC00:0000:0001::/48", None) == ("fc00:0:1::", 48)
+    # Host bits beyond a known length are the silent-[] typo the tool guards against
+    # (verified live 2026-09-15: prefix=fc00:0:1::1&length=48 -> 200 []); without a
+    # length there is nothing to check against.
+    assert parse_locator_prefix("fc00:0:1::1", None) == ("fc00:0:1::1", None)
+    for bad, length, marker in (
+        ("not-a-prefix", None, "is not an IPv6 locator prefix"),
+        ("10.0.0.0/8", None, "is not an IPv6 locator prefix"),
+        ("fc00:0:1::/129", None, "invalid length after '/'"),
+        ("fc00:0:1::/x", None, "invalid length after '/'"),
+        ("fc00:0:1::1/48", None, r"has bits set beyond /48"),
+        ("fc00:0:1::1", 48, r"has bits set beyond /48"),
+        ("fc00:0:1:ffff::", 48, r"has bits set beyond /48"),
+    ):
+        with pytest.raises(PlatformError, match=marker):
+            parse_locator_prefix(bad, length)
+    with pytest.raises(PlatformError, match=r"says /48 but length=64"):
+        parse_locator_prefix("fc00:0:1::/48", 64)
+
+
+def test_parse_graph_metrics():
+    assert parse_graph_metrics("", None) is None
+    assert parse_graph_metrics("all", ["outBitRate"]) is None
+    assert parse_graph_metrics(" ALL ", None) is None
+    assert parse_graph_metrics("outBitRate", None) == ["outBitRate"]
+    assert parse_graph_metrics("outbitrate, OUTBITRATE", ["outBitRate"]) == ["outBitRate"]
+    assert parse_graph_metrics("bogus", None) == ["bogus"]  # no catalogue: as given
+    # A metric repeated in the path, even by case, answers 200 [] on the wire (verified
+    # live 2026-09-15 on lsp-traffic): the dedup is case-insensitive with or without a
+    # catalogue, and without one the FIRST spelling is kept.
+    assert parse_graph_metrics("outBitRate,outbitrate", None) == ["outBitRate"]
+    assert parse_graph_metrics("outbitrate, OUTBITRATE, outBitRate", None) == ["outbitrate"]
+    assert parse_graph_metrics("outBitRate,outPktsRate,OUTBITRATE", None) == [
+        "outBitRate",
+        "outPktsRate",
+    ]
+    with pytest.raises(PlatformError, match="unknown SRv6 locator metric 'bogus'"):
+        parse_graph_metrics("bogus", ["outBitRate"])
+    with pytest.raises(PlatformError, match="mixes 'all' with metric names"):
+        parse_graph_metrics("all,outBitRate", None)
+    # The names go into the URL path: anything but letters, digits and '_' is refused,
+    # with or without a catalogue, before the catalogue check.
+    for bad in ("out/bit", "out bit", "outBitRate;x", "../metrics"):
+        with pytest.raises(PlatformError, match="is not a metric name"):
+            parse_graph_metrics(bad, None)
+        with pytest.raises(PlatformError, match="is not a metric name"):
+            parse_graph_metrics(bad, ["outBitRate"])
+    assert parse_graph_metrics("out_bit_rate2", None) == ["out_bit_rate2"]
+    assert GRAPH_ALL_METRICS == "all"
+
+
+def test_locator_keys_label_and_graph_views():
+    keys = {"hostname": "PE1", "prefix": "fc00:0:1::", "length": 48, "device": PE1_UUID}
+    assert locator_keys_label(keys) == "PE1 fc00:0:1::/48"
+    assert locator_keys_label({"prefix": "fc00:0:1::", "device": PE1_UUID}) == "fc00:0:1::"
+    assert locator_keys_label({"length": 48}) == "length=48"
+    assert locator_keys_label({"hostname": "PE1", "algo": 0, "device": PE1_UUID}) == "PE1 algo=0"
+    assert locator_keys_label({}) == "?"
+    assert graph_points([{"value": 1, "timestamp": "t"}, "junk"]) == [{"tst": "t", "value": 1}]
+    view = graph_entry_view(SRV6_GRAPH_ENTRY[0])
+    assert view["metric"] == "outBitRate" and view["classification"] == "SRV6LOCATOR"
+    assert view["unit"] == "BITS_PER_SECOND" and view["thresholds"] == []
+    series = view["series"][0]
+    assert series["keys"] == keys and series["label"] == "PE1 fc00:0:1::/48"
+    assert series["avg"] == 600 and series["events"] is None
+    assert series["samples"] == SRV6_SAMPLES
+    assert series["stats"]["count"] == 3 and series["stats"]["spacing_seconds"] == 900
+    assert series["stats"]["average"] == 600 and series["stats"]["last"] == 600
+    lines = graph_entry_lines(view)
+    assert lines[:2] == ["", "## outBitRate (BITS_PER_SECOND): 1 series; avg 600, min 0, max 1200"]
+    assert lines[2] == (
+        "- **PE1 fc00:0:1::/48**: 3 sample(s) (2026-09-15T15:16:48.947Z to "
+        "2026-09-15T15:46:48.940Z; 15-minute spacing): value avg 600, min 0, max 1200, last 600"
+    )
+    assert lines[3:] == [
+        "  - 2026-09-15T15:16:48.947Z: value 0",
+        "  - 2026-09-15T15:31:48.939Z: value 1200",
+        "  - 2026-09-15T15:46:48.940Z: value 600",
+    ]
+    empty_series = graph_entry_view({"metricName": "x", "metrics": [{"keys": {}, "data": []}]})
+    assert graph_entry_lines(empty_series)[1:] == [
+        "## x: 1 series; avg -, min -, max -",
+        "- **?**: 0 sample(s)",
+        "  (no samples)",
+    ]
+    assert graph_entry_lines(graph_entry_view({"metricName": "x"}))[-1] == "(no series)"
+    assert graph_page_full([view], 3) is True and graph_page_full([view], 4) is False
+    assert graph_page_full([], 1) is False
+
+
+def test_srv6_locator_policy_text():
+    assert srv6_locator_policy_text(POLICIES) == SRV6_EMPTY_POLICY_TEXT
+    text = srv6_locator_policy_text([*POLICIES, SRV6_POLICY_DTO])
+    assert text.startswith("SRV6LOCATOR policies: 5 'srv6-locators' active (collection OK) — ")
+    assert "cnc_list_performance_policy_devices" in text
+    inactive = {**SRV6_POLICY_DTO, "monitoringPolicy": {**SRV6_POLICY_DTO["monitoringPolicy"]}}
+    inactive["monitoringPolicy"]["active"] = False
+    assert "5 'srv6-locators' inactive (collection OK)" in srv6_locator_policy_text([inactive])
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_by_host_name(settings):
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    catalogue = get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    graph = get(f"{SRV6_GRAPH_URL}/outBitRate", SRV6_GRAPH_ENTRY)
+    text = await call_tool_text(build(settings), SRV6_TOOL, {"host_name": "pe1"})
+    assert inventory.call_count == 1 and catalogue.call_count == 1 and graph.call_count == 1
+    assert params_of(inventory) == {"hostName": "pe1", "pageSize": "1000", "page": "1"}
+    assert params_of(graph) == {
+        "device": PE1_UUID,
+        "timeInterval": "24",
+        "pageSize": "100",
+        "page": "1",
+    }
+    assert text.startswith(
+        f"# SRv6 locator outBitRate of PE1 ({PE1_UUID}), last 24 h\n\n"
+        "## outBitRate (BITS_PER_SECOND): 1 series; avg 600, min 0, max 1200\n"
+        "- **PE1 fc00:0:1::/48**: 3 sample(s) (2026-09-15T15:16:48.947Z to "
+        "2026-09-15T15:46:48.940Z; 15-minute spacing): value avg 600, min 0, max 1200, last 600\n"
+        "  - 2026-09-15T15:16:48.947Z: value 0\n"
+    )
+    assert text.endswith("  - 2026-09-15T15:46:48.940Z: value 600")
+    assert "page full" not in text
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_json_all_metrics_window_and_paging(settings):
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    graph = get(f"{SRV6_GRAPH_URL}/all", SRV6_GRAPH_ENTRY)
+    args = {
+        "device_uuid": f"{{{PE1_UUID.upper()}}}",
+        "metrics": "all",
+        "prefix": "fc00:0:1::/48",
+        "from_time": "2026-09-14T02:00:00+02:00",
+        "to_time": "1789430400000",
+        "page_size": 3,
+        "page": 2,
+    }
+    text = await call_tool_text(build(settings), SRV6_TOOL, {**args, "response_format": "json"})
+    assert inventory.call_count == 0  # a uuid needs no lookup (and the answer is not empty)
+    assert params_of(graph) == {
+        "device": PE1_UUID,
+        "prefix": "fc00:0:1::",
+        "length": "48",
+        "from": "2026-09-14T00:00:00.000Z",
+        "to": "2026-09-15T00:00:00.000Z",
+        "pageSize": "3",
+        "page": "2",
+    }
+    data = json.loads(text)
+    assert data["device"] == PE1_UUID and data["device_label"] == PE1_UUID
+    assert data["metrics"] == "all" and data["catalogue"] == SRV6_CATALOGUE
+    assert data["window"] == {"from": "2026-09-14T00:00:00.000Z", "to": "2026-09-15T00:00:00.000Z"}
+    assert data["prefix"] == "fc00:0:1::" and data["length"] == 48
+    assert data["page"] == 2 and data["page_size"] == 3
+    assert data["has_more"] is True and data["next_page"] == 3
+    assert data["count"] == 1 and data["empty_reason"] is None
+    entry = data["entries"][0]
+    assert entry["metric"] == "outBitRate" and entry["unit"] == "BITS_PER_SECOND"
+    assert entry["series"][0]["label"] == "PE1 fc00:0:1::/48"
+    assert entry["series"][0]["samples"] == SRV6_SAMPLES
+    # Markdown: the header carries the window, the locator and the page; a full page says
+    # how to continue (paging is over each series' samples; no total is reported).
+    text = await call_tool_text(build(settings), SRV6_TOOL, args)
+    assert text.startswith(
+        f"# SRv6 locator every metric of {PE1_UUID}, 2026-09-14T00:00:00.000Z to "
+        "2026-09-15T00:00:00.000Z, prefix fc00:0:1::/48, page 2\n"
+    )
+    assert text.endswith("\n(page full: more samples may exist, call again with page=3)")
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_metric_names(make_settings):
+    get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    catalogue = get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    canonical = get(f"{SRV6_GRAPH_URL}/outBitRate", [])
+    as_given = get(f"{SRV6_GRAPH_URL}/outbitrate", [])
+    get(POLICIES_URL, POLICIES)
+    # Case-insensitive against the catalogue, duplicates dropped, sent in its spelling.
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        SRV6_TOOL,
+        {"host_name": "PE1", "metrics": "outbitrate, OUTBITRATE", "response_format": "json"},
+    )
+    assert canonical.call_count == 1 and as_given.call_count == 0
+    assert json.loads(text)["metrics"] == ["outBitRate"]
+    # Blank metrics = 'all' (the Field default is outBitRate; blank is the documented
+    # "every metric" spelling next to 'all'): graph/all, JSON metrics "all".
+    everything = get(f"{SRV6_GRAPH_URL}/all", SRV6_GRAPH_ENTRY)
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        SRV6_TOOL,
+        {"host_name": "PE1", "metrics": "", "response_format": "json"},
+    )
+    assert everything.call_count == 1 and canonical.call_count == 1
+    assert params_of(everything)["device"] == PE1_UUID
+    data = json.loads(text)
+    assert data["metrics"] == "all" and data["count"] == 1 and data["empty_reason"] is None
+    # The catalogue is a nicety: when it cannot be read the names go to the wire as given —
+    # still deduplicated case-insensitively (a repeat in the path answers 200 [] on the
+    # wire, verified live on lsp-traffic), the first spelling kept.
+    catalogue.mock(return_value=httpx.Response(500, json={"message": "boom"}))
+    text = await call_tool_text(
+        build(make_settings(max_retries=0)),
+        SRV6_TOOL,
+        {"host_name": "PE1", "metrics": "outbitrate, OUTBITRATE", "response_format": "json"},
+    )
+    assert as_given.call_count == 1 and canonical.call_count == 1
+    assert as_given.calls[0].request.url.path.endswith("/graph/outbitrate")
+    data = json.loads(text)
+    assert data["catalogue"] is None and data["metrics"] == ["outbitrate"]
+    assert data["count"] == 0 and data["empty_reason"] == SRV6_EMPTY_POLICY_TEXT
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_empty_states_both_preconditions(make_settings):
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    graph = get(f"{SRV6_GRAPH_URL}/outBitRate", [])
+    policies = get(POLICIES_URL, POLICIES)
+    mcp = build(make_settings(max_retries=0))
+    text = await call_tool_text(
+        mcp, SRV6_TOOL, {"host_name": "PE1", "prefix": "fc00:0:1::", "length": 48}
+    )
+    assert params_of(graph) == {
+        "device": PE1_UUID,
+        "prefix": "fc00:0:1::",
+        "length": "48",
+        "timeInterval": "24",
+        "pageSize": "100",
+        "page": "1",
+    }
+    assert text.startswith(
+        f"No SRv6 locator samples for PE1 ({PE1_UUID}) in last 24 h, prefix fc00:0:1::/48: "
+        f"{SRV6_EMPTY_POLICY_TEXT}; the device must also advertise an SRv6 locator (an "
+        "SR-MPLS-only node has none) — the SRv6 readiness playbook checks both. The platform "
+        "does not validate prefix / length"
+    )
+    assert inventory.call_count == 1 and policies.call_count == 1
+    # With an SRV6LOCATOR policy the empty answer names it and its state.
+    policies.mock(return_value=httpx.Response(200, json=[*POLICIES, SRV6_POLICY_DTO]))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1", "length": 48})
+    assert text.startswith(
+        f"No SRv6 locator samples for PE1 ({PE1_UUID}) in last 24 h, length 48: "
+        "SRV6LOCATOR policies: 5 'srv6-locators' active (collection OK) — check that an "
+        "active one covers this device (cnc_list_performance_policy_devices)"
+    )
+    assert inventory.call_count == 2 and policies.call_count == 2
+    # A later page: the platform answers the same bare [] for a page past the end
+    # (verified live: pageSize=2&page=999 -> []), so the answer is the paging rule, not
+    # the preconditions, and the policy / inventory lookups are skipped.
+    text = await call_tool_text(
+        mcp, SRV6_TOOL, {"host_name": "PE1", "length": 48, "page": 2, "page_size": 50}
+    )
+    assert text == (
+        f"No SRv6 locator samples for PE1 ({PE1_UUID}) in last 24 h, length 48 on page 2: "
+        "page 2 is past the end of every series (page 1 filling page_size 50 is the only "
+        "more-may-exist signal); page 1 shows whether any sample exists."
+    )
+    assert inventory.call_count == 3 and policies.call_count == 2  # the name lookup only
+    text = await call_tool_text(
+        mcp, SRV6_TOOL, {"device_uuid": PE1_UUID, "page": 3, "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 0 and data["page"] == 3 and data["has_more"] is False
+    assert data["empty_reason"].startswith("page 3 is past the end of every series (page 2 ")
+    assert inventory.call_count == 3 and policies.call_count == 2  # no lookup at all
+    # A uuid: the inventory is read (a well-formed unknown uuid answers the same []).
+    text = await call_tool_text(mcp, SRV6_TOOL, {"device_uuid": PE1_UUID})
+    assert text.startswith(
+        f"No SRv6 locator samples for {PE1_UUID} in last 24 h: the device is PE1; "
+        "SRV6LOCATOR policies: 5 'srv6-locators'"
+    )
+    assert params_of(inventory, 3) == {"pageSize": "1000", "page": "1"}  # the whole inventory
+    text = await call_tool_text(mcp, SRV6_TOOL, {"device_uuid": GROUP_UUID})
+    assert text.startswith(
+        f"No SRv6 locator samples for {GROUP_UUID} in last 24 h: device uuid {GROUP_UUID} is "
+        "NOT in the inventory (cnc_list_devices shows the uuids) — the platform answers the "
+        "same empty list for an unknown uuid; SRV6LOCATOR policies"
+    )
+    # The reason is best effort: failing lookups never sink the (empty) answer, and the
+    # non-error answer carries no "Error: " mid-sentence.
+    inventory.mock(return_value=httpx.Response(500, json={"message": "boom"}))
+    policies.mock(return_value=httpx.Response(500, json={"message": "boom"}))
+    text = await call_tool_text(
+        mcp, SRV6_TOOL, {"device_uuid": PE1_UUID, "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 0 and data["entries"] == [] and data["has_more"] is False
+    assert data["empty_reason"].startswith("(inventory check unavailable: API request failed")
+    assert "; (policy check unavailable: API request failed" in data["empty_reason"]
+    assert "Error:" not in data["empty_reason"]
+    text = await call_tool_text(mcp, SRV6_TOOL, {"device_uuid": PE1_UUID})
+    assert text.startswith(f"No SRv6 locator samples for {PE1_UUID} in last 24 h: (inventory ")
+    assert "Error:" not in text
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_refusals_send_nothing(settings):
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    catalogue = get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    graphs = [get(f"{SRV6_GRAPH_URL}/outBitRate", []), get(f"{SRV6_GRAPH_URL}/all", [])]
+    cases = [
+        ({}, "Error: pass exactly one of host_name (e.g. 'PE1') or device_uuid"),
+        ({"host_name": "PE1", "device_uuid": PE1_UUID}, "Error: pass exactly one of host_name"),
+        ({"device_uuid": "not-a-uuid"}, "Error: device_uuid 'not-a-uuid' is not a uuid"),
+        (
+            {"host_name": "PE1", "metrics": "all,outBitRate"},
+            "Error: metrics 'all,outBitRate' mixes",
+        ),
+        ({"host_name": "PE1", "prefix": "not-a-prefix"}, "Error: prefix 'not-a-prefix' is not an"),
+        (
+            {"host_name": "PE1", "prefix": "fc00:0:1::/48", "length": 64},
+            "Error: prefix 'fc00:0:1::/48' says /48 but length=64",
+        ),
+        (
+            {"host_name": "PE1", "prefix": "fc00:0:1::1/48"},
+            "Error: prefix 'fc00:0:1::1/48' has bits set beyond /48",
+        ),
+        (
+            {"host_name": "PE1", "prefix": "fc00:0:1::1", "length": 48},
+            "Error: prefix 'fc00:0:1::1' has bits set beyond /48",
+        ),
+        (
+            {"host_name": "PE1", "metrics": "outBitRate,out/bit"},
+            "Error: metric 'out/bit' is not a metric name (letters, digits and '_' only",
+        ),
+        ({"host_name": "PE1", "from_time": FROM}, "Error: pass both from_time and to_time"),
+        ({"host_name": "PE1", "from_time": TO, "to_time": FROM}, "Error: to_time must be after"),
+        ({"host_name": "PE1", "from_time": FROM, "to_time": FROM}, "Error: to_time must be after"),
+        ({"host_name": "PE1", "from_time": "yesterday", "to_time": TO}, "Error: from_time must"),
+    ]
+    for args, head in cases:
+        text = await call_tool_text(build(settings), SRV6_TOOL, args)
+        assert text.startswith(head), args
+    text = await call_tool_text(build(settings), SRV6_TOOL, {"device_uuid": "not-a-uuid"})
+    assert "would answer 400 DEVICE_UUID_ILLEGAL_ARGUMENT" in text and "Nothing was sent" in text
+    assert inventory.call_count == 0 and catalogue.call_count == 0
+    # An unknown or ambiguous host name: one inventory read, nothing else.
+    inventory.mock(return_value=httpx.Response(200, json={"data": [], "total_count": 0}))
+    text = await call_tool_text(build(settings), SRV6_TOOL, {"host_name": "nope"})
+    assert text == (
+        "Error: no device named 'nope' in the inventory (0 exact host-name matches; "
+        "cnc_list_devices shows host names and uuids — or pass device_uuid). Nothing was sent."
+    )
+    inventory.mock(
+        return_value=httpx.Response(
+            200, json={"data": [DEVICE_PE1, {**DEVICE_PE1, "uuid": PE2_UUID}], "total_count": 2}
+        )
+    )
+    text = await call_tool_text(build(settings), SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        "Error: host name 'PE1' does not identify exactly one device (2 exact match(es); pass "
+        "device_uuid — cnc_list_devices shows both). Nothing was sent."
+    )
+    inventory.mock(
+        return_value=httpx.Response(
+            200, json={"data": [{**DEVICE_PE1, "uuid": None}], "total_count": 1}
+        )
+    )
+    text = await call_tool_text(build(settings), SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        "Error: host name 'PE1' does not identify exactly one device (1 exact match(es), "
+        "without an inventory uuid; pass device_uuid — cnc_list_devices shows both). Nothing "
+        "was sent."
+    )
+    assert inventory.call_count == 3 and catalogue.call_count == 0
+    # An unknown metric is refused against the catalogue (the wire would answer 500).
+    inventory.mock(return_value=httpx.Response(200, json=INVENTORY_PE1))
+    text = await call_tool_text(
+        build(settings), SRV6_TOOL, {"host_name": "PE1", "metrics": "outBitRate,bogusMetric"}
+    )
+    assert text.startswith(
+        "Error: unknown SRv6 locator metric 'bogusMetric': the platform's srv6locator catalogue "
+        "has outBitRate (GET dashboards/srv6locator/metrics; 'all' selects every metric). The "
+        "wire answers 500 for an unknown metric and silently drops one sent next to a known "
+        "metric. Nothing was sent."
+    )
+    assert catalogue.call_count == 1
+    for graph in graphs:
+        assert graph.call_count == 0
+
+
+@respx.mock
+async def test_get_srv6_locator_statistics_platform_errors(make_settings):
+    get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    catalogue = get(SRV6_METRICS_URL, SRV6_CATALOGUE)
+    graph = get(f"{SRV6_GRAPH_URL}/outBitRate", DEVICE_UUID_ILLEGAL, 400)
+    policies = get(POLICIES_URL, POLICIES)
+    mcp = build(make_settings(max_retries=0))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        f"Error: the platform rejected device '{PE1_UUID}' as not a uuid "
+        "(DEVICE_UUID_ILLEGAL_ARGUMENT). Pass the inventory uuid (cnc_list_devices) or host_name."
+    )
+    graph.mock(return_value=httpx.Response(400, json=MISSING_TIME))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        "Error: the platform needs a time window (MISSING_TIME_DETAILS). Pass hours, or both "
+        "from_time and to_time."
+    )
+    graph.mock(return_value=httpx.Response(400, json=WRONG_START_END))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        "Error: the platform needs to_time after from_time (WRONG_START_END_TIME). Swap or "
+        "widen the window."
+    )
+    # The unknown-metric 500 (only reachable when the catalogue disagrees with the graph
+    # endpoint, or could not be read) is explained, not reported as a server error.
+    graph.mock(return_value=httpx.Response(500, json=UNKNOWN_METRIC_500))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text == (
+        "Error: the platform knows none of the metrics outBitRate (its 500 'Failed to find any "
+        "of the given metrics'); the srv6locator catalogue (GET dashboards/srv6locator/metrics) "
+        "has outBitRate; pass 'all' for every metric."
+    )
+    catalogue.mock(return_value=httpx.Response(500, json={"message": "boom"}))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text.endswith(
+        "could not be read — on 7.2 it is outBitRate; pass 'all' for every metric."
+    )
+    # Any other failure is the generic error; the policy list is never read for an error.
+    graph.mock(return_value=httpx.Response(500, json={"message": "boom"}))
+    text = await call_tool_text(mcp, SRV6_TOOL, {"host_name": "PE1"})
+    assert text.startswith("Error: API request failed with status 500.")
+    assert policies.call_count == 0
+
+
+@respx.mock
+async def test_get_statistics_srv6locator_empty_hint_and_bad_metric(settings):
+    route = get(STATISTICS_URL, {"schema": "SRV6LOCATOR", "page": 1, "records": 0, "entries": []})
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "srv6locator"}
+    )
+    assert params_of(route)["schema"] == "SRV6LOCATOR"
+    assert text.startswith("No SRV6LOCATOR statistics for last 24 h (page 1).")
+    assert text.endswith(
+        "SRV6LOCATOR needs an active SRV6LOCATOR policy (cnc_create_performance_policy template "
+        "SRV6LOCATOR) AND a device that advertises an SRv6 locator; "
+        "cnc_get_srv6_locator_statistics graphs one device's locators and says which "
+        "precondition is missing."
+    )
+    route.mock(return_value=httpx.Response(200, json=STATISTICS_EMPTY))
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "CPU"}
+    )
+    assert "SRV6LOCATOR" not in text
+    # Verified live 2026-09-15: the statistics dashboard validates ``metrics`` (the graph
+    # does not) with the unexpanded "Policy {0} or metric {1} do not exist".
+    route.mock(
+        return_value=httpx.Response(
+            400,
+            json=envelope(
+                "INVALID_SCHEMA_METRIC_COMBO",
+                "Policy {0} or metric {1} do not exist",
+                "SRV6LOCATOR",
+                "bogus",
+            ),
+        )
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "SRV6LOCATOR", "metrics": "bogus"},
+    )
+    guidance = (
+        "The platform matches metric names case-insensitively and echoes your spelling in the "
+        "row keys; use the catalogue spelling — cnc_list_performance_policy_templates lists "
+        "every schema with its metrics."
+    )
+    assert text == (
+        f"Error: schema SRV6LOCATOR has no metric named bogus (INVALID_SCHEMA_METRIC_COMBO). "
+        f"{guidance}"
+    )
+    # A mixed list: the platform's envelope names the ONE unknown metric (parameters
+    # [schema, metric]) whatever the order sent — verified live 2026-09-15 with
+    # cpuUtilization,bogus and bogus,cpuUtilization -> ["CPU", "bogus"] — so the valid
+    # name is never blamed.
+    route.mock(
+        return_value=httpx.Response(
+            400,
+            json=envelope(
+                "INVALID_SCHEMA_METRIC_COMBO",
+                "Policy {0} or metric {1} do not exist",
+                "CPU",
+                "bogus",
+            ),
+        )
+    )
+    for metrics in ("cpuUtilization,bogus", "bogus, cpuUtilization"):
+        text = await call_tool_text(
+            build(settings),
+            "cnc_get_performance_statistics",
+            {"schema": "CPU", "metrics": metrics},
+        )
+        assert text == (
+            f"Error: schema CPU has no metric named bogus (INVALID_SCHEMA_METRIC_COMBO). {guidance}"
+        ), metrics
+    # Should the envelope carry no parameters, a list is reported as a list, one name as
+    # that name — never a valid name as "unknown".
+    route.mock(
+        return_value=httpx.Response(
+            400,
+            json=envelope("INVALID_SCHEMA_METRIC_COMBO", "Policy {0} or metric {1} do not exist"),
+        )
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_performance_statistics",
+        {"schema": "CPU", "metrics": "cpuUtilization,bogus"},
+    )
+    assert text == (
+        "Error: at least one of the metrics cpuUtilization, bogus is not a metric of schema CPU "
+        f"(INVALID_SCHEMA_METRIC_COMBO). {guidance}"
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "CPU", "metrics": "bogus"}
+    )
+    assert text == (
+        f"Error: schema CPU has no metric named bogus (INVALID_SCHEMA_METRIC_COMBO). {guidance}"
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_performance_statistics", {"schema": "CPU"}
+    )
+    assert text.startswith(
+        "Error: schema CPU has no metric named (none given) (INVALID_SCHEMA_METRIC_COMBO)."
+    )
+
+
+@respx.mock
+async def test_list_policy_templates_srv6locator_has_no_unit(settings):
+    get(TEMPLATES_URL, {**TEMPLATES, "SRV6LOCATOR": SRV6_LOCATOR_TEMPLATE})
+    text = await call_tool_text(build(settings), "cnc_list_performance_policy_templates", {})
+    assert text.startswith("# 5 performance policy templates\n")
+    assert (
+        "\n## SRV6LOCATOR (port groups not supported)\n- SRV6LOCATOR — default 900 s, allowed "
+        "0/300/600/900/1800/3600 s: outBitRate (-)\n"
+    ) in text
+    text = await call_tool_text(
+        build(settings), "cnc_list_performance_policy_templates", {"response_format": "json"}
+    )
+    srv6 = json.loads(text)["templates"][4]
+    assert srv6["template"] == "SRV6LOCATOR" and srv6["port_group_supported"] is False
+    assert srv6["schemas"] == {
+        "SRV6LOCATOR": {
+            "outBitRate": {"unit": None, "min": None, "max": None, "tca_enabled": False}
+        }
+    }
+    assert srv6["schemas_interval"]["SRV6LOCATOR"]["defaultInterval"] == 900

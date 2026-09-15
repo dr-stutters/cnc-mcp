@@ -109,6 +109,53 @@ the error texts):
   ``address-allocation-type`` are NSO-REMOVED); ``vpn-node-id`` is the NSO
   device name and there is no ``ne-id``.
 
+SRv6 (verified 2026-09-15 in ``?dry-run=native`` ONLY — the lab had no SRv6
+underlay: no locators, no IPv6 loopbacks; what is verified is the CFPs'
+validation and the NED rendering, never device behaviour). The SR-TE CFP's
+shared ``srv6-grp`` (``cisco-sr-te-cfp-sr-common``) hangs ``srv6 {presence} /
+locator {presence} / locator-name (string 1..64, mandatory)`` off ``policy``
+and ``odn-template``; its ``behavior`` (only ``ub6-insert-reduced``) and
+``binding-sid-type`` (only ``srv6-dynamic``) are single-value enums with
+those defaults, so the tools never send them (sending them explicitly
+rendered byte-identical CLI). ``cnc_create_sr_policy_service``,
+``cnc_create_odn_template`` and ``cnc_create_l3vpn_service`` take
+``srv6_locator`` (the L3NM one also per endpoint); each docstring carries the
+CLI the dry run rendered through that very tool. The CFP rules, each seen as
+a live ``400`` and each refused by the tools BEFORE anything is sent: an
+SRv6 policy needs an IPv6 tail-end and an IPv6 tail-end needs ``srv6``
+(``invalid-value`` "tail-end must be IPv6 address for SRv6 TE policy" /
+"SRv6 TE policy must be configured if tail-end is IPv6 address"; the ODN
+template has the same rule for an IPv6 ``source-address``); the explicit
+path, ``bandwidth`` and ``binding-sid`` are ``when "not(../srv6)"`` (each a
+live ``400 malformed-message`` ".../<leaf>: the 'when' expression
+\\"not(../srv6)\\" failed"); the YANG puts the same when-rule on
+``auto-route``, not exercised — no tool sends it. ``srv6-dynamic`` is NOT a
+path type (an SRv6 policy is the srv6 container plus an ordinary ``dynamic``
+path; sending it as one is ``400 unknown-element``). The bare presence form
+``"srv6": {}`` (no locator: the router's default locator) is accepted by
+both CFPs — dry-run rendered as a bare ``srv6`` block, device behaviour not
+verified — and is not an argument of any tool: send it through
+``cnc_provision_service``. The L3NM's ``cisco-l3vpn-ntw:srv6
+{address-family [{name, locator-name?}]}`` (``min-elements 1``) sits on the
+vpn-instance-profile (service-wide) and on each vpn-node's
+active-vpn-instance-profile entry (per node; the node entry wins — verified).
+NSO validates NEITHER the locator name NOR the IPv6 tail-end against the
+routers or the topology (``LOC1`` / ``2001:db8::3`` existed nowhere and
+rendered fine): a committed SRv6 service only comes up once the head-end
+holds that locator and reaches that loopback — read the dry run, then check
+the underlay (``cnc_get_topology_node``) before committing. The IPv6
+tail-end goes on the wire canonical (lowercase, compressed:
+``2001:DB8:0:0::3`` -> ``2001:db8::3``, the spelling NSO renders into the
+policy name — dry-run verified). ``cnc_update_sr_policy_service`` only
+merges ``bandwidth`` / ``binding-sid`` (both ``when "not(../srv6)"`` —
+refused by the CFP on an SRv6 policy); it cannot add ``srv6``. Whether a
+hand-built PATCH of ``tail-end`` + ``srv6`` through ``cnc_provision_service``
+converts a committed SR-MPLS policy was NOT tested (no commit was allowed);
+the supported path is re-running ``cnc_create_sr_policy_service`` — the PUT
+replaces the entry and the CFP renames the policy with the new tail-end.
+Until the underlay exists every SRv6 fact here is dry-run rendered, not
+device-proven.
+
 Retries: PUT and DELETE are idempotent and keep the client's default retry on
 5xx/transport errors (a re-PUT after a lost answer only reports "replaced"
 instead of "created"); PATCH and the resync POST are sent once. No write here
@@ -218,6 +265,15 @@ VPN_LAYERS = ("l3", "l2")
 WRITE_METHODS = ("put", "patch")
 ROUTE_TARGET_TYPE = "both"
 MAX_MPLS_LABEL = 1048575
+# SRv6 (dry-run verified 2026-09-15; see the module docstring). The SR-TE CFP's ``srv6-grp``
+# (cisco-sr-te-cfp-sr-common, shared by ``policy`` and ``odn-template``): ``srv6 {presence}
+# / locator {presence} / locator-name string 1..64 (mandatory)``; ``behavior`` and
+# ``binding-sid-type`` are single-value enums (``ub6-insert-reduced`` / ``srv6-dynamic``,
+# both defaults) and are never sent. The L3NM augments ``cisco-l3vpn-ntw:srv6 {
+# address-family [{name, locator-name?}] }`` onto the vpn-instance-profile (service-wide)
+# and onto each vpn-node's active-vpn-instance-profile (per node; the node entry wins).
+SRV6_LOCATOR_MAX = 64
+L3VPN_SRV6_KEY = "cisco-l3vpn-ntw:srv6"
 
 # Verified NSO error spellings, matched against error-message + error-path.
 _HEAD_END_REF = re.compile(r"head-end\{([^}]*)\}/name")
@@ -230,7 +286,26 @@ _SID_LIST_REF = re.compile(r"sid-list\{([^}]*)\}/name")
 _OUT_OF_SYNC = re.compile(r"device\s+(\S+?):\s+out of sync", re.IGNORECASE)
 _STATUS_CODE = re.compile(r"STATUS_CODE:\s*(\S+)")
 _REASON = re.compile(r"REASON:\s*(.+)")
-_ENDPOINT_KEYS = frozenset({"node", "interface", "address", "prefix_length", "local_as", "id"})
+# Verified SRv6 CFP refusals (2026-09-15, ?dry-run=native — CFP validation runs in a dry run):
+# the two ``must`` rules pairing an IPv6 tail-end / source-address with the srv6 container
+# (``400 invalid-value``), the ``when "not(../srv6)"`` leaves (``400 malformed-message`` naming
+# the leaf in the message path: ``.../binding-sid``, ``.../bandwidth``, ``.../path{100}/
+# explicit``), the mandatory locator-name and the L3NM's ``min-elements 1`` address-family.
+_SRV6_NEEDS_IPV6_TAIL = "tail-end must be IPv6 address for SRv6 TE policy"
+_SRV6_REQUIRED = re.compile(
+    r"SRv6 TE policy must be configured if (tail-end|source-address) is IPv6 address"
+)
+_SRV6_WHEN = re.compile(r"/([^/:]+): the 'when' expression \"not\(\.\./srv6\)\" failed")
+_SRV6_WHEN_LEAVES = {
+    "binding-sid": "binding_sid",
+    "bandwidth": "bandwidth_kbps",
+    "explicit": "an explicit path (path_type='explicit' / sid_list)",
+}
+_SRV6_LOCATOR_NAME_MISSING = "srv6/locator/locator-name is not configured"
+_SRV6_L3NM_NO_AF = re.compile(r"too few .*srv6/address-family")
+_ENDPOINT_KEYS = frozenset(
+    {"node", "interface", "address", "prefix_length", "local_as", "id", "srv6_locator"}
+)
 _ENDPOINT_REQUIRED = ("node", "interface", "address", "prefix_length")
 _ENDPOINT_EXAMPLE = (
     '[{"node": "PE1", "interface": "Loopback91", "address": "10.91.1.1", "prefix_length": 30}]'
@@ -421,17 +496,48 @@ def parse_labels(text: str) -> list[int]:
 
 
 def require_ip(value: str, what: str) -> str:
-    """``value`` as an IPv4/IPv6 address text; PlatformError when it is not one."""
+    """``value`` as a canonical IP address text: IPv4 unchanged, IPv6 lowercase and
+    compressed (``2001:DB8:0:0::3`` -> ``2001:db8::3`` — the form NSO renders into the
+    CFP's policy name ``srte_c_<color>_ep_<tail-end>`` and the ``end-point ipv6`` line,
+    dry-run verified 2026-09-15, so the body, the name and the hints all agree).
+    PlatformError when it is not an IP address, or when it carries a zone id
+    (``2001:db8::3%eth0`` — :mod:`ipaddress` accepts one, no tail-end takes one)."""
     text = value.strip()
+    if "%" in text:
+        raise PlatformError(
+            f"{what} '{value}' carries a zone id ('%...'), which no tail-end takes: give the "
+            "bare address (e.g. 2001:db8::3)."
+        )
     try:
-        ipaddress.ip_address(text)
+        return str(ipaddress.ip_address(text))
     except ValueError:
         raise PlatformError(
             f"{what} '{value}' is not an IP address. Give the TE router-id (the Loopback0 "
             "address the topology reports, e.g. 10.0.0.3) — not a host name and not the "
             "management address; look it up with cnc_get_topology_node."
         ) from None
-    return text
+
+
+def locator_name(value: str, what: str) -> str:
+    """An SRv6 locator name as the CFPs take it: stripped, 1..64 characters, no whitespace
+    (``srv6-grp`` / ``srv6-grouping`` type it ``string 1..64``; NSO does NOT check it
+    against the routers — a name no device holds renders fine and only fails on the
+    box). PlatformError otherwise."""
+    name = value.strip()
+    if not name or len(name) > SRV6_LOCATOR_MAX or any(ch.isspace() for ch in name):
+        raise PlatformError(
+            f"{what} '{value}' must be an SRv6 locator name of 1..{SRV6_LOCATOR_MAX} characters "
+            "without whitespace (the name under 'segment-routing srv6 locators' on the "
+            "router, e.g. 'LOC1')."
+        )
+    return name
+
+
+def _is_ipv6(text: str) -> bool:
+    try:
+        return ipaddress.ip_address(text.strip()).version == 6
+    except ValueError:
+        return False
 
 
 def parse_endpoints(text: str) -> list[dict[str, Any]]:
@@ -439,8 +545,10 @@ def parse_endpoints(text: str) -> list[dict[str, Any]]:
 
     Each endpoint needs ``node`` (NSO device name), ``interface`` (e.g.
     ``Loopback91``), ``address`` (IPv4) and ``prefix_length`` (0..32);
-    optional ``local_as`` (1..4294967295) and ``id`` (the access id, default
-    the endpoint's ordinal within its node). A single object is accepted as a
+    optional ``local_as`` (1..4294967295), ``id`` (the access id, default
+    the endpoint's ordinal within its node) and ``srv6_locator`` (the node's
+    SRv6 locator name, 1..64 characters — a per-node override of the
+    service-wide ``srv6_locator``). A single object is accepted as a
     one-entry list. PlatformError names the offending endpoint and key —
     unknown keys are refused too, so a mis-spelt key cannot vanish silently.
     """
@@ -495,6 +603,10 @@ def parse_endpoints(text: str) -> list[dict[str, Any]]:
             )
         if item.get("id") not in (None, ""):
             endpoint["id"] = str(item["id"]).strip()
+        if item.get("srv6_locator") not in (None, ""):
+            endpoint["srv6_locator"] = locator_name(
+                str(item["srv6_locator"]), f"endpoints[{index}].srv6_locator"
+            )
         endpoints.append(endpoint)
     return endpoints
 
@@ -597,6 +709,14 @@ def resolve_type_path(service_type: str) -> str:
 # --- pure helpers: bodies (verified shapes) --------------------------------------------
 
 
+def srv6_block(locator: str) -> dict[str, Any]:
+    """The SR-TE CFP's ``srv6`` container for a locator name: ``{"locator": {"locator-name":
+    <name>}}`` — ``behavior`` (only ``ub6-insert-reduced``) and ``binding-sid-type`` (only
+    ``srv6-dynamic``) are left to their defaults (verified: sending them explicitly renders
+    byte-identical CLI)."""
+    return {"locator": {"locator-name": locator}}
+
+
 def build_odn_template_body(
     name: str,
     color: int,
@@ -606,8 +726,21 @@ def build_odn_template_body(
     bandwidth_kbps: int,
     maximum_sid_depth: int,
     flex_algo: int,
+    srv6_locator: str = "",
 ) -> dict[str, Any]:
-    """``{"cisco-sr-te-cfp-sr-odn:odn-template": [{...}]}`` — the verified PUT body."""
+    """``{"cisco-sr-te-cfp-sr-odn:odn-template": [{...}]}`` — the verified PUT body.
+
+    ``srv6_locator`` adds ``"srv6": {"locator": {"locator-name": ...}}`` (dry-run
+    verified 2026-09-15); PlatformError with ``bandwidth_kbps`` beside it — the
+    ODN model's ``bandwidth`` is ``when "not(../srv6)"``.
+    """
+    locator = locator_name(srv6_locator, "srv6_locator") if srv6_locator.strip() else ""
+    if locator and bandwidth_kbps:
+        raise PlatformError(
+            "srv6_locator and bandwidth_kbps are incompatible: the ODN model allows bandwidth "
+            'only without srv6 (when "not(../srv6)" — SR-MPLS only in this release). Drop '
+            "bandwidth_kbps for an SRv6 template, or srv6_locator for SR-MPLS."
+        )
     dynamic: dict[str, Any] = {"metric-type": metric_type}
     if delegate_to_pce:
         dynamic["pce"] = {}
@@ -619,6 +752,8 @@ def build_odn_template_body(
         "head-end": [{"name": head_end} for head_end in head_ends],
         "dynamic": dynamic,
     }
+    if locator:
+        entry["srv6"] = srv6_block(locator)
     if bandwidth_kbps:
         entry["bandwidth"] = bandwidth_kbps
     if maximum_sid_depth:
@@ -638,13 +773,65 @@ def build_sr_policy_body(
     sid_list: str,
     bandwidth_kbps: int,
     binding_sid: int,
+    srv6_locator: str = "",
 ) -> dict[str, Any]:
     """``{"cisco-sr-te-cfp-sr-policies:policy": [{...}]}`` — the verified PUT body.
 
     ``path_type`` ``dynamic`` -> ``{"preference", "dynamic": {"metric-type", "pce": {}}}``;
     ``explicit`` -> ``{"preference", "explicit": {"sid-list": [{"name": sid_list}]}}``
     (PlatformError without a ``sid_list``, or with one on a dynamic path).
+
+    ``srv6_locator`` adds ``"srv6": {"locator": {"locator-name": ...}}`` and enforces
+    the SR-TE CFP's SRv6 rules BEFORE anything is sent (each one verified as a
+    400 from the CFP in dry-run, 2026-09-15): the tail-end must be IPv6
+    (``must "not(srv6) or contains(string(tail-end),':')"``); an IPv6 tail-end
+    conversely needs the srv6 container (``must "not(contains(string(tail-end),
+    ':')) or srv6"``); the explicit path, ``bandwidth`` and ``binding-sid`` are
+    ``when "not(../srv6)"``. ``srv6-dynamic`` is not a path type (it is the only
+    value of ``srv6/locator/binding-sid-type``): an SRv6 policy is the srv6
+    container plus an ordinary ``dynamic`` candidate path.
     """
+    locator = locator_name(srv6_locator, "srv6_locator") if srv6_locator.strip() else ""
+    ipv6_tail = _is_ipv6(tail_end)
+    if locator:
+        if not ipv6_tail:
+            raise PlatformError(
+                f"srv6_locator makes this an SRv6 policy, and an SRv6 policy needs an IPv6 "
+                f"tail_end (the SR-TE CFP rule: 'tail-end must be IPv6 address for SRv6 TE "
+                f"policy'); tail_end '{tail_end}' is IPv4. Give the tail-end's IPv6 loopback "
+                "(e.g. 2001:db8::3), or drop srv6_locator for an SR-MPLS policy."
+            )
+        if path_type != "dynamic":
+            raise PlatformError(
+                "srv6_locator needs path_type='dynamic': an SRv6 policy takes a dynamic "
+                "candidate path only — the explicit path (sid_list), bandwidth_kbps and "
+                "binding_sid are SR-MPLS only in this release (the model's when "
+                "\"not(../srv6)\"). 'srv6-dynamic' is not a path type: it is the policy's "
+                "(only) binding-sid-type, applied automatically."
+            )
+        if bandwidth_kbps or binding_sid:
+            offending = " and ".join(
+                what
+                for what, given in (
+                    ("bandwidth_kbps", bandwidth_kbps),
+                    ("binding_sid", binding_sid),
+                )
+                if given
+            )
+            raise PlatformError(
+                f"{offending} cannot be set on an SRv6 policy (the model's bandwidth and "
+                'binding-sid are when "not(../srv6)" — SR-MPLS only in this release; the '
+                "SRv6 binding SID is always dynamic). Use 0, or drop srv6_locator for SR-MPLS."
+            )
+    elif ipv6_tail:
+        raise PlatformError(
+            f"tail_end '{tail_end}' is IPv6, which makes this an SRv6 policy (the SR-TE CFP "
+            "rule: 'SRv6 TE policy must be configured if tail-end is IPv6 address'): give "
+            "srv6_locator — the head-end's SRv6 locator name, e.g. 'LOC1' — or an IPv4 "
+            "tail_end for an SR-MPLS policy. For the router's default locator (the bare "
+            'presence form "srv6": {} — dry-run verified, device behaviour not) send the '
+            "body through cnc_provision_service."
+        )
     path: dict[str, Any] = {"preference": preference}
     if path_type == "explicit":
         if not sid_list.strip():
@@ -670,6 +857,8 @@ def build_sr_policy_body(
         "color": color,
         "path": [path],
     }
+    if locator:
+        entry["srv6"] = srv6_block(locator)
     if bandwidth_kbps:
         entry["bandwidth"] = bandwidth_kbps
     if binding_sid:
@@ -687,8 +876,8 @@ def build_sr_policy_patch(name: str, bandwidth_kbps: int, binding_sid: int) -> d
     if len(entry) == 1:
         raise PlatformError(
             "Nothing to update: give bandwidth_kbps and/or binding_sid (non-zero). To change "
-            "the path, head-end, tail-end or color, re-create the service with "
-            "cnc_create_sr_policy_service (a PUT replaces the whole entry)."
+            "the path, head-end, tail-end, color or the SRv6 locator, re-create the service "
+            "with cnc_create_sr_policy_service (a PUT replaces the whole entry)."
         )
     return {f"{SR_POLICIES_MODULE}:policy": [entry]}
 
@@ -707,6 +896,7 @@ def build_l3vpn_body(
     endpoints: list[dict[str, Any]],
     topology: str,
     profile_id: str,
+    srv6_locator: str = "",
 ) -> dict[str, Any]:
     """``{"ietf-l3vpn-ntw:vpn-service": [{...}]}`` — the verified L3NM body.
 
@@ -715,7 +905,17 @@ def build_l3vpn_body(
     (``local-as`` from the first endpoint of that node that gives one — a
     conflicting second value is refused), one ``vpn-network-access`` per
     endpoint under its node (ids default to 1, 2, ... per node).
+
+    SRv6 (dry-run verified 2026-09-15): ``srv6_locator`` puts ``"cisco-l3vpn-ntw:
+    srv6": {"address-family": [{"name": "ietf-vpn-common:ipv4", "locator-name":
+    ...}]}`` on the profile (service-wide; the list mirrors the profile's one
+    ipv4 address-family — an entry for an address-family the profile lacks is
+    silently ignored by the CFP), and an endpoint's ``srv6_locator`` puts the
+    same container on that node's ``active-vpn-instance-profiles`` entry
+    (per node; a node-level entry overrides the profile-level one — verified;
+    two endpoints of one node giving different names are refused).
     """
+    service_locator = locator_name(srv6_locator, "srv6_locator") if srv6_locator.strip() else ""
     nodes: dict[str, dict[str, Any]] = {}
     for endpoint in endpoints:
         node = nodes.get(endpoint["node"])
@@ -736,6 +936,16 @@ def build_l3vpn_body(
                     f"({node['local-as']} and {local_as}); local-as is per node."
                 )
             node["local-as"] = local_as
+        node_locator = endpoint.get("srv6_locator")
+        if node_locator:
+            active = node["active-vpn-instance-profiles"]["vpn-instance-profile"][0]
+            held = active.get(L3VPN_SRV6_KEY, {}).get("address-family", [{}])[0].get("locator-name")
+            if held is not None and held != node_locator:
+                raise PlatformError(
+                    f"endpoints on node '{endpoint['node']}' give different srv6_locator values "
+                    f"('{held}' and '{node_locator}'); the locator is per node."
+                )
+            active[L3VPN_SRV6_KEY] = l3vpn_srv6_block(node_locator)
         accesses = node["vpn-network-accesses"]["vpn-network-access"]
         accesses.append(
             {
@@ -755,37 +965,57 @@ def build_l3vpn_body(
             ordered.update((k, v) for k, v in node.items() if k not in ordered)
             node.clear()
             node.update(ordered)
+    profile: dict[str, Any] = {
+        "profile-id": profile_id,
+        "rd": route_distinguisher,
+        "address-family": [
+            {
+                "address-family": f"{VPN_COMMON_MODULE}:ipv4",
+                "vpn-targets": {
+                    "vpn-target": [
+                        {
+                            "id": 1,
+                            "route-targets": [{"route-target": route_target}],
+                            "route-target-type": ROUTE_TARGET_TYPE,
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    if service_locator:
+        profile[L3VPN_SRV6_KEY] = l3vpn_srv6_block(service_locator)
     return {
         f"{L3VPN_MODULE}:vpn-service": [
             {
                 "vpn-id": vpn_id,
                 "vpn-service-topology": f"{VPN_COMMON_MODULE}:{topology}",
-                "vpn-instance-profiles": {
-                    "vpn-instance-profile": [
-                        {
-                            "profile-id": profile_id,
-                            "rd": route_distinguisher,
-                            "address-family": [
-                                {
-                                    "address-family": f"{VPN_COMMON_MODULE}:ipv4",
-                                    "vpn-targets": {
-                                        "vpn-target": [
-                                            {
-                                                "id": 1,
-                                                "route-targets": [{"route-target": route_target}],
-                                                "route-target-type": ROUTE_TARGET_TYPE,
-                                            }
-                                        ]
-                                    },
-                                }
-                            ],
-                        }
-                    ]
-                },
+                "vpn-instance-profiles": {"vpn-instance-profile": [profile]},
                 "vpn-nodes": {"vpn-node": list(nodes.values())},
             }
         ]
     }
+
+
+def l3vpn_srv6_block(locator: str) -> dict[str, Any]:
+    """The L3NM ``cisco-l3vpn-ntw:srv6`` container for this tool's single ipv4 address-family:
+    ``{"address-family": [{"name": "ietf-vpn-common:ipv4", "locator-name": <name>}]}`` (the
+    verified profile-level and node-level shape; the flat ``{"locator-name"}`` form the SR-TE
+    CFP uses is ``400 unknown-element`` here)."""
+    return {"address-family": [{"name": f"{VPN_COMMON_MODULE}:ipv4", "locator-name": locator}]}
+
+
+def _l3vpn_uses_srv6(body: dict[str, Any]) -> bool:
+    """True when the built L3NM body carries an srv6 container on the profile or on any node."""
+    service = body[f"{L3VPN_MODULE}:vpn-service"][0]
+    profiles = service["vpn-instance-profiles"]["vpn-instance-profile"]
+    if any(L3VPN_SRV6_KEY in profile for profile in profiles):
+        return True
+    return any(
+        L3VPN_SRV6_KEY in active
+        for node in service["vpn-nodes"]["vpn-node"]
+        for active in node["active-vpn-instance-profiles"]["vpn-instance-profile"]
+    )
 
 
 # --- pure helpers: responses ----------------------------------------------------------
@@ -810,9 +1040,17 @@ def explain_write_failure(
     out-of-model body node (``400 unknown-element``), a CFP validation
     verdict (``400 malformed-message`` with ``STATUS_CODE: TSDN-...`` /
     ``REASON: ...`` lines), a head-end out of sync (``502 operation-failed
-    "... device X: out of sync"``) and a missing entry on DELETE (``404``
-    ``uri keypath not found``). Any other RESTCONF error document falls back
-    to :func:`cnc_mcp.restconf.restconf_error_message`.
+    "... device X: out of sync"``), a missing entry on DELETE (``404``
+    ``uri keypath not found``) and on PATCH (``404 invalid-value "patch to a
+    nonexistent resource"``, verified 2026-09-15), and the SRv6 rules of the
+    SR-TE CFP / L3NM (verified in dry-run 2026-09-15): ``400 invalid-value``
+    "tail-end must be IPv6 address for SRv6 TE policy" / "SRv6 TE policy must
+    be configured if tail-end|source-address is IPv6 address", ``400
+    malformed-message`` ".../<leaf>: the 'when' expression \\"not(../srv6)\\"
+    failed" (``binding-sid``, ``bandwidth``, ``path{N}/explicit``), ".../srv6/
+    locator/locator-name is not configured" and the L3NM's "too few .../srv6/
+    address-family, 0 configured". Any other RESTCONF error document falls
+    back to :func:`cnc_mcp.restconf.restconf_error_message`.
     """
     errors = parse_restconf_errors(data)
     if not errors:
@@ -821,6 +1059,10 @@ def explain_write_failure(
         tag = (err["tag"] or "").lower()
         message = err["message"] or ""
         haystack = f"{message} {err['path'] or ''}"
+        if status == 400 and tag == "invalid-value":
+            srv6 = _explain_srv6_rule(message)
+            if srv6:
+                return srv6
         if status == 400 and tag == "invalid-value" and "illegal reference" in message:
             for what, pattern in (("head-end", _HEAD_END_REF), ("vpn-node", _VPN_NODE_REF)):
                 found = pattern.search(haystack)
@@ -863,6 +1105,10 @@ def explain_write_failure(
                     "'router bgp <asn>' on the device first."
                 )
             return text
+        if status == 400 and tag == "malformed-message":
+            srv6 = _explain_srv6_rule(message)
+            if srv6:
+                return srv6
         if status == 502 and "out of sync" in message.lower():
             found = _OUT_OF_SYNC.search(message)
             device = found.group(1) if found else "the head-end"
@@ -873,6 +1119,54 @@ def explain_write_failure(
         if status == 404 and method in ("DELETE", "GET", "PATCH"):
             return f"no {target.label} (names are exact and case-sensitive)."
     return restconf_error_message(status, data)
+
+
+def _explain_srv6_rule(message: str) -> str | None:
+    """The agent-facing text for one of the verified SRv6 CFP refusals in ``message``, or
+    None. The tools' own pre-flight refuses every shape that triggers these before sending,
+    so they are reached through cnc_provision_service / cnc_update_sr_policy_service (a
+    PATCH of bandwidth or binding-sid onto an SRv6 policy) or a CFP newer than the one
+    verified."""
+    if _SRV6_NEEDS_IPV6_TAIL in message:
+        return (
+            "an SRv6 policy (the srv6 container / srv6_locator) needs an IPv6 tail-end — the "
+            "SR-TE CFP refuses an IPv4 one ('tail-end must be IPv6 address for SRv6 TE "
+            "policy'): give the tail-end's IPv6 loopback (e.g. 2001:db8::3) as tail_end, or "
+            "drop srv6_locator for an SR-MPLS policy."
+        )
+    found = _SRV6_REQUIRED.search(message)
+    if found:
+        leaf = found.group(1)
+        kind = "policy" if leaf == "tail-end" else "ODN template"
+        return (
+            f"an IPv6 {leaf} makes this an SRv6 {kind}, and the SR-TE CFP then requires the "
+            f"srv6 container ('SRv6 TE policy must be configured if {leaf} is IPv6 address'): "
+            "give srv6_locator (the head-end's SRv6 locator name, e.g. 'LOC1'), or an IPv4 "
+            f"{leaf} for SR-MPLS."
+        )
+    found = _SRV6_WHEN.search(message)
+    if found:
+        leaf = found.group(1)
+        what = _SRV6_WHEN_LEAVES.get(leaf, leaf)
+        return (
+            f"{what} is not allowed on an SRv6 policy or template (the model's when "
+            '"not(../srv6)": explicit paths, bandwidth, binding-sid and auto-route are '
+            "SR-MPLS only in this release; the SRv6 binding SID is always dynamic). Drop it, "
+            "or drop srv6_locator for SR-MPLS."
+        )
+    if _SRV6_LOCATOR_NAME_MISSING in message:
+        return (
+            "the srv6 locator container needs its mandatory locator-name: give srv6_locator "
+            "(the head-end's SRv6 locator name, e.g. 'LOC1'; NSO does not check it against "
+            "the router)."
+        )
+    if _SRV6_L3NM_NO_AF.search(message):
+        return (
+            "the L3NM srv6 container needs at least one address-family entry "
+            '({"address-family": [{"name": "ietf-vpn-common:ipv4", "locator-name": '
+            "...}]}); cnc_create_l3vpn_service's srv6_locator builds it."
+        )
+    return None
 
 
 def dry_run_devices(data: Any) -> list[DryRunDevice] | None:
@@ -1199,10 +1493,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 le=255,
             ),
         ] = 0,
+        srv6_locator: Annotated[
+            str,
+            Field(
+                description="SRv6 template: the head-ends' SRv6 locator name (e.g. 'LOC1' — the "
+                "name under 'segment-routing srv6 locators' on the routers), sent as "
+                "srv6/locator/locator-name; the on-demand policies then get a dynamic SRv6 "
+                "binding SID with behavior ub6-insert-reduced. Incompatible with "
+                "bandwidth_kbps. Blank (default) = SR-MPLS template.",
+                max_length=SRV6_LOCATOR_MAX,
+            ),
+        ] = "",
         dry_run: Annotated[bool, Field(description=_DRY_RUN_DESC)] = False,
     ) -> str:
         """Create (or replace) an SR-TE On-Demand Next-hop template on one or more head-ends
-        through NSO's SR-TE function pack.
+        through NSO's SR-TE function pack — SR-MPLS, or SRv6 with ``srv6_locator``.
 
         WRITE / DESTRUCTIVE — only registered when CNC_MCP_ENABLE_WRITES=true;
         destructive because a PUT of a name that already exists replaces that
@@ -1227,12 +1532,56 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         action='sync-from', host_name=...)`` fixes it; the 502 error text says
         which device).
 
+        SRv6 (``srv6_locator``; verified 2026-09-15 in dry run through this
+        tool — the lab has no SRv6 underlay yet, so the rendering is verified,
+        device behaviour is not): the body gains ``"srv6": {"locator":
+        {"locator-name": <srv6_locator>}}`` and NSO renders, on every
+        head-end (``head_ends='PE1,PE2'``, ``color=601``, ``srv6_locator=
+        'LOC1'``)::
+
+            segment-routing
+             traffic-eng
+              on-demand color 601
+               srv6
+                locator LOC1 binding-sid dynamic behavior ub6-insert-reduced
+               exit
+               dynamic
+                pce
+                exit
+                metric
+                 type igp
+                exit
+               exit
+              exit
+
+        The on-demand policies get a dynamic SRv6 binding SID with the uSID
+        behaviour ``ub6-insert-reduced`` — the model's only values for
+        ``binding-sid-type`` / ``behavior``, so nothing else is sent. An ODN
+        template has no tail-end, so an SRv6 template needs no IPv6 anywhere;
+        ``metric_type``, ``delegate_to_pce``, ``maximum_sid_depth`` and
+        ``flex_algo`` work as for SR-MPLS. Rules (each a live ``400`` from the
+        CFP, refused here before anything is sent): ``bandwidth_kbps`` is
+        incompatible with ``srv6_locator`` (the ODN model's ``bandwidth`` is
+        ``when "not(../srv6)"``). An IPv6 ``source-address`` — not an
+        argument of this tool; send it with cnc_provision_service — requires
+        the srv6 container too ("SRv6 TE policy must be configured if
+        source-address is IPv6 address"). NSO does NOT check the locator name
+        against the head-ends: a name no router holds renders fine and the
+        on-demand policies simply never come up — confirm the locator on the
+        head-ends first. The bare presence form ``"srv6": {}`` (no locator:
+        the router's default one; dry-run rendered a bare ``srv6`` block,
+        device behaviour not verified) is not an argument of this tool —
+        send it through cnc_provision_service. Until the lab's SRv6 underlay
+        exists nothing beyond the rendering is verified.
+
         Args:
             name: template (service) name — the NSO list key.
             color: ODN color.
             head_ends: comma-separated NSO device names.
             metric_type, delegate_to_pce, bandwidth_kbps, maximum_sid_depth,
                 flex_algo: the dynamic path definition (zeros are omitted).
+            srv6_locator: blank (SR-MPLS) or the head-ends' SRv6 locator name
+                (e.g. 'LOC1'; 1..64 characters, no whitespace).
             dry_run: preview the device CLI without committing.
 
         Returns:
@@ -1246,8 +1595,14 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             device", "Error: NSO considers PE1 out of sync — run
             cnc_nso_device_action(...)", "Error: the body has a node the
             model does not know: ...", "Error: the function pack rejected the
-            service: <reason> (<code>)", or "Error: ..." for an invalid
-            argument (nothing sent) or another API failure.
+            service: <reason> (<code>)", "Error: srv6_locator and
+            bandwidth_kbps are incompatible: ..." / "Error: srv6_locator 'X'
+            must be an SRv6 locator name of 1..64 characters ..." (nothing
+            sent), "Error: bandwidth_kbps is not allowed on an SRv6 policy or
+            template ..." / "Error: an IPv6 source-address makes this an SRv6
+            ODN template ..." (the CFP's own SRv6 refusals, reachable through
+            cnc_provision_service), or "Error: ..." for an invalid argument
+            (nothing sent) or another API failure.
         """
         try:
             key = name.strip()
@@ -1260,6 +1615,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 bandwidth_kbps,
                 maximum_sid_depth,
                 _flex_algo(flex_algo),
+                srv6_locator,
             )
             target = ServiceTarget("ODN template", key, keyed_path(ODN_TEMPLATE_PATH, key))
             return await provision(
@@ -1353,7 +1709,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(
                 description="The tail-end's TE router-id — its Loopback0 / topology router-id "
                 "(e.g. '10.0.0.3'), NOT its host name and NOT the management address "
-                "(cnc_get_topology_node shows router-ids).",
+                "(cnc_get_topology_node shows router-ids). With srv6_locator: the tail-end's "
+                "IPv6 loopback (e.g. '2001:db8::3') — an SRv6 policy needs an IPv6 tail-end; "
+                "it is sent canonical (lowercase, compressed: '2001:DB8:0:0::3' becomes "
+                "'2001:db8::3', the spelling in the policy name), and a zone id ('%eth0') is "
+                "refused.",
                 min_length=1,
                 max_length=64,
             ),
@@ -1401,15 +1761,28 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             int,
             Field(
                 description="Binding SID label (16..1048575, from the head-end's SRLB); 0 "
-                "(default) omits it.",
+                "(default) omits it. SR-MPLS only (must be 0 with srv6_locator).",
                 ge=0,
                 le=MAX_MPLS_LABEL,
             ),
         ] = 0,
+        srv6_locator: Annotated[
+            str,
+            Field(
+                description="SRv6 policy: the head-end's SRv6 locator name (e.g. 'LOC1' — the "
+                "name under 'segment-routing srv6 locators' on the router), sent as "
+                "srv6/locator/locator-name; the binding SID is then dynamic SRv6 with "
+                "behavior ub6-insert-reduced. Requires an IPv6 tail_end (e.g. "
+                "'2001:db8::3') and path_type='dynamic'; bandwidth_kbps and binding_sid must "
+                "stay 0. Blank (default) = SR-MPLS policy (IPv4 tail_end).",
+                max_length=SRV6_LOCATOR_MAX,
+            ),
+        ] = "",
         dry_run: Annotated[bool, Field(description=_DRY_RUN_DESC)] = False,
     ) -> str:
         """Create (or replace) an SR-TE policy as an NSO-provisioned service: NSO configures
-        ``policy srte_c_<color>_ep_<tail-end>`` on the head-end.
+        ``policy srte_c_<color>_ep_<tail-end>`` on the head-end — SR-MPLS (IPv4 tail-end)
+        or, with ``srv6_locator``, SRv6 (IPv6 tail-end).
 
         WRITE / DESTRUCTIVE — only registered when CNC_MCP_ENABLE_WRITES=true;
         destructive because a PUT of a name that already exists replaces that
@@ -1443,34 +1816,115 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         (``cnc_nso_device_action(action='sync-from', ...)`` after out-of-band
         changes — the 502 text names the device); an explicit path needs its
         SID list to exist first (cnc_create_sid_list). ``tail_end`` must be an
-        IP address (checked before sending).
+        IP address (checked before sending) — IPv4 for SR-MPLS, IPv6 for SRv6.
+
+        SRv6 (``srv6_locator``; verified 2026-09-15 in dry run through this
+        tool — the lab has no SRv6 underlay yet, so the rendering is verified,
+        device behaviour is not): the body gains ``"srv6": {"locator":
+        {"locator-name": <srv6_locator>}}`` and NSO renders on the head-end
+        (``tail_end='2001:db8::3'``, ``color=600``, ``srv6_locator='LOC1'``)::
+
+            segment-routing
+             traffic-eng
+              policy srte_c_600_ep_2001:db8::3
+               srv6
+                locator LOC1 binding-sid dynamic behavior ub6-insert-reduced
+               !
+               color 600 end-point ipv6 2001:db8::3
+               candidate-paths
+                preference 100
+                 dynamic
+                  pce
+                  !
+                  metric
+                   type igp
+
+        (``delegate_to_pce=false`` drops the ``pce`` line; ``metric_type``
+        renders as for SR-MPLS.) The policy name keeps the CFP rule
+        ``srte_c_<color>_ep_<tail-end>`` — with the colons of the IPv6
+        tail-end in it, in its canonical spelling: the tool sends the
+        tail-end lowercase and compressed (``'2001:DB8:0:0::3'`` ->
+        ``2001:db8::3``, dry-run verified: NSO rendered ``policy
+        srte_c_620_ep_2001:db8::3 / end-point ipv6 2001:db8::3`` for that
+        input), so the body, the policy name and the "Next:" hint agree; a
+        zone id (``%eth0``) is refused. The binding SID is dynamic SRv6 with
+        behaviour ``ub6-insert-reduced``: the model's only values for
+        ``binding-sid-type`` / ``behavior``, so nothing else is sent. Rules
+        of the SR-TE CFP, every one refused here BEFORE anything is sent:
+        ``srv6_locator`` needs an IPv6 ``tail_end`` ("tail-end must be IPv6
+        address for SRv6 TE policy") and an IPv6 ``tail_end`` needs
+        ``srv6_locator`` ("SRv6 TE policy must be configured if tail-end is
+        IPv6 address"); ``path_type`` must be ``dynamic`` and
+        ``bandwidth_kbps`` / ``binding_sid`` must stay 0 — the explicit
+        path, bandwidth and binding-sid are ``when "not(../srv6)"`` (each a
+        live ``400``; SR-MPLS only in this release); the YANG puts the same
+        when-rule on ``auto-route``, not exercised — no tool sends it.
+        ``srv6-dynamic`` is NOT a path type: it is the (only)
+        ``binding-sid-type``, applied automatically. The bare presence form
+        ``"srv6": {}`` (no locator: the router's default one; dry-run
+        rendered a bare ``srv6`` block, device behaviour not verified) is
+        not an argument of this tool — send it through cnc_provision_service.
+        NSO checks NEITHER the locator name NOR the IPv6 tail-end against the
+        head-end or the topology (both existed nowhere on the lab and
+        rendered fine): the policy comes up only when the head-end holds
+        that locator (``segment-routing srv6 locators``) and reaches the
+        tail-end's IPv6 loopback — read the dry run, then check the underlay
+        before committing. cnc_update_sr_policy_service cannot add ``srv6``
+        (it merges bandwidth / binding-sid only, both refused on an SRv6
+        policy); whether a hand-built PATCH of tail-end + srv6 through
+        cnc_provision_service converts a committed SR-MPLS policy was NOT
+        tested — re-run this tool: the PUT replaces the entry and the CFP
+        renames the policy with the new tail-end. Until the lab's SRv6
+        underlay exists nothing beyond the rendering is verified.
 
         Args:
             name: service name (NSO list key).
             head_end: NSO device name.
-            tail_end: tail-end TE router-id.
+            tail_end: tail-end TE router-id (IPv4) or, with srv6_locator,
+                the tail-end's IPv6 loopback (sent canonical: lowercase,
+                compressed; no zone id).
             color, preference: policy color and candidate-path preference.
-            path_type: dynamic | explicit.
+            path_type: dynamic | explicit (dynamic only with srv6_locator).
             metric_type, delegate_to_pce: the dynamic path.
             sid_list: the explicit path's SID list name.
-            bandwidth_kbps, binding_sid: optional leaves (0 = omitted).
+            bandwidth_kbps, binding_sid: optional leaves (0 = omitted;
+                must be 0 with srv6_locator).
+            srv6_locator: blank (SR-MPLS) or the head-end's SRv6 locator name
+                (e.g. 'LOC1'; 1..64 characters, no whitespace).
             dry_run: preview the device CLI without committing.
 
         Returns:
             str: the dry-run CLI per device, or "Created|Replaced SR policy
-            service '<name>' ..." plus the plan line and a "Next:" hint.
-            "Error: head-end 'X' is not an NSO device", "Error: SID list 'N'
-            does not exist", "Error: NSO considers PE1 out of sync — ...",
-            "Error: path_type='explicit' needs sid_list" / "Error: tail_end
-            'PE2' is not an IP address" (nothing sent), or "Error: ..." on
-            another API failure.
+            service '<name>' ..." plus the plan line and a "Next:" hint (for
+            an SRv6 policy it names the locator and says NSO checked neither
+            it nor the tail-end). "Error: head-end 'X' is not an NSO device",
+            "Error: SID list 'N' does not exist", "Error: NSO considers PE1
+            out of sync — ...", "Error: path_type='explicit' needs sid_list"
+            / "Error: tail_end 'PE2' is not an IP address" / "Error: tail_end
+            '2001:db8::3%eth0' carries a zone id ..." / "Error:
+            srv6_locator makes this an SRv6 policy, and an SRv6 policy needs
+            an IPv6 tail_end ..." / "Error: tail_end '2001:db8::3' is IPv6,
+            which makes this an SRv6 policy ...: give srv6_locator" / "Error:
+            srv6_locator needs path_type='dynamic' ..." / "Error:
+            bandwidth_kbps and binding_sid cannot be set on an SRv6 policy
+            ..." / "Error: srv6_locator 'X' must be an SRv6 locator name ..."
+            (nothing sent); the CFP's own SRv6 refusals — "Error: an SRv6
+            policy ... needs an IPv6 tail-end", "Error: an IPv6 tail-end
+            makes this an SRv6 policy ...", "Error: an explicit path ... is
+            not allowed on an SRv6 policy or template", "Error: the srv6
+            locator container needs its mandatory locator-name" — for bodies
+            sent through cnc_provision_service; or "Error: ..." on another
+            API failure.
         """
         try:
             key = name.strip()
+            # Canonical (IPv6: lowercase, compressed) — what goes on the wire, and the
+            # spelling NSO renders into ``srte_c_<color>_ep_<tail-end>`` (dry-run verified).
+            tail = require_ip(tail_end, "tail_end")
             body = build_sr_policy_body(
                 key,
                 head_end.strip(),
-                require_ip(tail_end, "tail_end"),
+                tail,
                 color,
                 preference,
                 _choice(path_type, PATH_TYPES, "path_type"),
@@ -1479,22 +1933,31 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 sid_list,
                 bandwidth_kbps,
                 _binding_sid(binding_sid),
+                srv6_locator,
             )
             target = ServiceTarget("SR policy service", key, keyed_path(SR_POLICY_PATH, key))
-            return await provision(
-                "PUT",
-                target,
-                body,
-                dry_run=dry_run,
-                operation="create",
-                next_hint=(
-                    f"the head-end now holds policy srte_c_{color}_ep_{tail_end.strip()}; once "
-                    "PCEP reports it, cnc_get_sr_policy(headend=<head-end router-id>, "
-                    f"endpoint='{tail_end.strip()}', color={color}) shows it and "
+            if srv6_locator.strip():
+                next_hint = (
+                    f"the head-end now holds SRv6 policy srte_c_{color}_ep_{tail} with locator "
+                    f"{srv6_locator.strip()}; it comes up only when the head-end holds that "
+                    "locator and reaches the tail-end's IPv6 loopback (NSO checked neither). "
+                    "Once PCEP reports it, cnc_get_sr_policy(headend=<head-end router-id>, "
+                    f"endpoint='{tail}', color={color}) shows it and "
+                    "cnc_wait_for_sr_policy_oper_state waits for UP. To change the locator, "
+                    "re-run this tool (the PUT replaces the entry); remove with "
+                    "cnc_delete_sr_policy_service."
+                )
+            else:
+                next_hint = (
+                    f"the head-end now holds policy srte_c_{color}_ep_{tail}; once PCEP "
+                    "reports it, cnc_get_sr_policy(headend=<head-end router-id>, "
+                    f"endpoint='{tail}', color={color}) shows it and "
                     "cnc_wait_for_sr_policy_oper_state waits for UP. Change bandwidth / "
                     "binding-sid with cnc_update_sr_policy_service; remove with "
                     "cnc_delete_sr_policy_service."
-                ),
+                )
+            return await provision(
+                "PUT", target, body, dry_run=dry_run, operation="create", next_hint=next_hint
             )
         except Exception as e:
             return format_error(e)
@@ -1542,6 +2005,24 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Not the Optimization Engine's cnc_update_sr_policy (PCE-initiated
         policies). ``dry_run=true`` renders the CLI delta instead.
 
+        SR-MPLS only. Both leaves are ``when "not(../srv6)"`` in the SR-TE
+        CFP model, so a PATCH of either onto an SRv6 policy (one created with
+        ``srv6_locator``) is refused by the CFP with ``400 malformed-message
+        ".../<leaf>: the 'when' expression \\"not(../srv6)\\" failed"``
+        (verified 2026-09-15 in dry run on a PUT carrying the same leaves;
+        reported as "Error: bandwidth_kbps|binding_sid is not allowed on an
+        SRv6 policy or template ..."). This tool only merges bandwidth /
+        binding-sid: it cannot add ``srv6`` or change the tail-end. Whether
+        a hand-built PATCH of ``tail-end`` + ``srv6`` through
+        cnc_provision_service converts a committed SR-MPLS policy into an
+        SRv6 one was NOT tested (no committed policy to merge into; commits
+        were not allowed) — the supported path is re-running
+        cnc_create_sr_policy_service: the PUT replaces the entry and the CFP
+        renames the policy ``srte_c_<color>_ep_<tail-end>`` with the new
+        tail-end. What IS verified (2026-09-15, dry run): a PATCH never
+        creates — ``404 invalid-value "patch to a nonexistent resource"``
+        for an unknown name.
+
         Args:
             name: service name (exact).
             bandwidth_kbps, binding_sid: the leaves to merge (at least one
@@ -1551,10 +2032,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         Returns:
             str: "Updated SR policy service '<name>' ..." plus the plan line
             (or the dry-run CLI); "Error: Nothing to update: ..." (nothing
-            sent); "Error: no SR policy service '<name>'" on a 404 RESTCONF
-            answer (unverified for PATCH — the verified 404 is on GET/DELETE);
-            "Error: NSO considers PE1 out of sync — ..."; "Error: ..." on
-            another API failure.
+            sent); "Error: no SR policy service '<name>'" on the verified 404
+            ("patch to a nonexistent resource"); "Error: bandwidth_kbps is not
+            allowed on an SRv6 policy or template ..." (the CFP's when-rule on
+            an SRv6 policy); "Error: NSO considers PE1 out of sync — ...";
+            "Error: ..." on another API failure.
         """
         try:
             key = name.strip()
@@ -1784,7 +2266,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(
                 description='JSON list of PE attachments: [{"node": "PE1" (NSO device name), '
                 '"interface": "Loopback91", "address": "10.91.1.1", "prefix_length": 30, '
-                '"local_as": 65000 (optional), "id": "1" (optional access id)}, ...].',
+                '"local_as": 65000 (optional), "id": "1" (optional access id), '
+                '"srv6_locator": "LOC1" (optional: this node\'s SRv6 locator, overriding the '
+                "service-wide srv6_locator)}, ...].",
                 min_length=2,
                 max_length=20000,
             ),
@@ -1801,10 +2285,21 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 max_length=64,
             ),
         ] = "p1",
+        srv6_locator: Annotated[
+            str,
+            Field(
+                description="SRv6 transport for the VPN: the SRv6 locator name every PE uses for "
+                "the VRF's per-VRF SIDs (e.g. 'LOC1'), set service-wide on the "
+                'vpn-instance-profile; an endpoint\'s own "srv6_locator" key overrides it '
+                "for that node. Blank (default) = MPLS transport (no srv6 container).",
+                max_length=SRV6_LOCATOR_MAX,
+            ),
+        ] = "",
         dry_run: Annotated[bool, Field(description=_DRY_RUN_DESC)] = False,
     ) -> str:
         """Create (or replace) an IPv4 L3VPN through NSO's L3NM function pack: one VRF
-        (rd + route-target) on each endpoint's PE with one interface attached per endpoint.
+        (rd + route-target) on each endpoint's PE with one interface attached per endpoint —
+        over MPLS, or over SRv6 with ``srv6_locator``.
 
         WRITE / DESTRUCTIVE — only registered when CNC_MCP_ENABLE_WRITES=true;
         destructive because a PUT of a name that already exists replaces that
@@ -1848,28 +2343,73 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         "illegal reference .../vpn-nodes/vpn-node{X}/vpn-node-id"`` (reported
         as "Error: vpn-node 'X' is not an NSO device").
 
+        SRv6 transport (``srv6_locator``; verified 2026-09-15 in dry run
+        through this tool — the lab has no SRv6 underlay yet, so the
+        rendering is verified, device behaviour is not): the profile gains
+        ``"cisco-l3vpn-ntw:srv6": {"address-family": [{"name":
+        "ietf-vpn-common:ipv4", "locator-name": <srv6_locator>}]}`` (the list
+        mirrors this tool's single ipv4 address-family; the CFP silently
+        ignores an entry for an address-family the profile lacks), and an
+        endpoint's own ``"srv6_locator"`` puts the same container on that
+        node's ``active-vpn-instance-profiles`` entry — the node-level entry
+        wins over the service-wide one for that PE (verified: profile LOC1 +
+        PE2 override LOC2 rendered LOC1 on PE1 and LOC2 on PE2; a node-level
+        entry alone leaves the other PEs without any srv6 block). The whole
+        rendering delta is one block inside the BGP VRF address-family — the
+        VRF, interface and ``router bgp`` lines are exactly the MPLS ones::
+
+            router bgp 65000
+             vrf <vpn_id>
+              rd 65091:91
+              address-family ipv4 unicast
+               segment-routing srv6
+                locator LOC1
+                alloc mode per-vrf
+
+        ``alloc mode per-vrf`` is fixed by the CFP (no per-CE knob in the
+        model). Give ``local_as`` on the endpoints as for MPLS — the block
+        lives under the BGP VRF, which the CFP renders only then (or when the
+        PE already runs BGP). NSO does NOT check the locator name against the
+        PEs (``LOC1`` existed nowhere on the lab and rendered fine): the VRF's
+        SRv6 SIDs are allocated only once the PE holds that locator
+        (``segment-routing srv6 locators``) — confirm it before committing.
+        The flat ``{"locator-name": ...}`` shape the SR-TE CFP uses is ``400
+        unknown-element`` on the L3NM (the tool never sends it). Until the
+        lab's SRv6 underlay exists nothing beyond the rendering is verified.
+
         This tool covers the minimal verified shape. For the full L3NM (BGP
         CE peering ``routing-protocols``, ``connection.encapsulation`` with a
-        dot1q VLAN, ``service.mtu``/QoS, IPv6, multicast) build the body
-        yourself and send it with cnc_provision_service.
+        dot1q VLAN, ``service.mtu``/QoS, IPv6 / dual-stack — ``ip-connection.
+        ipv6 {local-address, prefix-length}`` plus an ipv6 address-family in
+        the profile, with an ipv6 entry in the srv6 address-family list for
+        SRv6 (dry-run verified), multicast) build the body yourself and send
+        it with cnc_provision_service.
 
         Args:
             vpn_id: service name / NSO key.
             route_distinguisher, route_target: RD and RT (RT type both).
             endpoints: JSON list (see the parameter description) — invalid
-                JSON or a missing key is refused before anything is sent.
+                JSON or a missing key is refused before anything is sent;
+                an endpoint's optional "srv6_locator" is that node's locator.
             topology: any-to-any | hub-spoke | custom.
             profile_id: the vpn-instance-profile name.
+            srv6_locator: blank (MPLS transport) or the service-wide SRv6
+                locator name (e.g. 'LOC1'; 1..64 characters, no whitespace).
             dry_run: preview the device CLI without committing.
 
         Returns:
             str: the dry-run CLI per PE, or "Created|Replaced L3VPN service
             '<vpn_id>' ..." plus the plan line; "Error: endpoints ..." /
-            "Error: Unknown topology ..." (nothing sent), "Error: the function
-            pack rejected the service: ...", "Error: vpn-node 'X' is not an
-            NSO device" (an unknown endpoints[].node), "Error: NSO considers PE1
-            out of sync — ...", "Error: the body has a node the model does not
-            know: ...", or "Error: ..." on another failure.
+            "Error: Unknown topology ..." / "Error: srv6_locator 'X' must be
+            an SRv6 locator name ..." / "Error: endpoints on node 'PE1' give
+            different srv6_locator values ..." (nothing sent), "Error: the
+            function pack rejected the service: ...", "Error: vpn-node 'X'
+            is not an NSO device" (an unknown endpoints[].node), "Error: NSO
+            considers PE1 out of sync — ...", "Error: the body has a node the
+            model does not know: ...", "Error: the L3NM srv6 container needs
+            at least one address-family entry ..." (an empty srv6 container
+            sent through cnc_provision_service), or "Error: ..." on another
+            failure.
         """
         try:
             key = vpn_id.strip()
@@ -1880,19 +2420,22 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 parse_endpoints(endpoints),
                 _choice(topology, TOPOLOGIES, "topology"),
                 profile_id.strip(),
+                srv6_locator,
             )
             target = ServiceTarget("L3VPN service", key, keyed_path(L3VPN_SERVICE_PATH, key))
+            next_hint = (
+                f"cnc_get_vpn_service(vpn_id='{key}') / cnc_get_vpn_service_health show "
+                "the VPN and its oper-status from the CAT inventory; remove it with "
+                "cnc_delete_vpn_service(layer='l3')."
+            )
+            if _l3vpn_uses_srv6(body):
+                next_hint = (
+                    "the VRF is bound to SRv6 (segment-routing srv6 / locator / alloc mode "
+                    "per-vrf under its BGP address-family); its SIDs are allocated only where "
+                    "the PE holds that locator (NSO checked nothing). "
+                ) + next_hint
             return await provision(
-                "PUT",
-                target,
-                body,
-                dry_run=dry_run,
-                operation="create",
-                next_hint=(
-                    f"cnc_get_vpn_service(vpn_id='{key}') / cnc_get_vpn_service_health show "
-                    "the VPN and its oper-status from the CAT inventory; remove it with "
-                    "cnc_delete_vpn_service(layer='l3')."
-                ),
+                "PUT", target, body, dry_run=dry_run, operation="create", next_hint=next_hint
             )
         except Exception as e:
             return format_error(e)

@@ -11,6 +11,63 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ### Added
 
+- **SRv6** (CNC 7.2; `tools/topology.py`, `te_state.py`, `performance.py`,
+  `service_provisioning.py`, `composite.py`, `prompts.py`). Three read tools:
+  `cnc_list_srv6_locators` (one row per node × locator, DERIVED from each
+  node's `srv6-node-sid` and its `srv6-sid-structure` block / node lengths
+  — the 7.2 topology model has no locator object; `uSID F3216` for 32 + 16
+  + 16, `classic` otherwise; a stable "No SRv6 locators are advertised ..."
+  answer with what the routers need), `cnc_get_srv6_locator_statistics`
+  (the Performance dashboard's `srv6locator` graph — per-locator
+  `outBitRate` series with `host_name` / `device_uuid`, `prefix` /
+  `length`, `hours` or an explicit window, paging; metrics validated
+  against the catalogue and deduplicated case-insensitively before the
+  URL is built; an empty page 1 says whether an `SRV6LOCATOR` policy covers
+  the device) and the playbook `cnc_srv6_readiness` (topology summary,
+  locators, per-node and per-adjacency SRv6 state, SRv6 policies, the
+  `SRV6LOCATOR` policy, the routers' families → READY / PARTIAL / NONE,
+  naming the nodes without a locator and the adjacencies without an End.X
+  SID). New arguments: `dataplane` (`sr-mpls` | `srv6`) on
+  `cnc_list_topology_nodes` and `cnc_list_sr_policies`; `srv6_locator` on
+  `cnc_create_sr_policy_service`, `cnc_create_odn_template`,
+  `cnc_create_l3vpn_service` (service-wide, plus a per-endpoint
+  `"srv6_locator"` key that wins for that PE) and `cnc_provision_l3vpn_e2e`
+  (which skips the MPLS-only OAM trace for an SRv6 VPN). New renderings:
+  SRv6 node SIDs, their structure and Flex-Algos per IGP instance, the
+  IPv6 TE router-id and `transport=` on `cnc_get_topology_node`; End.X SIDs
+  on `cnc_list_topology_links` / `cnc_get_topology_link`; `srv6_*` counters
+  and `node_dataplanes` on `cnc_get_topology_summary`; `dataplane=` on
+  every SR-policy row (policy state carries no dataplane leaf, so it is
+  derived from an `srv6-binding-sid`, IPv6 hops or IPv6 keys), the SRv6
+  binding SID and SRv6 hops on `cnc_get_sr_policy`, IPv6 router-id keys
+  accepted (with a one-shot IPv6 retry when a host name resolves to both
+  families), `by_dataplane` on `cnc_get_te_summary`, a `dataplane:` line
+  and SRv6 hops on `cnc_explain_sr_policy`; an `SRV6LOCATOR` hint on
+  `cnc_get_performance_statistics`. The function pack's SRv6 rules are
+  refused before anything is sent and mapped when the platform says them:
+  an SRv6 policy needs an IPv6 tail-end (canonicalised, zone ids refused)
+  and a dynamic path — explicit SID lists, `bandwidth_kbps` and
+  `binding_sid` are refused by the CFP's `not(../srv6)` when-rule; an ODN
+  template's `srv6_locator` is incompatible with bandwidth; an L3VPN
+  `srv6` container needs at least one address-family; NSO validates
+  neither the locator name nor the tail-end against the routers. Not in
+  7.2 and documented as such: PCE-initiated SRv6 policies (the
+  Optimization Engine RPCs are SR-MPLS only), SRv6 OAM trace routes (MPLS
+  LSP-ping only), explicit SRv6 SID lists, L2VPN with SRv6-TE. A new MCP
+  prompt `srv6_readiness`, and `provision_l3vpn` gains an optional
+  `srv6_locator` with an SRv6 pre-flight. Verification: the lab has no
+  SRv6 underlay, so the populated renderings follow the 7.2 YANG / OpenAPI
+  shapes and are exercised on fixtures only; verified live (2026-09-15)
+  are the "no SRv6" answers of every reader on the SR-MPLS lab (SR-MPLS
+  content unchanged), `cnc_srv6_readiness` → NONE with the underlay hint,
+  the empty `srv6locator` PM endpoints, and — NSO `?dry-run=native`,
+  nothing committed — the CLI the three creates render (policy and ODN:
+  `srv6 / locator LOC1 binding-sid dynamic behavior ub6-insert-reduced`
+  with an IPv6 end-point; L3VPN: `segment-routing srv6 / locator LOC1 /
+  alloc mode per-vrf` under the VRF's address-family). The build is now
+  285 tools (187 read, 98 write) with 2847 mocked tests; the smoke plan
+  grew to 667 steps (79 SRv6 steps: reads that answer "no SRv6" and
+  dry-run-only provisioning, to be re-run once the underlay exists).
 - **Device group writes** (`tools/grouping.py`): `cnc_create_device_group`,
   `cnc_update_device_group`, `cnc_delete_device_group`,
   `cnc_set_device_group_members`, `cnc_move_group_members`, plus the reads
@@ -86,8 +143,8 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
   per module — device groups and rules, a PM policy and retention, the ZTP
   objects, external subscriptions (refusal diagnosis and clear-by-topic),
   alarm settings — each creating `phase-d-*` objects and removing them.
-  The build is now 282 tools (184 read, 98 write) over 24 API areas plus
-  the playbooks, with 2717 mocked tests.
+  That brought the build to 282 tools (184 read, 98 write) over 24 API
+  areas plus the playbooks, with 2717 mocked tests.
 - **Playbook tools** (`tools/composite.py`): `cnc_investigate_device`,
   `cnc_network_health_report`, `cnc_explain_sr_policy`, `cnc_alarm_triage`,
   `cnc_explain_service` (reads) and `cnc_provision_l3vpn_e2e`,
@@ -267,6 +324,18 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
   at a "newest sample time" the statistics tool does not return; the
   topology PCEP-session text separates what is verified (no state leaf)
   from what is assumed (down sessions omitted).
+
+### Fixed
+
+- `cnc_get_topology_link` read the keyed
+  `network=<id>/ietf-network-topology-state:link=<link-id>` GET, which is
+  SHALLOW on 7.2 (verified live: it omits `sr-mpls`, so the adjacency SIDs
+  rendered as `adj-sid=- / Adjacency SIDs (0)` for a link the collection
+  shows with adj-SID 24003). It now reads the `networks` collection, like
+  every other topology read, and selects the link client-side; the JSON
+  view carries `sr-mpls` and not-found is reported after the client-side
+  match ("no link '<id>' in topology '<net>' (the network's N links were
+  checked client-side)").
 
 ## [0.1.0] - 2026-09-14
 

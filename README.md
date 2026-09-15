@@ -10,11 +10,12 @@ service-provider networks — through its REST APIs.
 With this server connected, an agent can answer questions like *"which
 devices are unreachable?"*, *"what does the topology look like?"*, *"which SR
 policies are down and what path do they take?"*, *"is the
-Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, and, when writes are
-enabled, onboard devices, manage credential profiles and providers, map
+Data Gateway collecting?"*, *"is PE1 in sync with NSO?"*, *"is the network ready for
+SRv6?"*, and, when writes are enabled, onboard devices, manage credential profiles and providers, map
 devices to gateways, drive NSO sync and connect actions, provision SR-TE
 policies through the SR-PCE, provision ODN templates, SR-TE policies and
-L3VPNs through NSO's T-SDN function packs (dry-run first), subscribe webhooks
+L3VPNs — over SR-MPLS or SRv6 — through NSO's T-SDN function packs (dry-run
+first), subscribe webhooks
 and external Kafka/gRPC feeds to alarm/inventory events, inspect collection
 jobs, manage device groups and their membership, the LCM / Circuit-Style
 managers, create and activate performance-monitoring policies and read the
@@ -24,14 +25,14 @@ and manage the ZTP catalogue (config files, profiles, serial numbers, static
 routes, devices) — all through typed, documented tools with the platform's
 own error reasons surfaced verbatim.
 
-**282 tools** (184 read, 98 write) over 24 API areas plus six MCP prompts. Every tool was built from
+**285 tools** (187 read, 98 write) over 24 API areas plus seven MCP prompts. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
 ## Contents
 
 - [Quickstart](#quickstart)
-- [Tools](#tools)
+- [Tools](#tools) · [SRv6](#srv6)
 - [How it works](#how-it-works)
 - [Safety controls](#safety-controls)
 - [Configuration](#configuration)
@@ -141,7 +142,7 @@ denylist and the dry-run mode that sit on top of that switch.
 git clone https://github.com/dr-stutters/cnc-mcp && cd cnc-mcp
 make install                      # uv sync
 cp .env.example .env              # set CNC_MCP_BASE_URL, USERNAME, PASSWORD
-make test && make lint            # 2,700+ tests, all HTTP mocked — no CNC needed
+make test && make lint            # 2,800+ tests, all HTTP mocked — no CNC needed
 make run                          # start the server on stdio
 make inspect                      # MCP Inspector against it
 make cli ARGS="list"              # scripts/mcp_cli.py: list | schema | call | prompts | prompt
@@ -184,7 +185,7 @@ Read tools — registered in every mode:
 | **Devices** | `cnc_list_devices` · `cnc_get_device` · `cnc_get_device_collection_summary` · `cnc_wait_for_device_reachable` |
 | **Credential profiles** | `cnc_list_credential_profiles` · `cnc_get_credential_profile` |
 | **Providers** (SR-PCE, NSO, …) | `cnc_list_providers` · `cnc_get_provider` |
-| **Topology** (RESTCONF NBI) | `cnc_get_topology_summary` · `cnc_list_topology_nodes` · `cnc_get_topology_node` · `cnc_list_node_interfaces` · `cnc_get_node_interface` · `cnc_list_topology_links` · `cnc_get_topology_link` |
+| **Topology** (RESTCONF NBI) | `cnc_get_topology_summary` · `cnc_list_topology_nodes` · `cnc_get_topology_node` · `cnc_list_node_interfaces` · `cnc_get_node_interface` · `cnc_list_topology_links` · `cnc_get_topology_link` · `cnc_list_srv6_locators` |
 | **TE state** (SR-PCE feed) | `cnc_get_te_summary` · `cnc_list_sr_policies` · `cnc_get_sr_policy` · `cnc_list_p2mp_policies` · `cnc_get_p2mp_policy` · `cnc_list_rsvp_te_tunnels` · `cnc_get_rsvp_te_tunnel` · `cnc_get_link_performance_metrics` · `cnc_get_sr_policy_performance_metrics` · `cnc_get_rsvp_tunnel_performance_metrics` |
 | **SR-TE operations** (Optimization Engine) | `cnc_list_sr_policies_on_nodes` · `cnc_list_sr_policies_on_interface` · `cnc_get_sr_policy_routes` · `cnc_get_sr_policy_metrics` · `cnc_preview_sr_policy_route` · `cnc_dryrun_sr_policy` · `cnc_get_sr_policy_path_notification_state` · `cnc_wait_for_sr_policy_oper_state` |
 | **Platform** | `cnc_list_tags` · `cnc_list_users` · `cnc_list_applications` · `cnc_list_alarms` · `cnc_list_inventory_jobs` · `cnc_get_inventory_job` · `cnc_wait_for_inventory_job` |
@@ -200,11 +201,11 @@ Read tools — registered in every mode:
 | **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` · `cnc_list_group_rules` · `cnc_list_group_ports` |
 | **LCM & Circuit-Style** (Optimization Engine) | `cnc_list_lcm_domains` · `cnc_get_lcm_config` · `cnc_list_lcm_managed_interfaces` · `cnc_get_lcm_recommendation` · `cnc_get_lcm_recommendation_preview` · `cnc_list_csm_bandwidth_pools` · `cnc_list_cs_policy_paths` · `cnc_list_cs_policies_on_nodes` · `cnc_list_cs_policies_on_interface` |
 | **Services** (CAT inventory, T-SDN) | `cnc_list_service_types` · `cnc_get_service_counts` · `cnc_list_services` · `cnc_get_service` · `cnc_get_service_plan` · `cnc_wait_for_service_plan` · `cnc_list_vpn_services` · `cnc_get_vpn_service` · `cnc_get_vpn_service_health` · `cnc_get_vpn_underlay_transport` · `cnc_list_sub_services` · `cnc_find_services_on_transport` · `cnc_list_function_packs` |
-| **Performance monitoring** (PM policies, dashboards, NPM) | `cnc_list_performance_policies` · `cnc_get_performance_policy` · `cnc_get_performance_policy_history` · `cnc_list_performance_policy_devices` · `cnc_list_performance_policy_templates` · `cnc_get_performance_retention` · `cnc_get_performance_health_settings` · `cnc_get_performance_statistics` · `cnc_get_performance_top_n` · `cnc_list_performance_top_n_columns` · `cnc_get_performance_summary` · `cnc_get_lsp_utilization` · `cnc_get_lsp_delay` · `cnc_get_interface_delay` |
+| **Performance monitoring** (PM policies, dashboards, NPM) | `cnc_list_performance_policies` · `cnc_get_performance_policy` · `cnc_get_performance_policy_history` · `cnc_list_performance_policy_devices` · `cnc_list_performance_policy_templates` · `cnc_get_performance_retention` · `cnc_get_performance_health_settings` · `cnc_get_performance_statistics` · `cnc_get_performance_top_n` · `cnc_list_performance_top_n_columns` · `cnc_get_performance_summary` · `cnc_get_lsp_utilization` · `cnc_get_lsp_delay` · `cnc_get_interface_delay` · `cnc_get_srv6_locator_statistics` |
 | **OAM & probes** | `cnc_get_oam_settings` · `cnc_list_oam_trace_routes` · `cnc_get_oam_trace_route` · `cnc_wait_for_oam_trace_route` · `cnc_get_probe_status` |
 | **SWIM & ZTP** | `cnc_get_swim_preferences` · `cnc_list_software_images` · `cnc_get_device_running_images` · `cnc_get_swim_job` · `cnc_list_ztp_profiles` · `cnc_list_ztp_devices` · `cnc_list_ztp_serial_numbers` · `cnc_list_ztp_static_routes` · `cnc_get_ztp_device_policy` · `cnc_list_ztp_config_files` · `cnc_list_ztp_images` |
 | **EMS inventory scheduler** | `cnc_list_inventory_scheduler_jobs` · `cnc_get_inventory_scheduler_job` · `cnc_wait_for_inventory_scheduler_job` |
-| **Playbooks** (one call, composed from the tools above) | `cnc_investigate_device` · `cnc_network_health_report` · `cnc_explain_sr_policy` · `cnc_alarm_triage` · `cnc_explain_service` |
+| **Playbooks** (one call, composed from the tools above) | `cnc_investigate_device` · `cnc_network_health_report` · `cnc_explain_sr_policy` · `cnc_alarm_triage` · `cnc_explain_service` · `cnc_srv6_readiness` |
 
 Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true` (and, with
 `CNC_MCP_WRITE_AREAS`, only for the listed areas); deletes carry the MCP
@@ -225,12 +226,12 @@ Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true` (and, with
 | **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` · `cnc_create_external_subscription` (Kafka / gRPC) · `cnc_delete_external_subscription` · `cnc_clear_notification_subscriptions_by_topic` |
 | **Device groups** | `cnc_create_device_group` · `cnc_update_device_group` · `cnc_delete_device_group` · `cnc_set_device_group_members` · `cnc_move_group_members` |
 | **LCM** | `cnc_pause_lcm_recommendations` |
-| **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
+| **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` — the three creates take `srv6_locator` for SRv6 transport (see [SRv6](#srv6)) |
 | **Performance monitoring** (PM policies, retention) | `cnc_create_performance_policy` · `cnc_update_performance_policy` · `cnc_activate_performance_policy` · `cnc_deactivate_performance_policy` · `cnc_delete_performance_policy` · `cnc_update_performance_retention` · `cnc_reset_performance_retention` |
 | **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
 | **SWIM & ZTP** (the ZTP catalogue) | `cnc_upload_ztp_config_file` · `cnc_update_ztp_config_file` · `cnc_delete_ztp_config_file` · `cnc_create_ztp_profile` · `cnc_update_ztp_profile` · `cnc_delete_ztp_profile` · `cnc_add_ztp_serial_numbers` · `cnc_delete_ztp_serial_numbers` · `cnc_create_ztp_static_route` · `cnc_delete_ztp_static_route` · `cnc_create_ztp_device` · `cnc_update_ztp_device` · `cnc_delete_ztp_device` |
 | **EMS inventory scheduler** | `cnc_run_inventory_scheduler_job` · `cnc_suspend_inventory_scheduler_job` · `cnc_resume_inventory_scheduler_job` |
-| **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) — both take `dry_run=true` to stop after the preview |
+| **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace; `srv6_locator` for an SRv6 VPN, which skips the MPLS-only trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) — both take `dry_run=true` to stop after the preview |
 
 The playbook tools compose the others server-side: each answers with a
 **verdict** (healthy / degraded / red / deployed …, with the reasons), one
@@ -240,9 +241,10 @@ call fails is reported as unavailable rather than failing the whole answer.
 Blind-agent measurements: a "device looks degraded" investigation dropped
 from 44 tool calls to a handful, a network health overview from 25.
 
-Six **MCP prompts** package the operator workflows for clients that expose
+Seven **MCP prompts** package the operator workflows for clients that expose
 them as slash commands: `troubleshoot_device`, `network_health_check`,
-`explain_sr_policy`, `provision_l3vpn`, `alarm_triage`, `explain_service`.
+`explain_sr_policy`, `provision_l3vpn` (with an optional `srv6_locator`),
+`alarm_triage`, `explain_service`, `srv6_readiness`.
 Each tells the assistant which playbook to start from, where to drill in, and
 what to do when the write tools are absent.
 
@@ -274,6 +276,52 @@ Conventions the server also tells agents about at connect time:
   (`Unassigned Devices` for a device never placed), because the platform's
   "set members" call removes; reverting an event type's auto-clear deletes
   the interval rather than restoring a default.
+
+### SRv6
+
+CNC 7.2 exposes SRv6 through the same NBIs as SR-MPLS, with no locator
+object anywhere in the topology model: a node advertises SRv6 node SIDs
+per IGP instance and a link End.X adjacency SIDs, so `cnc_list_srv6_locators`
+*derives* each locator from a node SID and its block / node lengths
+(`fc00:0:1::/48` from lb 32 + ln 16, labelled `uSID F3216` when the function
+length is 16 too). `cnc_get_topology_node` / `cnc_get_topology_link` render
+the SIDs, their structure and the node's Flex-Algos, `cnc_get_topology_summary`
+counts them, and `cnc_list_topology_nodes` / `cnc_list_sr_policies` take a
+`dataplane` filter (`sr-mpls` | `srv6`). SR-policy state carries no dataplane
+leaf either: a policy is reported as `srv6` when it carries an
+`srv6-binding-sid`, IPv6 hops or IPv6 router-id keys (`cnc_get_sr_policy`
+accepts them; `cnc_get_te_summary` counts by dataplane; `cnc_explain_sr_policy`
+says which dataplane it found). `cnc_get_srv6_locator_statistics` reads the
+Performance dashboard's per-locator `outBitRate` series (it needs an
+`SRV6LOCATOR` monitoring policy on the device), and `cnc_srv6_readiness` folds
+all of it into a READY / PARTIAL / NONE verdict that names the nodes without a
+locator and the adjacencies without an End.X SID.
+
+Provisioning goes through the T-SDN function packs only: `srv6_locator` on
+`cnc_create_sr_policy_service`, `cnc_create_odn_template`,
+`cnc_create_l3vpn_service` (service-wide or per endpoint) and
+`cnc_provision_l3vpn_e2e`. The function pack's rules are checked before
+anything is sent: an SRv6 policy needs an IPv6 tail-end and a dynamic path —
+explicit SID lists, bandwidth and a binding-SID are refused — and NSO
+validates neither the locator name nor the tail-end against the routers, so
+dry-run first and confirm the locator on the router with
+`cnc_get_nso_device_config(subtree='segment-routing/srv6')`. Not in 7.2, and
+the tools say so rather than pretend: PCE-initiated SRv6 policies (the
+Optimization Engine RPCs `cnc_create_sr_policy` / `cnc_dryrun_sr_policy` are
+SR-MPLS only), SRv6 OAM trace routes (`cnc_start_oam_trace_route` is MPLS
+LSP-ping only, so the L3VPN playbook skips the trace for an SRv6 VPN),
+explicit SRv6 SID lists, and L2VPN with SRv6-TE.
+
+Verification status: the lab has no SRv6 underlay yet, so the
+populated SRv6 renderings are built from the 7.2 YANG / OpenAPI shapes and
+exercised on fixtures only; what is verified live is that every reader
+answers "no SRv6" on the SR-MPLS lab with its SR-MPLS content unchanged,
+that `cnc_srv6_readiness` answers NONE with the underlay hint, that the
+`srv6locator` PM endpoints answer empty, and — through NSO dry-run, nothing
+committed — that the three creates render the expected CLI (`srv6 / locator
+LOC1 binding-sid dynamic behavior ub6-insert-reduced` with an IPv6 end-point
+for the policy and the ODN template; `segment-routing srv6 / locator LOC1 /
+alloc mode per-vrf` under the VRF's address-family for the L3VPN).
 
 ## How it works
 
@@ -354,7 +402,7 @@ write tools stay visible, but harmless.)
 An unknown area or tool name is a configuration error at startup, with a
 "did you mean" hint, never a silent no-op; an allowlisted area whose tools
 are all read-only is logged as a warning. The startup log summarises the
-result (`Registered 196 of 282 tools (184 read, 12 write); writes on for
+result (`Registered 199 of 285 tools (187 read, 12 write); writes on for
 areas fault; disabled tools: none; dry-run off`), the connect-time
 instructions tell the agent which mode it is in, and `cnc_check_permissions`
 repeats it next to the account's role.
@@ -437,7 +485,8 @@ layers were used:
 
 The instance was a single-VM CNC 7.2.0 deployment with embedded NSO and
 Data Gateway, fed by a Cisco Modeling Labs fabric of five IOS-XRd routers
-running IS-IS + SR-MPLS, one of them acting as SR-PCE (BGP-LS + PCEP, feeding
+running IS-IS + SR-MPLS (no SRv6 underlay yet — see [SRv6](#srv6) for what
+that leaves unverified), one of them acting as SR-PCE (BGP-LS + PCEP, feeding
 CNC over gRPC) with two PCE-delegated SR policies between the PEs, gNMI
 onboarded on every router, `mpls oam` and a vpnv4 iBGP pair on the PEs (so an
 L3VPN can be committed through the T-SDN function pack and traced end to end). Each
@@ -478,6 +527,7 @@ not claimed). Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
+| SRv6 on a live underlay | the SRv6 readers and renderings ([SRv6](#srv6)) verified against a fabric that runs locators, IS-IS IPv6 and SRv6 policies — which members the SR-PCE feed populates, the endpoint-behaviour strings, a populated `srv6locator` series — then the dry-run-only provisioning steps committed and reverted |
 | writes not yet exposed | collection job create, SWIM collect/distribute/activate, ZTP image upload / ownership vouchers / device status patch, config restore, LCM/CSM configuration and RSVP-TE / P2MP policy operations — unverified bodies with real network impact |
 | not on this build | change automation, health insights, path analytics, service health (unrouted on a single-VM 7.2 deployment — a 404 from the home application; the error text names the missing application) |
 

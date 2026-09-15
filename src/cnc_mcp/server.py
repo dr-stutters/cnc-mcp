@@ -249,9 +249,20 @@ def build_instructions(settings: Settings) -> str:
         "'ROBOT_OPER_STATE_CHECKING' for a minute or two; cnc_wait_for_device_reachable "
         "waits for the check to finish.",
         "- Prompts (MCP prompts/list): troubleshoot_device, network_health_check, "
-        "explain_sr_policy, provision_l3vpn, alarm_triage and explain_service are playbooks "
-        "that say which tools to call (the one-call composite when this build has it, the "
-        "individual tools otherwise), how to drill in and how to answer.",
+        "explain_sr_policy, provision_l3vpn, alarm_triage, explain_service and "
+        "srv6_readiness are playbooks that say which tools to call (the one-call composite "
+        "when this build has it, the individual tools otherwise), how to drill in and how "
+        "to answer.",
+        "- SRv6 (CNC 7.2): the topology carries SRv6 node SIDs per IGP instance and End.X "
+        "adjacency SIDs (cnc_list_srv6_locators derives the locators; cnc_get_topology_node/"
+        "link render them; cnc_get_topology_summary counts them); policy state carries no "
+        "dataplane leaf — cnc_list_sr_policies derives 'srv6' from the srv6-binding-sid, "
+        "IPv6 hops or IPv6 keys. SRv6 policies and SRv6 L3VPNs are provisioned only through "
+        "the T-SDN CFPs (cnc_create_sr_policy_service / cnc_create_odn_template / "
+        "cnc_create_l3vpn_service with srv6_locator; an SRv6 policy needs an IPv6 tail-end "
+        "and a dynamic path) — the Optimization Engine RPCs (cnc_create_sr_policy, "
+        "cnc_dryrun_sr_policy) are SR-MPLS only, and OAM trace routes are MPLS only. "
+        "cnc_srv6_readiness reports what the underlay advertises and what is missing.",
     ]
     lines.extend(safety_mode_lines(settings))  # the prompts' writes_note() shares these
     return "\n".join(lines)

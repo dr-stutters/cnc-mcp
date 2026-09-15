@@ -204,10 +204,73 @@ activate -> deactivate -> delete, the lab left as found):
   ``reset`` stay unexposed (``GET dashboards/healthsettings/<token>`` is the
   per-metric read; an unknown token answers ``{}``).
 
+**SRV6LOCATOR** (scouted live 2026-09-15 on an SR-MPLS-only lab — no locator,
+no SRV6LOCATOR policy — so every data read there is legitimately empty and
+the 4xx/5xx texts and the empty envelopes are the verified facts; the
+populated shape awaits the SRv6 underlay):
+
+- Template ``SRV6LOCATOR`` = schema ``SRV6LOCATOR``, one metric ``outBitRate``
+  (``TCAEnabled false``, NO ``unitType`` in the template catalogue), default
+  cadence 900 s, allowed 0/300/600/900/1800/3600, port groups not supported.
+  ``GET dashboards/srv6locator/metrics`` -> ``[{"name": "outBitRate", "unit":
+  "bps"}]`` is the only place its unit is stated (the graph's top-level
+  ``unit`` is the enum, ``BITS_PER_SECOND`` on the lsp-traffic analogue).
+- ``GET dashboards/srv6locator/graph/{metrics}`` (comma list) and ``graph/all``
+  take ``device`` (inventory uuid, MANDATORY: missing -> 400 "Required request
+  parameter 'device'"; malformed -> 400 ``DEVICE_UUID_ILLEGAL_ARGUMENT``
+  "Invalid device"; a well-formed uuid the inventory does not know -> 200
+  ``[]``), a mandatory window (``timeInterval`` hours — 0 accepted — or
+  ``from`` + ``to`` in the ``.SSSZ`` form, a bad ``from`` -> 500 "Text
+  'yesterday' could not be parsed"; ``to`` BEFORE ``from`` -> 400
+  ``WRONG_START_END_TIME`` "Endtime must be greater than startTime!" while
+  equal bounds are accepted (200 ``[]``); neither -> 400
+  ``MISSING_TIME_DETAILS``), optional
+  ``prefix`` / ``length`` (independent, NOT validated — garbage -> ``[]``) and
+  ``pageSize`` (default 10 000) / ``page`` over the SAMPLES of each series.
+  An unknown metric alone in the path -> **500** "Failed to find any of the
+  given metrics: [x]"; mixed with a known one it is silently dropped (200);
+  metric names match case-insensitively (``outbitrate`` -> 200, the answer's
+  ``metricName`` in the catalogue spelling) — but a metric REPEATED in the
+  path, exactly (``outBitRate,outBitRate``) or by case
+  (``outBitRate,outbitrate``), answers 200 ``[]`` where the single spelling
+  answers the populated series (verified live 2026-09-15 on the populated
+  lsp-traffic graph, the same serialiser), so the tool dedups the names
+  case-insensitively before sending. A page past the end (``page=999``)
+  answers the same bare ``[]`` as a window with no data or an unknown key.
+  The undocumented ``events`` / ``thresholds`` params are accepted silently.
+  cnc_get_srv6_locator_statistics wraps the graph (metrics validated against
+  the catalogue, host name resolved through ``policies/inventory-devices``,
+  the empty answer naming the policy state on page 1 and the paging rule on
+  a later page).
+- The answer is ``GraphResponseGraphEntry[]`` — verified populated on the
+  sibling ``lsp-traffic`` graph: ``[{metricName, metricClassificationId,
+  metrics: [{keys: {...}, data: [{value, timestamp (ms ISO)}], avg, min,
+  max, events: null}], thresholds: [], avg, min, max, unit}]``, one element
+  per metric, one ``metrics[]`` entry per key tuple, samples oldest first;
+  ``pageSize=3&page=1`` -> the 3 oldest, ``page=2`` -> the next 3, the last
+  page short, no total. The srv6locator key set (spec: ``prefix`` /
+  ``length``; probably ``hostname`` + ``device`` like every other schema) is
+  unverified until a locator is collected.
+- ``dashboards/statistics?schema=SRV6LOCATOR`` works through
+  cnc_get_performance_statistics unchanged (``records 0`` on the lab; its
+  ``metrics=`` IS validated, 400 ``INVALID_SCHEMA_METRIC_COMBO`` whose
+  ``parameters`` are ``[schema, the first unknown metric]`` whatever the order
+  of the list — ``cpuUtilization,bogus`` and ``bogus,cpuUtilization`` both
+  name ``bogus``; the names themselves are matched case-insensitively and
+  echoed in the caller's spelling, ``metrics=ifinbitsrate`` -> 200 with the
+  row keyed ``ifinbitsrate``, all verified live 2026-09-15); top-N
+  refuses the schema (400 INVALID_SCHEMA_METRIC_COMBO, as :data:`TOP_N_SCHEMAS`
+  says); ``GET dashboards/healthsettings`` has no SRV6LOCATOR key and
+  ``healthsettings/SRV6LOCATOR_outBitRate`` answers ``{}``. There is no
+  ``dashboards/srpolicy/*`` (500 "No endpoint"); the SR-policy graph area is
+  ``lsp-traffic`` (keys ``srName`` | ``color`` + ``endpoint``, 400
+  ``MISSING_SR_POLICY_KEYS`` without them) — not exposed.
+
 Still NOT exposed: ``PUT dashboards/healthsettings`` (+ ``reset``), TCA
 thresholds on a policy (``thresholds`` is sent as ``{}`` on create and kept
-as-is on update), the per-schema graph endpoints
-(``dashboards/<area>/graph/...``) and ``dashboards/summary/topN``.
+as-is on update), the other per-schema graph endpoints
+(``dashboards/<area>/graph/...`` for interfaces, crc, qos, ptp, gnss, synce,
+optics, otu, lsp-traffic, devices, custom) and ``dashboards/summary/topN``.
 """
 
 from __future__ import annotations
@@ -218,6 +281,7 @@ import logging
 import re
 import time
 import uuid as uuid_lib
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Any
 
@@ -258,6 +322,9 @@ STATISTICS_URL = f"{PERFORMANCE}/dashboards/statistics"
 TOPN_URL = f"{PERFORMANCE}/dashboards/topn"
 TOPN_COLUMNS_URL = f"{TOPN_URL}/columns"
 SUMMARY_URL = f"{PERFORMANCE}/dashboards/summary"
+SRV6_LOCATOR_URL = f"{PERFORMANCE}/dashboards/srv6locator"
+SRV6_LOCATOR_METRICS_URL = f"{SRV6_LOCATOR_URL}/metrics"
+SRV6_LOCATOR_GRAPH_URL = f"{SRV6_LOCATOR_URL}/graph"
 
 NPM_LSP_UTILIZATIONS_URL = f"{NPM}/lsp/utilizations"
 NPM_LSP_MAX_UTILIZATION_URL = f"{NPM}/lsp/max/utilization"
@@ -319,12 +386,29 @@ _DOCUMENTED_REACHABILITY = {
     "CONN_STATE_MAX",
     "CONN_STATE_DEGRADED",
 }
+# A hint for performance_error(): the meaning of a code, ``(meaning, guidance)``, or a
+# callable given the parsed envelope (``{"code", "details", "parameters"}``) that returns
+# either — for a meaning that must name what the PLATFORM rejected (its ``parameters``)
+# rather than what the tool sent (INVALID_SCHEMA_METRIC_COMBO names the one unknown metric
+# of a list, verified live 2026-09-15).
+Hint = str | tuple[str, str]
+HintSource = Hint | Callable[[dict[str, Any]], Hint]
 # Spring error-envelope codes this module explains (verified live, see the module doc).
 CODE_MISSING_POLICY_ID = "MISSING_POLICY_ID"
 CODE_MISSING_POLICY_HISTORY = "MISSING_POLICY_HISTORY"
 CODE_INVALID_SCHEMA = "INVALID_SCHEMA"
 CODE_INVALID_SCHEMA_METRIC_COMBO = "INVALID_SCHEMA_METRIC_COMBO"
 CODE_MISSING_TIME_DETAILS = "MISSING_TIME_DETAILS"
+# Graph-endpoint codes (verified live 2026-09-15 on dashboards/srv6locator/graph): a
+# malformed ``device`` (not a uuid) and an explicit window whose ``to`` is BEFORE ``from``
+# ("Endtime must be greater than startTime!"; equal bounds answer 200 ``[]``). A WELL-FORMED
+# uuid the inventory does not know is NOT an error either — it answers 200 ``[]``.
+CODE_DEVICE_UUID_ILLEGAL_ARGUMENT = "DEVICE_UUID_ILLEGAL_ARGUMENT"
+CODE_WRONG_START_END_TIME = "WRONG_START_END_TIME"
+# An unknown metric ALONE in the graph path is a 500 whose ``message`` is this sentence
+# (verified live: "Failed to find any of the given metrics: [bogusMetric]"); next to a known
+# metric it is silently dropped (200). The tool validates against the catalogue first.
+GRAPH_UNKNOWN_METRIC_MARKER = "failed to find any of the given metrics"
 # Policy-write codes (verified live 2026-09-15; POLICY_EXITS is the platform's spelling).
 CODE_POLICY_EXISTS = "POLICY_EXITS"
 CODE_INVALID_POLICY_TYPE = "INVALID_POLICY_TYPE"
@@ -370,6 +454,20 @@ _POLICY_ID_RE = re.compile(r"^\d+$")
 # The longest window the statistics dashboard is asked for in hours: the default weekly
 # retention (9072 h); anything older is gone whatever the request says.
 MAX_HOURS = 9072
+# The SRV6LOCATOR template / schema and the one metric its catalogue lists on 7.2
+# (``GET dashboards/srv6locator/metrics`` -> ``[{"name": "outBitRate", "unit": "bps"}]``,
+# verified live 2026-09-15). The graph path takes ``all`` for every metric.
+SRV6_LOCATOR_SCHEMA = "SRV6LOCATOR"
+SRV6_LOCATOR_DEFAULT_METRIC = "outBitRate"
+GRAPH_ALL_METRICS = "all"
+# A graph metric name goes into the URL PATH (``graph/<metric[,metric]>``): only the
+# characters a catalogue name has are let through, so a stray '/' or space can neither
+# change the route nor be read as "no data".
+_METRIC_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+# Samples per graph page: the spec's default is 10 000; 100 keeps a 24 h window at the
+# template's default 900 s cadence (96 samples) on one page and the answer readable.
+GRAPH_PAGE_SIZE = 100
+GRAPH_MAX_PAGE_SIZE = 10000
 
 _ISO_TIME_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:?\d{2})$"
@@ -666,16 +764,19 @@ def error_envelope(response: httpx.Response) -> dict[str, Any] | None:
 
 
 def performance_error(
-    response: httpx.Response, hints: dict[str, str | tuple[str, str]] | None = None
+    response: httpx.Response, hints: Mapping[str, HintSource] | None = None
 ) -> PlatformError:
     """A PlatformError for a failed performance/v1 answer: ``<meaning> (<CODE>). <guidance>``
-    for a code in ``hints`` (value: the meaning, or (meaning, guidance)), ``<details>
-    (<CODE>)`` for any other enveloped code, and the generic http_error otherwise."""
+    for a code in ``hints`` (value: the meaning, (meaning, guidance), or a callable given
+    the envelope that returns either — see :data:`HintSource`), ``<details> (<CODE>)`` for
+    any other enveloped code, and the generic http_error otherwise."""
     envelope = error_envelope(response)
     if envelope is None:
         return http_error(response)
     code = envelope["code"]
     hint = (hints or {}).get(code)
+    if callable(hint):
+        hint = hint(envelope)
     guidance = ""
     if isinstance(hint, tuple):
         meaning, guidance = hint
@@ -1392,6 +1493,239 @@ def series_section(title: str, samples: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+# --- srv6locator graph (pure helpers) -----------------------------------------
+
+
+def parse_locator_prefix(prefix: str | None, length: int | None) -> tuple[str | None, int | None]:
+    """The optional ``prefix`` / ``length`` locator filter of the srv6locator graph:
+    ``('fc00:0:1::', 48)`` from ``prefix='fc00:0:1::'`` + ``length=48``, or from the CIDR
+    form ``prefix='fc00:0:1::/48'`` (a ``length`` that disagrees with the CIDR's is
+    refused); either half may be given alone (the platform accepts them independently,
+    verified live). The prefix must parse as an IPv6 address and, once a length is known,
+    must have NO bits set beyond it (``fc00:0:1::1/48`` is refused — the locator is
+    ``fc00:0:1::/48``) — the platform does NOT validate either (``prefix=not-a-prefix``
+    and ``prefix=fc00:0:1::1&length=48`` both answered 200 ``[]`` live, 2026-09-15), so a
+    typo would read as "no data"; both are refused here before anything is sent. The
+    prefix is sent in Python's compressed lower-case form (``FC00:0000:0001::`` ->
+    ``fc00:0:1::``); whether the platform's match survives a re-spelt prefix is
+    UNVERIFIED until a locator is collected."""
+    text = (prefix or "").strip()
+    if not text:
+        return None, length
+    address, sep, bits = text.partition("/")
+    address = address.strip()
+    cidr_length: int | None = None
+    if sep:
+        bits = bits.strip()
+        if not _POLICY_ID_RE.match(bits) or int(bits) > 128:
+            raise PlatformError(
+                f"prefix '{prefix}' has an invalid length after '/': expected 0-128 (e.g. "
+                "'fc00:0:1::/48'). Nothing was sent."
+            )
+        cidr_length = int(bits)
+        if length is not None and length != cidr_length:
+            raise PlatformError(
+                f"prefix '{prefix}' says /{cidr_length} but length={length} — pass one or the "
+                "same value in both. Nothing was sent."
+            )
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.version != 6:
+        raise PlatformError(
+            f"prefix '{prefix}' is not an IPv6 locator prefix (e.g. 'fc00:0:1::' with "
+            "length=48, or 'fc00:0:1::/48'). The platform does not validate it and would "
+            "answer an empty list for a typo. Nothing was sent."
+        )
+    effective_length = cidr_length if cidr_length is not None else length
+    if effective_length is None:
+        return str(parsed), None
+    try:
+        network = ipaddress.ip_network(f"{parsed}/{effective_length}", strict=True)
+    except ValueError:
+        raise PlatformError(
+            f"prefix '{prefix}' has bits set beyond /{effective_length} (e.g. 'fc00:0:1::1/48' "
+            "names a host inside the locator 'fc00:0:1::/48'; pass the locator prefix). The "
+            "platform does not validate it and would answer an empty list. Nothing was sent."
+        ) from None
+    return str(network.network_address), effective_length
+
+
+def parse_graph_metrics(text: str | None, catalogue: list[str] | None) -> list[str] | None:
+    """The metric names for the srv6locator graph path: ``'outBitRate'`` /
+    ``'outBitRate, x'`` -> ``['outBitRate', ...]`` (order kept); ``'all'`` or blank -> None
+    (``graph/all``). Duplicates are dropped CASE-INSENSITIVELY whether or not a catalogue
+    is at hand, the first spelling kept: a metric repeated in the path — exactly
+    (``outBitRate,outBitRate``) or by case (``outBitRate,outbitrate``) — answers 200 ``[]``
+    where the single spelling answers the populated series (verified live 2026-09-15 on
+    the sibling lsp-traffic graph, the same serialiser), so a duplicate would read as "no
+    data". A name with anything but letters, digits and '_' is refused: it goes into the
+    URL path. With a ``catalogue`` (the names of ``GET dashboards/srv6locator/metrics``)
+    every name is matched case-insensitively and sent in the catalogue's spelling; an
+    unknown name is refused naming the catalogue — the wire answers a 500 "Failed to find
+    any of the given metrics" for an unknown metric alone and silently DROPS it next to a
+    known one (both verified live 2026-09-15). Without a catalogue (its lookup failed) the
+    names pass as given (the wire matches them case-insensitively and answers the
+    catalogue's ``metricName``)."""
+    names = split_csv(text)
+    if not names or any(n.lower() == GRAPH_ALL_METRICS for n in names):
+        if len(names) > 1:
+            raise PlatformError(
+                f"metrics '{text}' mixes 'all' with metric names — pass 'all' alone, or the "
+                "names. Nothing was sent."
+            )
+        return None
+    by_lower = {c.lower(): c for c in catalogue} if catalogue is not None else None
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not _METRIC_NAME_RE.match(name):
+            raise PlatformError(
+                f"metric '{name}' is not a metric name (letters, digits and '_' only, e.g. "
+                "'outBitRate'; it goes into the URL path). Nothing was sent."
+            )
+        canonical = name
+        if by_lower is not None:
+            canonical = by_lower.get(name.lower()) or ""
+            if not canonical:
+                raise PlatformError(
+                    f"unknown SRv6 locator metric '{name}': the platform's srv6locator "
+                    f"catalogue has {', '.join(catalogue or []) or '(nothing)'} (GET "
+                    "dashboards/srv6locator/metrics; 'all' selects every metric). The wire "
+                    "answers 500 for an unknown metric and silently drops one sent next to a "
+                    "known metric. Nothing was sent."
+                )
+        if canonical.lower() in seen:
+            continue
+        seen.add(canonical.lower())
+        out.append(canonical)
+    return out
+
+
+def graph_points(data: Any) -> list[dict[str, Any]]:
+    """The ``data`` of one graph series (``[{"value", "timestamp"}]``) as NPM-shaped samples
+    ``[{"tst": <timestamp>, "value": <value>}]`` so series_stats / sample_spacing /
+    sample_line apply unchanged (the dashboard stamps samples with milliseconds,
+    ``2026-09-15T15:16:48.947Z``, which parse_iso_time accepts)."""
+    return [{"tst": p.get("timestamp"), "value": p.get("value")} for p in _list_of_dicts(data)]
+
+
+def locator_keys_label(keys: dict[str, Any]) -> str:
+    """'PE1 fc00:0:1::/48' — the ``hostname`` when the platform sends one, the locator as a
+    CIDR when both ``prefix`` and ``length`` are there (else whichever is), then any other
+    populated key as key=value; the ``device`` uuid is left to the JSON form. The exact key
+    set of an srv6locator series is UNVERIFIED (no locator has been collected yet): the
+    spec's own parameters are ``prefix`` / ``length`` and every other schema's keys carry
+    ``hostname`` + ``device``."""
+    parts: list[str] = []
+    host = keys.get("hostname")
+    if host not in (None, ""):
+        parts.append(str(host))
+    prefix, length = keys.get("prefix"), keys.get("length")
+    if prefix not in (None, "") and length not in (None, ""):
+        parts.append(f"{prefix}/{length}")
+    elif prefix not in (None, ""):
+        parts.append(str(prefix))
+    elif length not in (None, ""):
+        parts.append(f"length={length}")
+    for key, value in keys.items():
+        if key in ("hostname", "prefix", "length", "device") or value in (None, ""):
+            continue
+        parts.append(f"{key}={value}")
+    return " ".join(parts) or "?"
+
+
+def graph_series_view(series: dict[str, Any]) -> dict[str, Any]:
+    """One ``metrics[]`` entry of a GraphResponseGraphEntry as ``{"keys", "label", "avg",
+    "min", "max", "stats": series_stats(...), "samples": [{"timestamp", "value"}],
+    "events"}`` (``events`` is null when not requested — verified live on lsp-traffic)."""
+    points = graph_points(series.get("data"))
+    return {
+        "keys": _dict(series.get("keys")),
+        "label": locator_keys_label(_dict(series.get("keys"))),
+        "avg": series.get("avg"),
+        "min": series.get("min"),
+        "max": series.get("max"),
+        "stats": series_stats(points, "value"),
+        "samples": _list_of_dicts(series.get("data")),
+        "events": series.get("events"),
+    }
+
+
+def graph_entry_view(entry: dict[str, Any]) -> dict[str, Any]:
+    """A GraphResponseGraphEntry (one per metric) as ``{"metric", "classification", "unit",
+    "avg", "min", "max", "thresholds", "series": [graph_series_view(...)]}``."""
+    return {
+        "metric": entry.get("metricName"),
+        "classification": entry.get("metricClassificationId"),
+        "unit": entry.get("unit"),
+        "avg": entry.get("avg"),
+        "min": entry.get("min"),
+        "max": entry.get("max"),
+        "thresholds": _list_of_dicts(entry.get("thresholds")),
+        "series": [graph_series_view(s) for s in _list_of_dicts(entry.get("metrics"))],
+    }
+
+
+def graph_entry_lines(view: dict[str, Any]) -> list[str]:
+    """'## outBitRate (BITS_PER_SECOND): 1 series; avg 0, min 0, max 0' then, per series,
+    '- **PE1 fc00:0:1::/48**: 96 sample(s) (... to ...; 15-minute spacing): value avg 0, ...'
+    and one indented '  - <timestamp>: value V' line per sample."""
+    unit = view.get("unit")
+    lines = [
+        "",
+        f"## {view.get('metric') or '?'}" + (f" ({unit})" if unit else "") + ": "
+        f"{len(view['series'])} series; avg {num_text(view.get('avg'))}, min "
+        f"{num_text(view.get('min'))}, max {num_text(view.get('max'))}",
+    ]
+    for series in view["series"]:
+        lines.append(f"- **{series['label']}**: {stats_text(series['stats'], 'value')}")
+        lines.extend(f"  {sample_line(p)}" for p in graph_points(series["samples"]))
+        if not series["samples"]:
+            lines.append("  (no samples)")
+    if not view["series"]:
+        lines.append("(no series)")
+    return lines
+
+
+def graph_page_full(views: list[dict[str, Any]], page_size: int) -> bool:
+    """True when any series filled the page — ``pageSize`` / ``page`` page through the
+    SAMPLES of each series, oldest first, and no total is reported (verified live on
+    lsp-traffic: pageSize=3 page=1 -> the 3 oldest, page=2 -> the next 3, the last page
+    short), so "a full page" is the only "more may exist" signal."""
+    return any(len(s["samples"]) >= page_size for v in views for s in v["series"])
+
+
+def srv6_locator_policy_text(policies: list[dict[str, Any]]) -> str:
+    """What the policy list says about SRV6LOCATOR collection — the first precondition of
+    any locator sample: 'no SRV6LOCATOR monitoring policy exists ...' or 'SRV6LOCATOR
+    policies: 5 'x' active (collection OK), 6 'y' inactive ...'."""
+    matching = [
+        policy_view(p)
+        for p in policies
+        if str(_dict(p.get("monitoringPolicy")).get("policyTemplate") or "").upper()
+        == SRV6_LOCATOR_SCHEMA
+    ]
+    if not matching:
+        return (
+            "no SRV6LOCATOR monitoring policy exists (cnc_list_performance_policies), so no "
+            "locator is being collected: create one with cnc_create_performance_policy("
+            "template='SRV6LOCATOR', schemas_interval='900', devices=<host name>) and "
+            "activate it"
+        )
+    described = ", ".join(
+        f"{v.get('id')} '{v.get('name') or '?'}' "
+        f"{'active' if v.get('active') else 'inactive'} (collection "
+        f"{v.get('collection_status') or '?'})"
+        for v in matching
+    )
+    return (
+        f"SRV6LOCATOR policies: {described} — check that an active one covers this device "
+        "(cnc_list_performance_policy_devices) and that a cadence has elapsed since activation"
+    )
+
+
 # --- policy and retention writes (pure helpers) ------------------------------
 
 
@@ -1725,7 +2059,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def perf_get(
         path: str,
         params: dict[str, Any] | None = None,
-        hints: dict[str, str | tuple[str, str]] | None = None,
+        hints: Mapping[str, HintSource] | None = None,
     ) -> Any:
         """``GET`` on performance/v1: a Spring error envelope becomes the precise PlatformError
         of performance_error(); the JSON body otherwise (None for an empty body)."""
@@ -2148,7 +2482,13 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         CEPMCRC: crc, crcPercentage; deviceHealth -> CPU cpuUtilization,
         MEMORY memoryUtilization, DVAVAILABILITY deviceAvailability, ENVTEMP
         envTemperatureX100 / envTemperatureInletX100; SRPOLICY -> outBitRate,
-        outPktsRate). Dashboards take ``<SCHEMA>_<metric>`` tokens
+        outPktsRate; SRV6LOCATOR -> SRV6LOCATOR: outBitRate — verified live
+        2026-09-15: default 900 s, allowed 0/300/600/900/1800/3600, port
+        groups not supported, and its ``outBitRate`` carries NO unitType,
+        so it prints "outBitRate (-)"; ``GET dashboards/srv6locator/metrics``
+        says bps, and cnc_get_srv6_locator_statistics graphs it per locator
+        once an SRV6LOCATOR policy is active and the device advertises a
+        locator). Dashboards take ``<SCHEMA>_<metric>`` tokens
         (``CEPMINTERFACE_ifInUtilization``) — never the template name. Use it
         before cnc_get_performance_statistics / _top_n / _summary when unsure
         of a schema or metric spelling.
@@ -2336,7 +2676,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             Field(
                 description=(
                     "Comma-separated metric names of the schema to return (e.g. "
-                    "'ifInUtilization,ifOutUtilization'); blank for every metric."
+                    "'ifInUtilization,ifOutUtilization'); blank for every metric. Matched "
+                    "case-insensitively and echoed in your spelling as the row keys — use the "
+                    "catalogue spelling (cnc_list_performance_policy_templates)."
                 ),
                 max_length=1000,
             ),
@@ -2396,9 +2738,34 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         INVALID_SCHEMA. Schemas and metric names:
         cnc_list_performance_policy_templates (INTERFACE -> CEPMINTERFACE /
         CEPMCRC, SRPOLICY, deviceHealth -> CPU / MEMORY / DVAVAILABILITY /
-        ENVTEMP, ...). For a ranked list use cnc_get_performance_top_n; for a
-        time series of one metric across the network use
-        cnc_get_performance_summary.
+        ENVTEMP, SRV6LOCATOR -> outBitRate, ...). For a ranked list use
+        cnc_get_performance_top_n; for a time series of one metric across
+        the network use cnc_get_performance_summary.
+
+        SRV6LOCATOR (verified live 2026-09-15 on an SR-MPLS-only lab):
+        ``schema=SRV6LOCATOR`` is accepted — with ``timeInterval``, ``units``,
+        ``device`` and ``metrics=outBitRate`` alike — and answered
+        ``{"schema": "SRV6LOCATOR", "page": 1, "records": 0, "entries": []}``
+        because no SRV6LOCATOR policy exists there and no device advertises
+        a locator; ``metrics=bogus`` IS validated (400
+        INVALID_SCHEMA_METRIC_COMBO, unlike the srv6locator graph). The key
+        set of a populated SRV6LOCATOR row awaits the SRv6 underlay (spec:
+        the locator ``prefix`` / ``length``). An empty SRV6LOCATOR answer
+        points to cnc_get_srv6_locator_statistics, which graphs one device's
+        locators and states both preconditions.
+
+        ``metrics`` on the wire (verified live 2026-09-15): names are matched
+        case-insensitively and echoed in the CALLER's spelling as the row
+        keys (``metrics=ifinbitsrate`` on CEPMINTERFACE -> 200, the row's
+        metrics keyed ``ifinbitsrate``; ``IFINBITSRATE`` likewise), so only
+        an unknown name is the 400 — and its envelope names the schema and
+        the FIRST unknown metric of the list whatever the order given
+        (``cpuUtilization,bogus`` and ``bogus,cpuUtilization`` both ->
+        ``parameters ["CPU", "bogus"]``), which is what the error reports;
+        the valid names in the same list are never blamed. The
+        ``template_units`` annotation of with_units=true is keyed by the
+        catalogue spelling, so pass metric names as
+        cnc_list_performance_policy_templates spells them.
 
         SRPOLICY rows (verified live 2026-09-14): the platform sends ``color
         0`` and ``endpoint ""`` in every row and only the ``name``
@@ -2479,8 +2846,15 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             page_size P: this page is the whole collection") or the paging
             hint, so no confirmation call is needed; "Error: unknown
             performance schema '<x>' (INVALID_SCHEMA). ..." listing the known
-            schemas; "Error: from_time must be ..." (nothing sent) for a bad
-            time; "Error: ..." on an API failure.
+            schemas; "Error: schema <S> has no metric named <x>
+            (INVALID_SCHEMA_METRIC_COMBO). The platform matches metric names
+            case-insensitively ..." naming the first unknown metric of the
+            list as the platform's envelope names it (verified live
+            2026-09-15 with SRV6LOCATOR + bogus and CPU cpuUtilization,bogus;
+            "at least one of the metrics <a, b> is not a metric of schema
+            <S>" should the envelope carry no parameters); "Error: from_time
+            must be ..." (nothing sent) for a bad time; "Error: ..." on an API
+            failure.
         """
         try:
             schema_name = parse_schema(schema)
@@ -2502,11 +2876,40 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             params["units"] = "true" if with_units else "false"
             params["pageSize"] = page_size
             params["page"] = page
-            hints: dict[str, str | tuple[str, str]] = {
+
+            def metric_combo_hint(envelope: dict[str, Any]) -> tuple[str, str]:
+                # Verified live 2026-09-15: the envelope's ``details`` is the unexpanded
+                # "Policy {0} or metric {1} do not exist" and its ``parameters`` are
+                # [schema, the FIRST unknown metric] whatever the order of ``metrics=``
+                # (cpuUtilization,bogus and bogus,cpuUtilization -> ["CPU", "bogus"]; two
+                # unknown names -> only the first) — so the meaning names what the platform
+                # rejected, never the valid names sent next to it. Names are matched
+                # case-insensitively (metrics=ifinbitsrate -> 200), so case is never the cause.
+                parameters = envelope.get("parameters") or []
+                if len(parameters) == 2 and parameters[1] not in (None, ""):
+                    meaning = f"schema {parameters[0] or schema_name} has no metric named "
+                    meaning += str(parameters[1])
+                elif len(metric_names) > 1:
+                    meaning = (
+                        f"at least one of the metrics {', '.join(metric_names)} is not a metric "
+                        f"of schema {schema_name}"
+                    )
+                else:
+                    meaning = (
+                        f"schema {schema_name} has no metric named "
+                        f"{', '.join(metric_names) or '(none given)'}"
+                    )
+                return meaning, (
+                    "The platform matches metric names case-insensitively and echoes your "
+                    f"spelling in the row keys; use the catalogue spelling — {_SCHEMA_HELP}"
+                )
+
+            hints: dict[str, HintSource] = {
                 CODE_INVALID_SCHEMA: (
                     f"unknown performance schema '{schema_name}'",
                     f"Schemas on 7.2: {', '.join(KNOWN_SCHEMAS)}. {_SCHEMA_HELP}",
                 ),
+                CODE_INVALID_SCHEMA_METRIC_COMBO: metric_combo_hint,
                 CODE_MISSING_TIME_DETAILS: (
                     "the platform needs a time window",
                     "Pass hours, or both from_time and to_time.",
@@ -2573,10 +2976,18 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 }
                 return finalize(to_json(payload), settings)
             if not entries:
+                srv6_hint = (
+                    " SRV6LOCATOR needs an active SRV6LOCATOR policy (cnc_create_performance_"
+                    "policy template SRV6LOCATOR) AND a device that advertises an SRv6 "
+                    "locator; cnc_get_srv6_locator_statistics graphs one device's locators "
+                    "and says which precondition is missing."
+                    if schema_name == SRV6_LOCATOR_SCHEMA
+                    else ""
+                )
                 return finalize(
                     f"No {schema_name} statistics for {window_text} (page {page}). Either no "
                     "active policy polls this schema (cnc_list_performance_policies), the "
-                    "window has no data, or the page is past the end.",
+                    f"window has no data, or the page is past the end.{srv6_hint}",
                     settings,
                 )
             filters = []
@@ -3418,13 +3829,443 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         except Exception as e:
             return format_error(e)
 
+    # --- srv6locator graph ------------------------------------------------------
+
+    async def srv6_locator_device(host_name: str, device_uuid: str) -> tuple[str, str]:
+        """``(inventory uuid, label)`` for exactly one of ``host_name`` / ``device_uuid``:
+        a host name is resolved with inventory_matches (the same lookup the policy writes
+        use; must match exactly one device), a uuid is checked to BE a uuid (a malformed
+        one is the platform's 400 DEVICE_UUID_ILLEGAL_ARGUMENT) and sent canonical — whether
+        the inventory knows it is checked only when the answer is empty (a well-formed
+        unknown uuid answers 200 ``[]``, verified live 2026-09-15)."""
+        name, uuid_text = host_name.strip(), device_uuid.strip()
+        if bool(name) == bool(uuid_text):
+            raise PlatformError(
+                "pass exactly one of host_name (e.g. 'PE1') or device_uuid (the inventory "
+                "uuid, e.g. 'af1986fa-e1cb-4f8c-aa83-4f05a00472e7'; cnc_list_devices shows "
+                "both). Nothing was sent."
+            )
+        if uuid_text:
+            if not is_uuid(uuid_text):
+                raise PlatformError(
+                    f"device_uuid '{uuid_text}' is not a uuid — pass the inventory uuid "
+                    "(cnc_list_devices, e.g. 'af1986fa-e1cb-4f8c-aa83-4f05a00472e7') or "
+                    "host_name='PE1'. The platform would answer 400 "
+                    f"{CODE_DEVICE_UUID_ILLEGAL_ARGUMENT}. Nothing was sent."
+                )
+            device = str(uuid_lib.UUID(uuid_text.lower()))
+            return device, device
+        rows = await inventory_matches(name)
+        if not rows:
+            raise PlatformError(
+                f"no device named '{name}' in the inventory (0 exact host-name matches; "
+                "cnc_list_devices shows host names and uuids — or pass device_uuid). Nothing "
+                "was sent."
+            )
+        if len(rows) != 1 or not is_uuid(rows[0].get("uuid")):
+            raise PlatformError(
+                f"host name '{name}' does not identify exactly one device ({len(rows)} exact "
+                "match(es)"
+                + ("" if len(rows) > 1 else ", without an inventory uuid")
+                + "; pass device_uuid — cnc_list_devices shows both). Nothing was sent."
+            )
+        device = str(uuid_lib.UUID(str(rows[0]["uuid"]).lower()))
+        return device, f"{rows[0].get('hostName')} ({device})"
+
+    async def srv6_locator_empty_reason(device: str, given_as_uuid: bool) -> str:
+        """Why an srv6locator graph answered ``[]`` — best effort, never raises: is the
+        device in the inventory (only when it was given as a uuid: a well-formed unknown
+        uuid answers the same ``[]``), and does an SRV6LOCATOR policy exist / cover it
+        (srv6_locator_policy_text)."""
+        parts: list[str] = []
+        if given_as_uuid:
+            try:
+                rows = await perf_rows(POLICY_INVENTORY_DEVICES_URL, {})
+                match = next((r for r in rows if str(r.get("uuid") or "").lower() == device), None)
+                if match is None:
+                    parts.append(
+                        f"device uuid {device} is NOT in the inventory (cnc_list_devices shows "
+                        "the uuids) — the platform answers the same empty list for an unknown "
+                        "uuid"
+                    )
+                else:
+                    parts.append(f"the device is {match.get('hostName') or '?'}")
+            except Exception as lookup_error:
+                logger.warning("inventory lookup for %s failed: %s", device, lookup_error)
+                # A non-error answer must not carry "Error: ..." mid-sentence.
+                reason = format_error(lookup_error).removeprefix("Error: ")
+                parts.append(f"(inventory check unavailable: {reason})")
+        try:
+            parts.append(srv6_locator_policy_text(_list_of_dicts(await perf_get(POLICIES_URL))))
+        except Exception as lookup_error:
+            logger.warning("policy lookup for the SRV6LOCATOR reason failed: %s", lookup_error)
+            reason = format_error(lookup_error).removeprefix("Error: ")
+            parts.append(f"(policy check unavailable: {reason})")
+        return "; ".join(parts)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_get_srv6_locator_statistics",
+        title="Get SRv6 Locator Statistics",
+        read_only=True,
+        idempotent=True,
+    )
+    async def cnc_get_srv6_locator_statistics(
+        host_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "Device host name (exact, case-insensitive, e.g. 'PE1'), resolved to its "
+                    "inventory uuid through the performance inventory; blank when device_uuid "
+                    "is given (exactly one of the two)."
+                ),
+                max_length=253,
+            ),
+        ] = "",
+        device_uuid: Annotated[
+            str,
+            Field(
+                description=(
+                    "Device inventory uuid (cnc_list_devices, e.g. "
+                    "'af1986fa-e1cb-4f8c-aa83-4f05a00472e7'); blank when host_name is given."
+                ),
+                max_length=100,
+            ),
+        ] = "",
+        prefix: Annotated[
+            str,
+            Field(
+                description=(
+                    "Only this locator: its IPv6 prefix (e.g. 'fc00:0:1::', with length=48) or "
+                    "the CIDR form 'fc00:0:1::/48'; blank for every locator of the device. Not "
+                    "validated by the platform (a typo or host bits answer empty), so it must "
+                    "parse as IPv6 with no bits beyond the length; sent compressed lower-case "
+                    "('FC00:0000:0001::' -> 'fc00:0:1::')."
+                ),
+                max_length=64,
+            ),
+        ] = "",
+        length: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Only locators of this prefix length in bits (e.g. 48 for an F3216 uSID "
+                    "locator); omit for any length (or give it inside prefix as '/48')."
+                ),
+                ge=0,
+                le=128,
+            ),
+        ] = None,
+        metrics: Annotated[
+            str,
+            Field(
+                description=(
+                    "Comma-separated locator metric names as GET dashboards/srv6locator/metrics "
+                    "lists them (7.2: only 'outBitRate'), or 'all' (or blank) for every metric. "
+                    "Validated against that catalogue before sending (case-insensitive; a name "
+                    "repeated even by case is sent once — the wire answers empty for a repeat)."
+                ),
+                max_length=500,
+            ),
+        ] = SRV6_LOCATOR_DEFAULT_METRIC,
+        hours: Annotated[int, Field(description=_HOURS_DESC, ge=1, le=MAX_HOURS)] = 24,
+        from_time: Annotated[str, Field(description=_FROM_OPTIONAL_DESC, max_length=40)] = "",
+        to_time: Annotated[str, Field(description=_TO_OPTIONAL_DESC, max_length=40)] = "",
+        page_size: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Samples per series per page (e.g. {GRAPH_PAGE_SIZE}; the platform's own "
+                    f"default is {GRAPH_MAX_PAGE_SIZE}) — paging is over each series' samples, "
+                    "oldest first, and no total is reported."
+                ),
+                ge=1,
+                le=GRAPH_MAX_PAGE_SIZE,
+            ),
+        ] = GRAPH_PAGE_SIZE,
+        page: Annotated[int, Field(description="Page number, 1-based (e.g. 1).", ge=1)] = 1,
+        response_format: Annotated[
+            ResponseFormat,
+            Field(description="'markdown' for human-readable output, 'json' for complete data."),
+        ] = ResponseFormat.MARKDOWN,
+    ) -> str:
+        """Get the per-locator time series of a device's SRv6 locator traffic
+        (``outBitRate``) over a window — the Performance dashboard's SRv6
+        locator graph, one series per locator prefix/length.
+
+        Read-only; ``GET /crosswork/performance/v1/dashboards/srv6locator/
+        graph/<metric[,metric]>`` (or ``graph/all`` for metrics='all') with
+        ``device=<inventory uuid>`` (mandatory), ``timeInterval=<hours>`` or
+        ``from=&to=`` (ISO ``YYYY-MM-DDTHH:mm:ss.SSSZ``; a window is
+        mandatory: neither answers 400 MISSING_TIME_DETAILS), optional
+        ``prefix=`` / ``length=`` and ``pageSize=&page=``. Verified LIVE on
+        7.2 (2026-09-15, an SR-MPLS-only lab with no locator and no
+        SRV6LOCATOR policy — so every data read there is legitimately empty):
+        the metric catalogue ``GET dashboards/srv6locator/metrics`` ->
+        ``[{"name": "outBitRate", "unit": "bps"}]`` (the ONE metric; the
+        template catalogue lists it with no unitType); a 24 h window, an
+        explicit window, prefix / length (each alone or both), page 2 and
+        ``timeInterval=0`` all answer 200 ``[]``; a missing ``device`` -> 400
+        "Required request parameter 'device'"; a malformed uuid -> 400
+        DEVICE_UUID_ILLEGAL_ARGUMENT "Invalid device" (refused here before
+        sending); a WELL-FORMED uuid the inventory does not know -> 200 ``[]``
+        (not an error — the tool checks the inventory when the answer is
+        empty); ``to`` before ``from`` -> 400 WRONG_START_END_TIME "Endtime
+        must be greater than startTime!" (equal bounds answer 200 ``[]``; the
+        tool refuses both before sending); an unknown metric alone in the
+        path -> **500** "Failed to
+        find any of the given metrics: [x]", and next to a known metric it is
+        silently DROPPED (200) — so metrics are validated against the
+        catalogue before sending, case-insensitively (the wire matches
+        ``outbitrate`` too and answers ``metricName`` in the catalogue
+        spelling); a metric REPEATED in the path, exactly or by case
+        (``outBitRate,outbitrate``), answers 200 ``[]`` where the single
+        spelling answers the populated series (verified on the populated
+        lsp-traffic graph, the same serialiser), so the names are also
+        deduplicated case-insensitively and a name with anything but
+        letters, digits and '_' is refused (it goes into the URL path);
+        ``prefix`` / ``length`` are NOT validated by the platform
+        (``prefix=not-a-prefix`` and ``prefix=fc00:0:1::1&length=48`` -> 200
+        ``[]``), so the prefix must parse as IPv6 with no bits set beyond the
+        length here, and it is sent in the compressed lower-case form
+        (``FC00:0000:0001::`` -> ``fc00:0:1::``) — whether the platform's
+        match survives a re-spelt prefix is UNVERIFIED until a locator is
+        collected. What a POPULATED answer looks like is verified on
+        the sibling ``lsp-traffic`` graph (same GraphResponseGraphEntry
+        shape): ``[{metricName, metricClassificationId, metrics: [{keys:
+        {...}, data: [{value, timestamp}], avg, min, max, events: null}],
+        thresholds: [], avg, min, max, unit: "BITS_PER_SECOND"}]`` — one
+        element per metric, one ``metrics[]`` entry per key tuple, samples
+        oldest first at the policy cadence, ``pageSize`` / ``page`` paging
+        through each series' SAMPLES with no total: a full page is the only
+        "more may exist" signal, and a page past the end (``page=999``)
+        answers the same bare ``[]`` as a window with no data or an unknown
+        key (verified live). AWAITING the SRv6 underlay: the exact key
+        set of a locator series (the spec's ``prefix`` / ``length``, probably
+        plus ``hostname`` / ``device`` like every other schema — rendered
+        generically, "PE1 fc00:0:1::/48"), its sample cadence and the unit
+        enum it reports.
+
+        Two preconditions for any sample, both stated in an empty PAGE-1
+        answer: an ACTIVE SRV6LOCATOR monitoring policy covering the device
+        (cnc_create_performance_policy(template='SRV6LOCATOR',
+        schemas_interval='900' — the template's default; allowed
+        0/300/600/900/1800/3600 s) then cnc_activate_performance_policy;
+        cnc_list_performance_policies shows whether one exists) and a device
+        that advertises an SRv6 locator (SR-MPLS-only nodes have none). The
+        empty page-1 answer says which policies exist and, for a uuid,
+        whether the inventory knows it (one policies GET, plus the inventory
+        for a uuid). An empty page > 1 is the paging rule, not a
+        precondition: it says the page is past the end of every series (the
+        preceding page filling ``page_size`` is the only more-may-exist
+        signal) and points at page 1 — the policy / inventory lookups are
+        skipped. For per-locator window averages instead of a series use
+        cnc_get_performance_statistics(schema='SRV6LOCATOR') (same
+        preconditions; it validates ``metrics`` with 400
+        INVALID_SCHEMA_METRIC_COMBO); SRV6LOCATOR is NOT a top-N schema and
+        has no health settings.
+
+        Time window: ``hours`` (default 24, sent as ``timeInterval``) or both
+        ``from_time`` and ``to_time`` — ISO-8601 with or without
+        milliseconds, 'Z' or a UTC offset, or epoch milliseconds; either form
+        is accepted and normalised (the cnc_get_performance_statistics
+        convention: an explicit window wins over ``hours``, one bound without
+        the other is refused). Retention: cnc_get_performance_retention.
+
+        Args:
+            host_name / device_uuid: the device (exactly one; a host name is
+                resolved with GET policies/inventory-devices?hostName=).
+            prefix / length: optional locator filter (CIDR accepted in prefix).
+            metrics: catalogue names or 'all' (default 'outBitRate').
+            hours: window length when from_time / to_time are not given.
+            from_time / to_time: explicit window (both or neither).
+            page_size / page: samples per series per page, 1-based page.
+            response_format: markdown or json.
+
+        Returns:
+            str: Markdown "# SRv6 locator outBitRate of PE1 (<uuid>), last 24 h
+            [, prefix fc00:0:1::/48], page 1" then per metric "## outBitRate
+            (BITS_PER_SECOND): N series; avg A, min B, max C", per series
+            "- **PE1 fc00:0:1::/48**: N sample(s) (<first> to <last>;
+            <spacing>): value avg A, min B, max C, last D" and one "  -
+            <timestamp>: value V" line per sample, plus "(page full: more
+            samples may exist, call again with page=2)" when a series filled
+            the page; or JSON {"device", "device_label", "metrics": [names] |
+            "all", "catalogue": [{"name", "unit"}] | null, "window": {"hours"
+            | "from", "to"}, "prefix", "length", "page", "page_size",
+            "has_more", "next_page", "count" (series across every metric),
+            "entries": [{"metric", "classification", "unit", "avg", "min",
+            "max", "thresholds", "series": [{"keys", "label", "avg", "min",
+            "max", "stats": {"count", "first_at", "last_at",
+            "spacing_seconds", ...}, "samples": [{"value", "timestamp"}],
+            "events"}]}], "empty_reason": str | null}. "No SRv6 locator samples
+            for PE1 (<uuid>) in last 24 h: no SRV6LOCATOR monitoring policy
+            exists ... and the device must advertise a locator ..." (non-error)
+            for ``[]`` on page 1, "No SRv6 locator samples for PE1 (<uuid>) in
+            last 24 h on page 2: page 2 is past the end of every series (page
+            1 filling page_size 100 is the only more-may-exist signal); page
+            1 shows whether any sample exists." (non-error, no lookups) on a
+            later page; "Error: unknown SRv6 locator metric 'x': the
+            platform's srv6locator catalogue has outBitRate ... Nothing was
+            sent."; "Error: metric 'x' is not a metric name ..."; "Error: pass
+            exactly one of host_name or device_uuid ...", "Error: no device
+            named 'x' in the inventory ...", "Error: host name 'x' does not
+            identify exactly one device ...", "Error: device_uuid 'x' is not
+            a uuid ...", "Error: prefix 'x' is not an IPv6 locator prefix
+            ...", "Error: prefix 'x' has bits set beyond /48 ..." (nothing
+            sent); "Error: the platform rejected device '<x>' as not a uuid
+            (DEVICE_UUID_ILLEGAL_ARGUMENT) ..." / "... (MISSING_TIME_DETAILS)
+            ..." / "... (WRONG_START_END_TIME) ..." from the wire; "Error: the
+            platform knows none of the metrics ..." for its 500; "Error: ..."
+            on an API failure.
+        """
+        try:
+            start, end, explicit = hours_or_window(hours, from_time, to_time)
+            locator_prefix, locator_length = parse_locator_prefix(prefix, length)
+            parse_graph_metrics(metrics, None)  # the syntax refusals cost no request
+            device, device_label = await srv6_locator_device(host_name, device_uuid)
+            # The catalogue is a nicety (it makes the unknown-metric refusal precise); when
+            # it cannot be read the names go to the wire as given.
+            catalogue: list[dict[str, Any]] | None
+            try:
+                catalogue = [
+                    {"name": str(m.get("name")), "unit": m.get("unit")}
+                    for m in _list_of_dicts(await perf_get(SRV6_LOCATOR_METRICS_URL))
+                    if m.get("name")
+                ]
+            except Exception as lookup_error:
+                logger.warning("srv6locator metric catalogue lookup failed: %s", lookup_error)
+                catalogue = None
+            names = parse_graph_metrics(
+                metrics, [c["name"] for c in catalogue] if catalogue is not None else None
+            )
+            path = f"{SRV6_LOCATOR_GRAPH_URL}/{','.join(names) if names else GRAPH_ALL_METRICS}"
+            params: dict[str, Any] = {"device": device}
+            if locator_prefix:
+                params["prefix"] = locator_prefix
+            if locator_length is not None:
+                params["length"] = locator_length
+            window: dict[str, Any]
+            if explicit:
+                params["from"] = performance_time(start)
+                params["to"] = performance_time(end)
+                window = {"from": params["from"], "to": params["to"]}
+            else:
+                params["timeInterval"] = hours
+                window = {"hours": hours}
+            params["pageSize"] = page_size
+            params["page"] = page
+            hints: dict[str, str | tuple[str, str]] = {
+                CODE_DEVICE_UUID_ILLEGAL_ARGUMENT: (
+                    f"the platform rejected device '{device}' as not a uuid",
+                    "Pass the inventory uuid (cnc_list_devices) or host_name.",
+                ),
+                CODE_MISSING_TIME_DETAILS: (
+                    "the platform needs a time window",
+                    "Pass hours, or both from_time and to_time.",
+                ),
+                CODE_WRONG_START_END_TIME: (
+                    "the platform needs to_time after from_time",
+                    "Swap or widen the window.",
+                ),
+            }
+            response = await client.request("GET", path, params=params, raise_on_error=False)
+            if not response.is_success:
+                if (
+                    response.status_code == 500
+                    and GRAPH_UNKNOWN_METRIC_MARKER in response.text.lower()
+                ):
+                    raise PlatformError(
+                        f"the platform knows none of the metrics {', '.join(names or [])} "
+                        "(its 500 'Failed to find any of the given metrics'); the srv6locator "
+                        "catalogue (GET dashboards/srv6locator/metrics) "
+                        + (
+                            f"has {', '.join(c['name'] for c in catalogue) or '(nothing)'}"
+                            if catalogue is not None
+                            else "could not be read — on 7.2 it is outBitRate"
+                        )
+                        + "; pass 'all' for every metric."
+                    )
+                raise performance_error(response, hints)
+            data = _parse_json(response) if response.content else []
+            entries = _list_of_dicts(data)
+            views = [graph_entry_view(e) for e in entries]
+            has_more = graph_page_full(views, page_size)
+            window_text = (
+                f"last {hours} h" if "hours" in window else f"{window['from']} to {window['to']}"
+            )
+            locator_text = ""
+            if locator_prefix and locator_length is not None:
+                locator_text = f", prefix {locator_prefix}/{locator_length}"
+            elif locator_prefix:
+                locator_text = f", prefix {locator_prefix}"
+            elif locator_length is not None:
+                locator_text = f", length {locator_length}"
+            empty_reason: str | None = None
+            if not views and page > 1:
+                # The platform answers the same bare [] for a page past the end as for a
+                # device with no sample (verified live: lsp-traffic pageSize=2&page=999 ->
+                # []), so a later page says the paging rule and skips the precondition
+                # lookups — page 1 is where "no sample at all" is decided.
+                empty_reason = (
+                    f"page {page} is past the end of every series (page {page - 1} filling "
+                    f"page_size {page_size} is the only more-may-exist signal); page 1 shows "
+                    "whether any sample exists"
+                )
+            elif not views:
+                empty_reason = await srv6_locator_empty_reason(device, bool(device_uuid.strip()))
+            if response_format is ResponseFormat.JSON:
+                payload = {
+                    "device": device,
+                    "device_label": device_label,
+                    "metrics": names or GRAPH_ALL_METRICS,
+                    "catalogue": catalogue,
+                    "window": window,
+                    "prefix": locator_prefix,
+                    "length": locator_length,
+                    "page": page,
+                    "page_size": page_size,
+                    "has_more": has_more,
+                    "next_page": page + 1 if has_more else None,
+                    "count": sum(len(v["series"]) for v in views),
+                    "entries": views,
+                    "empty_reason": empty_reason,
+                }
+                return finalize(to_json(payload), settings)
+            metric_text_ = ", ".join(names) if names else "every metric"
+            if not views:
+                head = f"No SRv6 locator samples for {device_label} in {window_text}{locator_text}"
+                if page > 1:
+                    return finalize(f"{head} on page {page}: {empty_reason}.", settings)
+                return finalize(
+                    f"{head}: {empty_reason}; the device must also advertise an SRv6 locator "
+                    "(an SR-MPLS-only node has none) — the SRv6 readiness playbook checks "
+                    "both. The platform does not validate prefix / length (a wrong one "
+                    "answers the same empty list).",
+                    settings,
+                )
+            lines = [
+                f"# SRv6 locator {metric_text_} of {device_label}, {window_text}{locator_text}"
+                + (f", page {page}" if page > 1 else "")
+            ]
+            for view in views:
+                lines.extend(graph_entry_lines(view))
+            if has_more:
+                lines.append(
+                    f"\n(page full: more samples may exist, call again with page={page + 1})"
+                )
+            return finalize("\n".join(lines), settings)
+        except Exception as e:
+            return format_error(e)
+
     # --- policy and retention writes -------------------------------------------
 
     async def perf_send(
         method: str,
         path: str,
         json_body: Any = None,
-        hints: dict[str, str | tuple[str, str]] | None = None,
+        hints: Mapping[str, HintSource] | None = None,
     ) -> Any:
         """A write on performance/v1 (POST is never re-sent on a 5xx / transport error — a
         lost create answer must not duplicate the policy; PUT / DELETE keep the client's
@@ -3440,7 +4281,7 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
     async def perf_rows(
         path: str,
         params: dict[str, Any],
-        hints: dict[str, str | tuple[str, str]] | None = None,
+        hints: Mapping[str, HintSource] | None = None,
     ) -> list[dict[str, Any]]:
         """Every row of a paged performance/v1 listing (``{"data": [...], "total_count":
         N}``): page 1 at LOOKUP_PAGE_SIZE, then the next pages while ``total_count`` says
@@ -3461,26 +4302,31 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 break
         return rows
 
+    async def inventory_matches(host_name: str) -> list[dict[str, Any]]:
+        """The inventory rows whose ``hostName`` IS ``host_name`` (case-insensitive), from
+        ``GET policies/inventory-devices?hostName=<name>`` (verified live: answers
+        ``{"data": [{hostName, uuid, ...}], "total_count": N}``). The platform's
+        ``hostName`` filter is a case-insensitive SUBSTRING match (verified live
+        2026-09-15: ``hostName=P`` answered P1, P2, PCE, PE1, PE2), so the exact-name match
+        is client-side and every page of the substring hits is walked (pageSize 1000)
+        before deciding."""
+        return [
+            r
+            for r in await perf_rows(POLICY_INVENTORY_DEVICES_URL, {"hostName": host_name})
+            if str(r.get("hostName") or "").lower() == host_name.lower()
+        ]
+
     async def resolve_devices(text: str) -> list[str]:
         """``devices`` -> canonical inventory uuids: a uuid is kept, a host name is looked
-        up with ``GET policies/inventory-devices?hostName=<name>`` (verified live: answers
-        ``{"data": [{hostName, uuid, ...}], "total_count": N}``) and must match exactly one
-        device by exact (case-insensitive) host name. The platform's ``hostName`` filter is
-        a case-insensitive SUBSTRING match (verified live 2026-09-15: ``hostName=P``
-        answered P1, P2, PCE, PE1, PE2), so the exact-name match is client-side and every
-        page of the substring hits is walked (pageSize 1000) before deciding. The platform
-        accepts ANY string as a device (``"PE1"`` was stored and the activated policy polled
-        nothing), so nothing but a resolved uuid is ever sent."""
+        up (inventory_matches) and must match exactly one device. The platform accepts ANY
+        string as a device (``"PE1"`` was stored and the activated policy polled nothing),
+        so nothing but a resolved uuid is ever sent."""
         out: list[str] = []
         for token in split_csv(text):
             if is_uuid(token):
                 canonical = str(uuid_lib.UUID(token.lower()))
             else:
-                rows = [
-                    r
-                    for r in await perf_rows(POLICY_INVENTORY_DEVICES_URL, {"hostName": token})
-                    if str(r.get("hostName") or "").lower() == token.lower()
-                ]
+                rows = await inventory_matches(token)
                 if len(rows) != 1 or not is_uuid(rows[0].get("uuid")):
                     raise PlatformError(
                         f"device '{token}' is not an inventory uuid and {len(rows)} device(s) "

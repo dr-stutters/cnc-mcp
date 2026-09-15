@@ -66,21 +66,17 @@ READ_TOOLS_REFUSED_BY_READ = {
 # The one write tool the Read tick permits: cw-probe-mgr's read template names
 # reactivateProbe.
 WRITE_TOOLS_PERMITTED_BY_READ = {"cnc_reactivate_probe"}
-READ_TOOL_COUNT = 184
-TOOL_COUNT = 282
-READS_PERMITTED_BY_READ = 170  # READ_TOOL_COUNT minus the 14
+READ_TOOL_COUNT = 187
+TOOL_COUNT = 285
+READS_PERMITTED_BY_READ = 173  # READ_TOOL_COUNT minus the 14
 # The requests only WRITE tools send that the stored read-only role permits (what they
 # read before they write): GETs on rows the read tools use, and the one POST a read
-# template names — every one classed R (Phase D added the config-service and
-# PM-policy GETs to the two NSO plan GETs).
+# template names — every one classed R (Phase D added the config-service GETs to the
+# two NSO plan GETs; its PM-policy inventory GET left the list when the SRv6 locator
+# statistics read tool started sending it).
 READONLY_EXCEPTIONS = [
     ("GET", "/crosswork/configsvc/v1/configs/files/{}", "cw-config-service-deprecated"),
     ("GET", "/crosswork/configsvc/v1/configs/{}", "cw-config-service-deprecated"),
-    (
-        "GET",
-        "/crosswork/performance/v1/policies/inventory-devices",
-        "performance-policies-rest-apis",
-    ),
     ("GET", "/crosswork/proxy/nso/restconf/data/{}-plan={}", "proxy_cw-proxy"),
     ("GET", "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}", "proxy_cw-proxy"),
     ("POST", "/crosswork/probemgr/v1/reactivateProbe", "cw-probe-mgr"),
@@ -442,7 +438,7 @@ def test_readonly_body_is_read_only_and_a_subset_of_the_operator_body(rbac):
     assert len(op_ticks) == OPERATOR_ROW_COUNT
 
 
-def test_stored_readonly_role_permits_170_reads_and_refuses_the_pinned_14(rbac):
+def test_stored_readonly_role_permits_173_reads_and_refuses_the_pinned_14(rbac):
     """The body as the AAA service stores it (R rows + the read templates + the baseline
     rows), evaluated by cnc_check_permissions' evaluator under Tyk's rule: exactly the
     pinned 14 read tools are refused (each through a POST outside its API's read
@@ -519,7 +515,7 @@ def test_stored_readonly_role_permits_170_reads_and_refuses_the_pinned_14(rbac):
 def test_readonly_exceptions_are_the_read_legs_of_the_write_tools(rbac):
     """The requests only write tools send that the stored read-only role permits: the
     pinned GETs (Read is GET ``/.*`` on the rows the read tools use — the NSO plan of a
-    service being provisioned, the config file and PM-policy inventory reads) plus the
+    service being provisioned and the config file reads) plus the
     one POST a read template names; every one classed R, every non-GET one sent by
     exactly the write tools the role permits, and each GET's senders refused (they also
     send a write). A request only write tools send that the Read tick does not cover
@@ -557,7 +553,7 @@ def test_readonly_exceptions_are_the_read_legs_of_the_write_tools(rbac):
         WRITE_TOOLS_PERMITTED_BY_READ
     )
     get_senders = set().union(*(senders(*e) for e in exceptions if e[0] == "GET"))
-    assert len(get_senders) == 16 and not get_senders & permitted
+    assert len(get_senders) == 14 and not get_senders & permitted
     assert "cnc_provision_service" in get_senders and "cnc_upload_ztp_config_file" not in (
         get_senders
     )
@@ -571,13 +567,12 @@ def test_readonly_exceptions_are_the_read_legs_of_the_write_tools(rbac):
     # the guide's section 2 states them
     text = DOC_PATH.read_text(encoding="utf-8")
     assert (
-        "Read on these rows also permits what the write tools read before they write: 5 GET "
+        "Read on these rows also permits what the write tools read before they write: 4 GET "
         "request templates no read tool sends — `GET /crosswork/configsvc/v1/configs/files/{}` "
         "and `GET /crosswork/configsvc/v1/configs/{}` on `cw-config-service-deprecated`; "
-        "`GET /crosswork/performance/v1/policies/inventory-devices` on "
-        "`performance-policies-rest-apis`; `GET /crosswork/proxy/nso/restconf/data/{}-plan={}` "
+        "`GET /crosswork/proxy/nso/restconf/data/{}-plan={}` "
         "and `GET /crosswork/proxy/nso/restconf/data/{}/{}-plan={}` on `proxy_cw-proxy` — sent "
-        "by 16 write tools, and the 1 POST a read template names — `POST "
+        "by 14 write tools, and the 1 POST a read template names — `POST "
         "/crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr` (`cnc_reactivate_probe`). "
         "`cnc_reactivate_probe` is the one write tool whose every request the role permits "
         "(section 6); every other write tool also sends a request it refuses."
@@ -1499,7 +1494,7 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
     """The pinned verdicts hold against the rows the service actually stored, not only
     against the generator's model of them: the all-Read read-back refuses the 14 and
     permits cnc_reactivate_probe; the R/W/D read-back of 2026-09-14 permits every tool
-    of that generation — 254 of the 282, the other 28 being Phase D write tools needing
+    of that generation — 257 of the 285, the other 28 being Phase D write tools needing
     a row or tick it did not submit — exactly the model's verdict on its submitted
     rows; the UI-built role (three alarm rows) permits only the alarm-settings reads
     and the suppression-policy writes, and lets cnc_check_permissions read the role
@@ -1516,7 +1511,7 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
     data = fixture("stored_operator_WD_experiment")
     verdict = evaluate_rbac_map(names, rbac, fixture_access_rights(data))
     assert verdict["not_in_map"] == [] and len(names) == TOOL_COUNT
-    assert len(verdict["permitted"]) == 254 and len(verdict["refused"]) == 28
+    assert len(verdict["permitted"]) == 257 and len(verdict["refused"]) == 28
     assert reads <= set(verdict["permitted"])
     experiment = data["submitted"]["ticks"]
     for entry in verdict["refused"]:
@@ -1550,9 +1545,9 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
 
 def test_generated_bodies_read_back_give_the_model_verdict_for_every_tool(rbac):
     """The read-backs of the committed bodies, evaluated by cnc_check_permissions'
-    evaluator on the rows the service actually stored: the read-only role permits 170 of
-    the 184 read tools and refuses the pinned 14 (plus cnc_reactivate_probe permitted),
-    the operator role permits all 282 — the same verdict, tool for tool, as the model's
+    evaluator on the rows the service actually stored: the read-only role permits 173 of
+    the 187 read tools and refuses the pinned 14 (plus cnc_reactivate_probe permitted),
+    the operator role permits all 285 — the same verdict, tool for tool, as the model's
     stored form of each body (the split rows permit every request the tools send on
     the POST-delete APIs). ``read_back_verdict`` / ``verdict_drift`` are what the
     generator uses to say so in section 6."""
@@ -1759,7 +1754,7 @@ def test_doc_names_the_refused_tools_and_the_permitted_write(rbac):
     text = DOC_PATH.read_text(encoding="utf-8")
     assert "### The 14 read tools a Read-only role cannot call" in text
     assert f"permits {READS_PERMITTED_BY_READ} of the {READ_TOOL_COUNT} read tools" in text
-    assert "permits 170 of the 184 read tools" in text
+    assert "permits 173 of the 187 read tools" in text
     for name in READ_TOOLS_REFUSED_BY_READ:
         assert f"  - `{name}`: `POST /crosswork/" in text, name
     assert "CNC_MCP_DISABLED_TOOLS=" + ",".join(sorted(READ_TOOLS_REFUSED_BY_READ)) in text
@@ -1836,7 +1831,8 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
         "template-free"
     ) in text
     # the smoke ran on the previous generation of the bodies — for the 245 tools of that
-    # day; the 37 Phase D tools were not exercised by it and the read-only verdict it
+    # day; the 40 tools added since (37 Phase D, 3 SRv6 reads) were not exercised by it
+    # and the read-only verdict it
     # confirmed still holds tool for tool — and the committed bodies were read back and
     # give the same verdict: said in both places (section 1 and 6), computed from the
     # generator's SMOKE_* constants and the map, never hard-coded
@@ -1855,7 +1851,7 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
         "identical (the same 14 read tools refused under `cnc-mcp-readonly`, "
         "`cnc_reactivate_probe` permitted, every tool permitted under `cnc-mcp-operator`); "
     )
-    assert "37 tools added since (2 read, 35 write)" in smoke_clause
+    assert "40 tools added since (5 read, 35 write)" in smoke_clause
     assert text.count(smoke_clause) == 2
     assert "which differed only in the two AAA rows" not in text
     assert "now but not then" not in text  # the verdict of that day holds tool for tool

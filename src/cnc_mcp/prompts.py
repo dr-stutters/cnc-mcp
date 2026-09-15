@@ -60,6 +60,7 @@ COMPOSITE_TOOLS = frozenset(
         "cnc_explain_sr_policy",
         "cnc_alarm_triage",
         "cnc_explain_service",
+        "cnc_srv6_readiness",
         "cnc_provision_l3vpn_e2e",
         "cnc_create_sr_policy_e2e",
     }
@@ -72,6 +73,7 @@ PROMPT_NAMES = (
     "provision_l3vpn",
     "alarm_triage",
     "explain_service",
+    "srv6_readiness",
 )
 
 _NOT_GIVEN = "(not given — ask the operator for it before the dry run; never invent one)"
@@ -183,7 +185,7 @@ def _playbook(
 
 
 def register_prompts(mcp: MCPServer, ctx: AppContext) -> None:
-    """Register the six playbook prompts on ``mcp`` (called after the tools, whose
+    """Register the seven playbook prompts on ``mcp`` (called after the tools, whose
     registry ``ctx.tools`` the closing paragraph of every prompt reads)."""
 
     @_playbook(
@@ -455,14 +457,24 @@ PCC-initiated policy cannot be removed through the PCE at all.
             str,
             Field(description="The VRF's route distinguisher (e.g. '0:65000:100')."),
         ] = "",
+        srv6_locator: Annotated[
+            str,
+            Field(
+                description="Optional: the SRv6 locator name every PE uses for the VRF's "
+                "per-VRF SIDs (the name under 'segment-routing srv6 locators' on the routers) "
+                "— the VPN then rides SRv6 instead of MPLS. Leave empty for MPLS transport."
+            ),
+        ] = "",
     ) -> str:
         vpn_id, endpoints = _arg(vpn_id), endpoints.strip()
         rt = _arg(route_target) or _NOT_GIVEN
         rd = _arg(route_distinguisher) or _NOT_GIVEN
+        locator = _arg(srv6_locator)
         registered = await registered_tool_names(mcp)
+        transport = f"over SRv6 (locator '{locator}')" if locator else "over MPLS"
         head = (
-            f"Provision the IPv4 L3VPN '{vpn_id}' through Crosswork's NSO L3VPN function "
-            "pack, safely."
+            f"Provision the IPv4 L3VPN '{vpn_id}' {transport} through Crosswork's NSO L3VPN "
+            "function pack, safely."
         )
         # The e2e composite is a write tool AND optional on a build: name it only when it
         # is actually registered, so its absence is never read as "that write is off".
@@ -477,16 +489,52 @@ PCC-initiated policy cannot be removed through the PCE at all.
    verifies in one call — read its input schema), or the individual tools:"""
         else:
             commit = "4. Only after an explicit yes, commit and verify with the individual tools:"
+        if locator:
+            readiness_tool = (
+                "cnc_srv6_readiness"
+                if "cnc_srv6_readiness" in registered
+                else "cnc_list_srv6_locators"
+            )
+            srv6_input = f"""\
+- srv6_locator: {locator} (SRv6 transport: pass it as srv6_locator to the create tool;
+  NSO puts the L3NM's srv6 container on the vpn-instance-profile and the dry run must show
+  'segment-routing srv6 / locator {locator} / alloc mode per-vrf' under router bgp / vrf /
+  address-family ipv4 unicast on EVERY PE — if it does not, stop.)"""
+            srv6_preflight = f"""
+   SRv6 pre-flight: {readiness_tool} must show every endpoint node advertising an SRv6
+   locator (the topology carries the locator PREFIX, never its name — no tool can show
+   the name '{locator}' there); confirm the name '{locator}' maps to that prefix on each
+   PE with cnc_get_nso_device_config(host_name=<PE>, subtree='segment-routing/srv6')
+   — its locators/locator <name> / prefix is the name-to-prefix map; a 404 'uri keypath
+   not found' there means the router has no 'segment-routing srv6' at all. NSO does not
+   check the name against the routers — a locator no PE holds renders fine in the dry
+   run and fails on the box. No locator anywhere means the underlay is SR-MPLS only:
+   stop and say what the routers need (locators + IS-IS IPv6);
+   never provision over a locator that does not exist."""
+            srv6_dry_run = ", srv6_locator='" + locator + "'"
+            skipped_by = " (cnc_provision_l3vpn_e2e skips it and says so)" if e2e else ""
+            srv6_trace = f"""
+   For an SRv6 VPN skip the OAM trace: on this release it is MPLS LSP-ping and would trace
+   the SR-MPLS LSP, not the SRv6 path{skipped_by} — verify on the routers or with
+   cnc_get_srv6_locator_statistics(host_name=...) once an SRV6LOCATOR performance policy
+   collects."""
+        else:
+            srv6_input = "- srv6_locator: (not given — MPLS transport)"
+            srv6_preflight = ""
+            srv6_dry_run = ""
+            srv6_trace = ""
         return f"""{head}
 
 Inputs:
 - vpn_id: {vpn_id}
 - endpoints: {endpoints}
   (cnc_create_l3vpn_service takes them as a JSON list of {{"node": <NSO device name>,
-  "interface", "address", "prefix_length", "local_as" (optional), "id" (optional)}};
-  convert what you were given into that shape and show it before the dry run.)
+  "interface", "address", "prefix_length", "local_as" (optional), "id" (optional),
+  "srv6_locator" (optional per-node override)}}; convert what you were given into that
+  shape and show it before the dry run.)
 - route_target: {rt}
 - route_distinguisher: {rd}
+{srv6_input}
 
 Do it in this order and stop where told:
 0. Check your tool list. If cnc_create_l3vpn_service is absent, it is not registered on
@@ -498,12 +546,13 @@ Do it in this order and stop where told:
    action='sync-from' fixes that, on an explicit request). A PE with no BGP process needs
    local_as in its endpoint entry, or the function pack rejects the service.
    cnc_get_vpn_service(vpn_id='{vpn_id}') tells you whether the name is already taken —
-   creating an existing name REPLACES it wholesale, so stop and ask if it exists.
+   creating an existing name REPLACES it wholesale, so stop and ask if it exists.{srv6_preflight}
 2. Dry run: cnc_create_l3vpn_service(vpn_id='{vpn_id}', route_distinguisher=...,
-   route_target=..., endpoints=<the JSON list>, dry_run=true). Show the operator the device
-   CLI it returns, per PE, verbatim, and point out anything surprising: an extra
-   auto-allocated route-target from the function pack's pool, a 'router bgp' process it
-   would create, an interface already in another VRF, a validation error.
+   route_target=..., endpoints=<the JSON list>{srv6_dry_run}, dry_run=true). Show the
+   operator the device CLI it returns, per PE, verbatim, and point out anything
+   surprising: an extra auto-allocated route-target from the function pack's pool, a
+   'router bgp' process it would create, an interface already in another VRF, a
+   validation error.
 3. STOP and ask for confirmation. Do not commit until the operator says yes to that CLI.
 {commit}
    cnc_create_l3vpn_service with dry_run=false; cnc_wait_for_service_plan on the
@@ -511,7 +560,7 @@ Do it in this order and stop where told:
    cnc_get_vpn_service_health and cnc_get_vpn_underlay_transport for the service; and,
    when the PEs have gNMI onboarded, cnc_start_oam_trace_route then
    cnc_wait_for_oam_trace_route for a data-plane trace. 'Error: the function pack rejected
-   the service' is a verdict to report, not something to retry with guessed values.
+   the service' is a verdict to report, not something to retry with guessed values.{srv6_trace}
 5. Never delete anything (cnc_delete_vpn_service, cnc_delete_service) unless the operator
    explicitly asks — not to clean up, not to retry a failed commit.
 
@@ -644,6 +693,86 @@ If the service does not exist, say so and offer the closest names from cnc_list_
 This is an explanation, not a change: cnc_provision_service, cnc_delete_service and
 cnc_delete_vpn_service only on an explicit request.
 
+{note}"""
+
+    @_playbook(
+        mcp,
+        name="srv6_readiness",
+        title="SRv6 readiness check",
+        description="Is the network ready for SRv6 services? Locators on every SR-capable "
+        "router, End.X SIDs on every adjacency, SRv6 policies, locator-traffic collection — "
+        "with a READY / PARTIAL / NONE verdict and what the routers still need.",
+    )
+    async def srv6_readiness() -> str:
+        registered = await registered_tool_names(mcp)
+        note = writes_note(
+            ctx,
+            write_tools="cnc_create_performance_policy, cnc_create_l3vpn_service, "
+            "cnc_create_sr_policy_service, cnc_create_odn_template",
+        )
+        explain = "cnc_explain_sr_policy"
+        policy_tool = explain if explain in registered else "cnc_get_sr_policy"
+        if "cnc_srv6_readiness" in registered:
+            start = """\
+1. Start with ONE call: cnc_srv6_readiness (read its input schema; the topology network
+   defaults to the standard one). It joins the topology summary's SRv6 flags, the locators
+   derived from every node's SRv6 node SIDs, per-node and per-adjacency SRv6 state (End.X
+   coverage), the SRv6 SR policies, whether an SRV6LOCATOR performance policy collects
+   locator traffic, and which routers are IOS XR — and answers READY / PARTIAL / NONE.
+2. Drill in only where a section is unavailable or a finding needs detail:"""
+        else:
+            start = """\
+1. This build has no one-call readiness tool, so assemble the picture yourself:
+   cnc_get_topology_summary (its srv6_network_type / srv6_capable_nodes /
+   srv6_adjacency_links / node_dataplanes counters), cnc_list_srv6_locators (one row per
+   node and locator, derived from the SRv6 node SIDs), cnc_list_topology_links (the
+   adjacencies and which carry an End.X SID), cnc_list_sr_policies(dataplane='srv6'),
+   cnc_list_performance_policies (is there a policy on the SRV6LOCATOR template?) and
+   cnc_list_devices (which routers are IOS XR — the family that runs SRv6 here).
+2. Then, where a finding needs detail:"""
+        return f"""Check whether this Crosswork-managed network is ready for SRv6 services.
+
+{start}
+   cnc_get_topology_node(node_id=...) for one router's SRv6 node SIDs, their structure
+   (block / node / function lengths — the locator is the SID masked to block + node) and
+   its Flex-Algos; cnc_get_topology_link(link_id=...) for one adjacency's End.X SIDs;
+   cnc_get_srv6_locator_statistics(host_name=...) for a locator's measured egress rate
+   (empty until an SRV6LOCATOR performance policy collects); cnc_get_performance_policy
+   for that policy; {policy_tool} for an SRv6 policy (keyed by the nodes' IPv6 TE
+   router-ids). Do not repeat a call already made.
+3. Interpretation rules: the topology model has no locator object — a 'locator' is derived
+   from each node's SRv6 node SID and its SID structure, so 'no locator' means the router
+   advertises no SRv6 locator in the IGP (or the SR-PCE feed carries no SRv6 state yet),
+   never a Crosswork setting. SR-MPLS and SRv6 coexist on a node (dataplane 'both'); a node
+   with SR-MPLS only is not broken, it is simply not SRv6-capable yet. An adjacency is
+   listed once per direction — both directions need an End.X SID. Only IOS XR routers are
+   expected to advertise SRv6; say which routers are not XR rather than counting them as
+   missing. An SR policy's dataplane is derived (SRv6 binding SID / SRv6 hop objects / IPv6
+   keys) because the NBI has no dataplane leaf; SRv6 policies come from the NSO SR-TE
+   function pack (cnc_create_sr_policy_service / cnc_create_odn_template with
+   srv6_locator), never from the Optimization Engine, which is SR-MPLS only. The OAM trace
+   route is MPLS-only on this release: it cannot verify an SRv6 path.
+
+Answer with exactly these four headings:
+- Verdict — READY / PARTIAL / NONE in one sentence, and what it rests on (nodes with a
+  locator out of the SR-capable XR nodes, adjacencies with End.X, SRv6 policies, locator
+  collection).
+- Evidence — the facts (tool, field, value) per node and per adjacency, nothing inferred;
+  name every node without a locator and every adjacency without End.X.
+- What the routers still need — for NONE: SRv6 locators ('segment-routing srv6 locators')
+  and IS-IS IPv6 (IPv6 loopbacks / router-ids, the IPv6 address-family advertising the
+  locator) on the routers — the SR-PCE feed then carries the locators, End SIDs and End.X
+  SIDs to Crosswork by itself, nothing is configured on Crosswork; for PARTIAL: the same,
+  per named node or link, plus cnc_create_performance_policy(template='SRV6LOCATOR', ...)
+  when locator traffic is not collected; for READY: the next step (an L3VPN or SR policy
+  over SRv6 through the provisioning tools with srv6_locator, dry_run=true first).
+- Not checked — sections that answered an error, pages not scanned, and the standing
+  caveat that the SRv6 renderings follow the platform's 7.2 model and are unverified
+  until a live SRv6 feed has been seen.
+
+This is a read-only check: create nothing (cnc_create_performance_policy,
+cnc_create_l3vpn_service, cnc_create_sr_policy_service, cnc_create_odn_template) unless
+the operator asks, and then dry_run=true first.
 {note}"""
 
     logger.debug("Registered %d prompts", len(PROMPT_NAMES))

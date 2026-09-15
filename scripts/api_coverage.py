@@ -373,6 +373,9 @@ class Env:
     func: ast.FunctionDef | ast.AsyncFunctionDef | None
     bindings: tuple[tuple[str, tuple[str, ...]], ...] = ()
     stack: tuple[str, ...] = ()  # names being resolved (self-reference guard)
+    # Parameters bound to a module FUNCTION at the call site (``get_policy_keyed(sr_policy_url,
+    # ...)`` binds ``build_url`` to ``te_state.sr_policy_url``): (parameter, module, function).
+    callables: tuple[tuple[str, str, str], ...] = ()
 
     def bound(self, name: str) -> set[str] | None:
         for key, values in self.bindings:
@@ -435,6 +438,19 @@ class Analyzer:
                 return [
                     (self.modules[alias], fn) for fn in self.modules[alias].functions[node.attr]
                 ]
+        return []
+
+    def bound_callable(
+        self, env: Env, node: ast.expr
+    ) -> list[tuple[SourceModule, ast.FunctionDef | ast.AsyncFunctionDef]]:
+        """The module function a parameter of ``env.func`` was bound to at the call site
+        (``build_url(...)`` inside ``get_policy_keyed`` -> ``sr_policy_url``)."""
+        if not isinstance(node, ast.Name):
+            return []
+        for param, module_name, fn_name in env.callables:
+            if param == node.id and module_name in self.modules:
+                module = self.modules[module_name]
+                return [(module, fn) for fn in module.functions.get(fn_name, [])]
         return []
 
     # -- evaluation --------------------------------------------------------------------
@@ -543,7 +559,7 @@ class Analyzer:
                     _PARAM_RE.sub(PLACEHOLDER, value)
                     for value in self.evaluate(func.value, env, depth + 1)
                 }
-        targets = self.function_for(env.module, func)
+        targets = self.function_for(env.module, func) or self.bound_callable(env, func)
         if not targets or depth > MAX_CALL_DEPTH * 4:
             return {PLACEHOLDER}
         out: set[str] = set()
@@ -575,14 +591,29 @@ class Analyzer:
             if default is not None:
                 defaults[name] = default
         bindings: dict[str, set[str]] = {}
+        callables: dict[str, tuple[str, str]] = {}
+
+        def note_callable(param: str, value: ast.expr) -> None:
+            # A function passed by reference (a URL builder, a fetch callback): remembered so a
+            # call through the parameter inside the callee evaluates that function.
+            for target_module, target in self.function_for(caller.module, value):
+                callables[param] = (target_module.name, target.name)
+                break
+            else:
+                for callee_param, mod_name, fn_name in caller.callables:
+                    if isinstance(value, ast.Name) and value.id == callee_param:
+                        callables[param] = (mod_name, fn_name)
+
         for index, arg in enumerate(call.args):
             if isinstance(arg, ast.Starred):
                 break
             if index < len(params):
                 bindings[params[index]] = self.evaluate(arg, caller, depth + 1)
+                note_callable(params[index], arg)
         for kw in call.keywords:
             if kw.arg is not None and (kw.arg in params or kw.arg in kwonly):
                 bindings[kw.arg] = self.evaluate(kw.value, caller, depth + 1)
+                note_callable(kw.arg, kw.value)
         callee_env = Env(module, fn, stack=caller.stack + (fn.name,))
         for name, default in defaults.items():
             if name not in bindings:
@@ -592,6 +623,7 @@ class Analyzer:
             fn,
             tuple((k, tuple(sorted(v))) for k, v in sorted(bindings.items())),
             caller.stack + (fn.name,),
+            tuple((k, m, f) for k, (m, f) in sorted(callables.items())),
         )
 
     # -- endpoint collection ---------------------------------------------------------------

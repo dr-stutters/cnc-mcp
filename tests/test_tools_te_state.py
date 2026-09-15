@@ -11,6 +11,17 @@ entries (string-typed numbers), the ``409 data-missing`` document every
 missing entry answers, and ``{}`` for the empty ``p2mp-policies`` /
 ``rsvp-te-tunnels`` containers. The P2MP / RSVP sample entries used for the
 rendering tests follow the 7.2 OpenAPI documents (nothing was available live).
+
+SRv6 (2026-09-15): the lab is SR-MPLS only, so the SRv6 fixtures below —
+IPv6 policy keys, ``srv6-binding-sid``, ``IPV6-NODE-SID`` / ``IPV6-ADJ-SID``
+hops with their ``srv6-node-sid`` / ``srv6-adjacency-sid`` objects, and the
+topology's ``ipv6-router-id`` leaf-list — follow the 7.2
+``segment_routing_policy_details`` / topology documents (wire spelling: the
+case container bare, RFC 7951; one variant uses the document's module-prefixed
+spelling) and have never been observed on the wire. What IS verified live: an
+IPv6 policy key percent-encoded as ``2001%3Adb8%3A%3A1`` is type-checked by
+the NBI and answers 409 ``data-missing`` when absent, on ``policy`` and
+``sr-policy-pm`` alike (the 409 fixture is the same document).
 """
 
 from __future__ import annotations
@@ -32,30 +43,47 @@ from cnc_mcp.tools.te_state import (
     active_path,
     active_tunnel_path,
     as_bool,
+    canonical_ip,
     end_label,
+    ends_text,
     entries_matching,
+    find_node,
     has_pm_telemetry,
+    hop_is_srv6,
+    hop_srv6_sid,
     hop_text,
     hops_text,
     igp_link_pm_url,
+    ipv6_key_pair,
     is_invalid_key,
     is_ip_address,
+    is_ipv6,
     key_matches,
     matches_policy_filter,
+    node_key_ids,
     node_router_id,
+    node_te_router_ids,
     node_text,
+    normalize_dataplane,
     normalize_oper_state,
     p2mp_policy_url,
     path_hops,
     pcep_flag_c,
+    policy_bsid,
+    policy_dataplane,
+    policy_hops,
     policy_origin,
     policy_origin_line,
     router_id_names,
     rsvp_pm_url,
     rsvp_tunnel_url,
+    select_router_id,
+    sid_structure_text,
     sr_policy_pm_url,
     sr_policy_summary,
     sr_policy_url,
+    srv6_binding_sid,
+    srv6_sid_text,
 )
 from tests.conftest import BASE_URL, call_tool_text
 
@@ -120,6 +148,79 @@ SR_POLICIES = {
 }
 # Verified: the keyed GET answers the bare list key with one entry.
 SR_POLICY_KEYED = {"cisco-crosswork-segment-routing-policy:policy": [PE1_POLICY]}
+
+# --- SRv6 (7.2 document shapes; never observed live — the lab has no SRv6) ---------
+# The policy key is the nodes' IPv6 TE router-ids; the BSID is the srv6-binding-sid
+# container; a hop's sid-value choice case sits directly in the hop, bare (RFC 7951).
+SID_STRUCTURE = {"lb-length": 32, "ln-length": 16, "func-length": 16, "arg-length": 0}
+SRV6_NODE_HOP = {
+    "type": "IPV6-NODE-SID",
+    "local-ip-addr": "2001:db8::3",
+    "srv6-node-sid": {
+        "sid": "fc00:0:3::",
+        "endpoint-behavior": "uN",
+        "algorithm": 0,
+        "srv6-sid-structure": SID_STRUCTURE,
+    },
+}
+# A protected (TI-LFA) adjacency: the hop's protected-flag and the SID object's own
+# protected leaf agree, as the document shape has them (the renderer ORs the two).
+SRV6_ADJ_HOP = {
+    "type": "IPV6-ADJ-SID",
+    "local-ip-addr": "2001:db8:1::1",
+    "remote-ip-addr": "2001:db8:1::2",
+    "protected-flag": True,
+    "srv6-adjacency-sid": {
+        "sid": "fc00:0:1:e000::",
+        "endpoint-behavior": "uA",
+        "protected": True,
+        "flags": 0,
+        "algorithm": 0,
+        "weight": 0,
+        "srv6-sid-structure": SID_STRUCTURE,
+    },
+}
+SRV6_BSID = {
+    "sid": "fc00:0:1:1::",
+    "endpoint-behavior": "uB6.Insert.Red",
+    "srv6-sid-structure": SID_STRUCTURE,
+}
+PE1_V6, PE2_V6 = "2001:db8::1", "2001:db8::3"
+SRV6_POLICY = {
+    "headend": PE1_V6,
+    "endpoint": PE2_V6,
+    "color": 6001,
+    "policy-details": {
+        "pcep-info": {"pcep-flag-c": 0},
+        "srv6-binding-sid": SRV6_BSID,
+        "path": [
+            {
+                "optimization-metric": {"metric-type": "IGP-METRIC", "metric-value": 20},
+                "segment-list": [{"weight": 1, "hop": [SRV6_NODE_HOP, SRV6_ADJ_HOP]}],
+                "preference": 100,
+                "oper-state": "UP",
+                "constraints": {"sid-algorithm": 0},
+                "hop": [SRV6_NODE_HOP, SRV6_ADJ_HOP],
+                "path-type": "PT-DYNAMIC",
+                "path-name": "srte_c_6001_ep_2001:db8::3",
+            }
+        ],
+        "update-time": "1789293787548",
+        "pce-controlled": True,
+        "pcc-address": PE1_V6,
+    },
+    "admin-state": "UP",
+    "oper-state": "UP",
+    "sr-policy-type": "REGULAR",
+}
+# The verified URL form of an IPv6 key: ':' percent-encoded inside each part.
+PE1_PE2_V6_KEY = "2001%3Adb8%3A%3A1,2001%3Adb8%3A%3A3,6001"
+SRV6_POLICY_KEYED = {"cisco-crosswork-segment-routing-policy:policy": [SRV6_POLICY]}
+MIXED_POLICIES = {
+    "cisco-crosswork-segment-routing-policy:sr-policies": {
+        "policy": [PE2_POLICY, PE1_POLICY, SRV6_POLICY]
+    }
+}
 # Verified: string-typed numbers, int delay.
 IGP_LINK_PM = {
     "cisco-crosswork-performance-metrics:igp-link-pm": [
@@ -171,6 +272,28 @@ TOPO_NODES = [
 NETWORKS = {
     "ietf-network-state:networks": {
         "network": [{"network-id": "Default-network", "node": TOPO_NODES}]
+    }
+}
+# The same nodes once the SRv6 underlay is up (7.2 document shape, absent on the lab):
+# the PEs carry the IPv6 TE router-id leaf-list next to the IPv4 router-id; P1 does not.
+IPV6_ROUTER_ID = "cisco-crosswork-l3-te-topology:ipv6-router-id"
+
+
+def topo_node_v6(node_id: str, router_id: str, ipv6_router_id: str) -> dict:
+    node = topo_node(node_id, router_id)
+    node[L3_NODE][IPV6_ROUTER_ID] = [ipv6_router_id]
+    return node
+
+
+TOPO_NODES_V6 = [
+    topo_node_v6("PE1", "10.0.0.1", PE1_V6),
+    topo_node("P1", "10.0.0.2"),
+    topo_node_v6("PE2", "10.0.0.3", PE2_V6),
+    {"node-id": "SW1"},
+]
+NETWORKS_V6 = {
+    "ietf-network-state:networks": {
+        "network": [{"network-id": "Default-network", "node": TOPO_NODES_V6}]
     }
 }
 # The PM entry with NAPM telemetry present (7.2 document shape — no SR-PM probe was
@@ -408,9 +531,10 @@ async def test_all_tools_are_read_only_and_registered_without_writes(make_settin
     # Flat parameters, never a wrapped model.
     props = tools["cnc_list_sr_policies"].input_schema["properties"]
     assert set(props) == {
-        "headend", "endpoint", "color", "oper_state", "pce_controlled", "network",
+        "headend", "endpoint", "color", "oper_state", "pce_controlled", "dataplane", "network",
         "response_format",
     }  # fmt: skip
+    assert "'sr-mpls' or 'srv6'" in props["dataplane"]["description"]
     assert set(tools["cnc_get_sr_policy"].input_schema["required"]) == {
         "headend", "endpoint", "color"
     }  # fmt: skip
@@ -487,6 +611,277 @@ def test_hop_text_handles_live_and_document_shapes():
     assert hop_text({}) == "?(?/?)"
     assert hops_text([]) == "-" and hops_text(None) == "-"
     assert hops_text([{"label": 1, "type": "A"}, {"label": 2, "type": "B"}]) == "1(A/?) > 2(B/?)"
+
+
+def test_hop_text_renders_the_srv6_document_shapes():
+    """The sid-value choice's SRv6 cases (7.2 document; never observed live): the SID string
+    replaces the label and the endpoint behaviour follows the address; ``[protected]`` from
+    the adjacency SID's own ``protected`` leaf as well as the hop's ``protected-flag``."""
+    assert hop_text(SRV6_NODE_HOP) == "fc00:0:3::(IPV6-NODE-SID/2001:db8::3 uN)"
+    assert hop_text(SRV6_ADJ_HOP) == (
+        "fc00:0:1:e000::(IPV6-ADJ-SID/2001:db8:1::1->2001:db8:1::2 uA)[protected]"
+    )
+    assert hop_srv6_sid(SRV6_NODE_HOP) == ("srv6-node-sid", SRV6_NODE_HOP["srv6-node-sid"])
+    assert hop_srv6_sid(SRV6_ADJ_HOP)[0] == "srv6-adjacency-sid"
+    assert hop_srv6_sid({"type": "IPV4-NODE-SID", "label": 16003}) is None
+    assert hop_srv6_sid({"srv6-node-sid": {}}) is None  # an empty container is no SID
+    # The document's module-prefixed spelling, wrapped in its sid-value object, reads the same.
+    prefixed = {
+        "type": "IPV6-NODE-SID",
+        "local-address": {"local-ip-addr": "2001:db8::3"},
+        "sid-value": {
+            "cisco-crosswork-segment-routing-policy:srv6-node-sid": {
+                "cisco-crosswork-segment-routing-policy:sid": "fc00:0:3::",
+                "cisco-crosswork-segment-routing-policy:endpoint-behavior": "uN",
+            }
+        },
+    }
+    assert hop_text(prefixed) == "fc00:0:3::(IPV6-NODE-SID/2001:db8::3 uN)"
+    assert hop_srv6_sid(prefixed)[0] == "srv6-node-sid"
+    # IPV6-LINK-LOCAL-ADJ-SID carries the *-link-local-id case leaves instead of *-ip-addr.
+    link_local = {
+        "type": "IPV6-LINK-LOCAL-ADJ-SID",
+        "local-ipv6-router-id": PE1_V6,
+        "local-unnumbered-id": 5,
+        "remote-ipv6-router-id": "2001:db8::2",
+        "remote-unnumbered-id": 7,
+        "srv6-adjacency-sid": {"sid": "fc00:0:1:e001::", "endpoint-behavior": "uA"},
+    }
+    assert hop_text(link_local) == (
+        "fc00:0:1:e001::(IPV6-LINK-LOCAL-ADJ-SID/2001:db8::1#5->2001:db8::2#7 uA)"
+    )
+    # The same case inside the document's local-address / remote-address wrapper objects
+    # (the OpenAPI oneOf: {local-ip-addr} | {local-ipv6-router-id, local-ipv4-router-id,
+    # local-unnumbered-id}) keeps its '#<unnumbered-id>' — and an unnumbered-id of 0 (a
+    # uint32 ifIndex) is a value, not an absence.
+    wrapped_link_local = {
+        "type": "IPV6-LINK-LOCAL-ADJ-SID",
+        "local-address": {"local-ipv6-router-id": PE1_V6, "local-unnumbered-id": 5},
+        "remote-address": {"remote-ipv6-router-id": "2001:db8::2", "remote-unnumbered-id": 0},
+        "sid-value": {"srv6-adjacency-sid": {"sid": "fc00:0:1:e001::", "endpoint-behavior": "uA"}},
+    }
+    assert hop_text(wrapped_link_local) == (
+        "fc00:0:1:e001::(IPV6-LINK-LOCAL-ADJ-SID/2001:db8::1#5->2001:db8::2#0 uA)"
+    )
+    assert hop_text({"type": "IPV6-LINK-LOCAL-ADJ-SID", "local-unnumbered-id": 0}) == (
+        "?(IPV6-LINK-LOCAL-ADJ-SID/0)"
+    )
+    assert hop_text({"type": "IPV6-LINK-LOCAL-ADJ-SID", "local-ipv4-router-id": "10.0.0.1"}) == (
+        "?(IPV6-LINK-LOCAL-ADJ-SID/10.0.0.1)"
+    )
+    # The IPv6 router-id wins over the IPv4 one when both are present; an empty wrapper or
+    # empty leaves are absent ('?'), never rendered as '' or 'None'.
+    both_ids = {
+        "type": "IPV6-LINK-LOCAL-ADJ-SID",
+        "local-ipv6-router-id": PE1_V6,
+        "local-ipv4-router-id": "10.0.0.1",
+        "local-unnumbered-id": 3,
+    }
+    assert hop_text(both_ids) == "?(IPV6-LINK-LOCAL-ADJ-SID/2001:db8::1#3)"
+    assert hop_text(
+        {"type": "X", "local-address": {}, "remote-address": {"remote-ip-addr": ""}}
+    ) == ("?(X/?)")
+    # An IPV6-* hop without any SID object still renders (no crash, '?' for the SID).
+    assert hop_text({"type": "IPV6-NODE-SID", "local-ip-addr": PE2_V6}) == (
+        "?(IPV6-NODE-SID/2001:db8::3)"
+    )
+    # [protected] is the OR of the hop's protected-flag and the adjacency SID's own
+    # protected leaf: either alone marks the hop, neither leaves it unmarked.
+    flag_only = {
+        "type": "IPV6-ADJ-SID",
+        "protected-flag": True,
+        "srv6-adjacency-sid": {"sid": "a::"},
+    }
+    container_only = {
+        "type": "IPV6-ADJ-SID",
+        "srv6-adjacency-sid": {"sid": "a::", "protected": "true"},
+    }
+    neither = {
+        "type": "IPV6-ADJ-SID",
+        "protected-flag": False,
+        "srv6-adjacency-sid": {"sid": "a::", "protected": False},
+    }
+    assert hop_text(flag_only) == "a::(IPV6-ADJ-SID/?)[protected]"
+    assert hop_text(container_only) == "a::(IPV6-ADJ-SID/?)[protected]"
+    assert hop_text(neither) == "a::(IPV6-ADJ-SID/?)"
+    # hop_is_srv6: the SID object, or an IPV6-* type with no MPLS label (an OE-built
+    # SR-MPLS policy over IPv6 carries node-ipv6-sid LABELS, which are SR-MPLS). It is the
+    # per-hop rule policy_dataplane applies once no hop carries a label or a SID object.
+    assert hop_is_srv6(SRV6_NODE_HOP) and hop_is_srv6({"type": "IPV6-NODE-SID"})
+    assert not hop_is_srv6({"type": "IPV6-NODE-SID", "label": 16003})
+    assert not hop_is_srv6({"type": "IPV4-NODE-SID", "label": 16003}) and not hop_is_srv6("x")
+
+
+def test_srv6_sid_text_and_structure():
+    assert srv6_sid_text(SRV6_BSID) == "fc00:0:1:1:: behavior=uB6.Insert.Red structure=32/16/16/0"
+    assert srv6_sid_text(SRV6_ADJ_HOP["srv6-adjacency-sid"]) == (
+        "fc00:0:1:e000:: behavior=uA structure=32/16/16/0 algorithm=0 flags=0 weight=0 "
+        "protected=True"
+    )
+    # Unknown leaves are appended, nothing is dropped; absent parts render '-'.
+    assert srv6_sid_text({"sid": "fc00::", "vendor": 1}) == "fc00:: behavior=- structure=- vendor=1"
+    assert srv6_sid_text({}) == "-" and srv6_sid_text(None) == "-"
+    assert sid_structure_text({}) == "-"
+    assert sid_structure_text({"srv6-sid-structure": {"lb-length": 32}}) == "32/-/-/-"
+    assert sid_structure_text({"x:srv6-sid-structure": SID_STRUCTURE}) == "32/16/16/0"
+
+
+def test_policy_dataplane_is_derived_in_order():
+    """No dataplane leaf exists on the read NBI: srv6 for the SRv6 shapes, else sr-mpls for
+    an MPLS BSID / label, else srv6 for IPV6-* hop types or IPv6 keys, else sr-mpls."""
+    assert policy_dataplane(PE1_POLICY) == "sr-mpls" and policy_dataplane(PE2_POLICY) == "sr-mpls"
+    assert policy_dataplane(SRV6_POLICY) == "srv6"
+    assert srv6_binding_sid(SRV6_POLICY) == SRV6_BSID and srv6_binding_sid(PE1_POLICY) is None
+    # The BSID alone, in either prefix spelling.
+    only_bsid = {"headend": "10.0.0.1", "policy-details": {"srv6-binding-sid": SRV6_BSID}}
+    assert policy_dataplane(only_bsid) == "srv6"
+    prefixed = {
+        "policy-details": {"cisco-crosswork-segment-routing-policy:srv6-binding-sid": SRV6_BSID}
+    }
+    assert policy_dataplane(prefixed) == "srv6" and srv6_binding_sid(prefixed) == SRV6_BSID
+    assert policy_dataplane({"policy-details": {"srv6-binding-sid": {}}}) == "sr-mpls"  # empty
+    # A hop SID object alone (flat hop[] or segment-list[].hop[]).
+    hop_only = {"policy-details": {"path": [{"hop": [SRV6_NODE_HOP]}]}}
+    assert policy_dataplane(hop_only) == "srv6"
+    seg_only = {"policy-details": {"path": [{"segment-list": [{"hop": [SRV6_ADJ_HOP]}]}]}}
+    assert policy_dataplane(seg_only) == "srv6"
+    assert policy_hops(seg_only) == [SRV6_ADJ_HOP] and policy_hops({}) == []
+    assert len(policy_hops(SRV6_POLICY)) == 4  # segment-list hops + the flat hop list
+    # An MPLS label wins over an IPv6 hop type / IPv6 addressing: the OE RPCs build
+    # SR-MPLS policies with node-ipv6-sid LABELS over an IPv6 IGP.
+    ipv6_mpls = {
+        "headend": PE1_V6,
+        "endpoint": PE2_V6,
+        "policy-details": {
+            "binding-sid": 24007,
+            "path": [{"hop": [{"type": "IPV6-NODE-SID", "label": 16003}]}],
+        },
+    }
+    assert policy_dataplane(ipv6_mpls) == "sr-mpls"
+    label_only = {"headend": PE1_V6, "policy-details": {"path": [{"hop": [{"label": 16003}]}]}}
+    assert policy_dataplane(label_only) == "sr-mpls"
+    # Then the hop type, then the key's address family, then the default.
+    typed_hop = {"type": "ipv6-adj-sid"}
+    typed = {"headend": "10.0.0.1", "policy-details": {"path": [{"hop": [typed_hop]}]}}
+    assert policy_dataplane(typed) == "srv6"
+    assert policy_dataplane({"headend": PE1_V6, "endpoint": PE2_V6}) == "srv6"
+    assert policy_dataplane({"headend": "10.0.0.1", "endpoint": PE2_V6}) == "srv6"
+    assert policy_dataplane({"headend": "10.0.0.1", "endpoint": "10.0.0.3"}) == "sr-mpls"
+    assert policy_dataplane({}) == "sr-mpls"
+
+
+def test_policy_bsid_falls_back_to_the_srv6_sid():
+    assert policy_bsid(PE1_POLICY) == 24005
+    assert policy_bsid(SRV6_POLICY) == "fc00:0:1:1::"
+    no_sid = {"policy-details": {"srv6-binding-sid": {"endpoint-behavior": "uB6"}}}
+    assert policy_bsid(no_sid) == "-"
+    assert policy_bsid({}) == "-"
+    # Both present (not expected on the wire): the MPLS label is the binding-sid leaf.
+    both = {"policy-details": {"binding-sid": 24005, "srv6-binding-sid": SRV6_BSID}}
+    assert policy_bsid(both) == 24005 and policy_dataplane(both) == "srv6"
+
+
+def test_normalize_dataplane():
+    assert normalize_dataplane("srv6") == "srv6" and normalize_dataplane(" SRv6 ") == "srv6"
+    assert normalize_dataplane("sr-mpls") == "sr-mpls" and normalize_dataplane("MPLS") == "sr-mpls"
+    assert normalize_dataplane("srmpls") == "sr-mpls"
+    assert normalize_dataplane(None) is None and normalize_dataplane("  ") is None
+    with pytest.raises(PlatformError, match="dataplane must be one of sr-mpls, srv6"):
+        normalize_dataplane("ipv6")
+
+
+def test_ipv6_router_ids_resolve_to_host_names_and_key_pairs():
+    """The topology's ``cisco-crosswork-l3-te-topology:ipv6-router-id`` leaf-list (absent on
+    the lab; 7.2 document shape) is the key an SRv6 policy carries: every resolver maps it
+    to the host name alongside the IPv4 router-id."""
+    assert is_ipv6(PE1_V6) and not is_ipv6("10.0.0.1") and not is_ipv6("PE1") and not is_ipv6(None)
+    assert node_te_router_ids(TOPO_NODES_V6[0]) == ["10.0.0.1", PE1_V6]
+    assert node_te_router_ids(TOPO_NODES_V6[1]) == ["10.0.0.2"]
+    assert node_te_router_ids({"node-id": "SW1"}) == []
+    # The bare (RFC 7951) spelling of the leaf-list reads the same; duplicates collapse.
+    bare = {"node-id": "X", L3_NODE: {"router-id": ["10.0.0.9"], "ipv6-router-id": ["fc00::9"]}}
+    assert node_te_router_ids(bare) == ["10.0.0.9", "fc00::9"]
+    assert node_te_router_ids({L3_NODE: {"router-id": ["10.0.0.9", "10.0.0.9"]}}) == ["10.0.0.9"]
+    names = router_id_names(TOPO_NODES_V6)
+    assert names == {
+        "10.0.0.1": "PE1", PE1_V6: "PE1", "10.0.0.2": "P1", "10.0.0.3": "PE2", PE2_V6: "PE2"
+    }  # fmt: skip
+    assert node_text(PE2_V6, names) == "PE2 (2001:db8::3)"
+    assert end_label("pe1", PE1_V6, names) == "PE1 (2001:db8::1)"
+    # find_node by the IPv6 router-id; node_router_id keeps the verified IPv4 default and
+    # prefers the IPv6 router-id only when asked (the other end was an IPv6 literal).
+    assert find_node(TOPO_NODES_V6, PE2_V6)["node-id"] == "PE2"
+    assert node_router_id(TOPO_NODES_V6, "PE1") == "10.0.0.1"
+    assert node_router_id(TOPO_NODES_V6, "PE1", prefer_ipv6=True) == PE1_V6
+    assert node_router_id(TOPO_NODES_V6, "P1", prefer_ipv6=True) == "10.0.0.2"  # no IPv6 one
+    assert node_router_id(TOPO_NODES_V6, PE1_V6) == PE1_V6  # the literal itself
+    assert select_router_id([PE1_V6, "10.0.0.1"], "PE1") == "10.0.0.1"
+    assert select_router_id([PE1_V6, "10.0.0.1"], "PE1", prefer_ipv6=True) == PE1_V6
+    assert select_router_id([], "PE1") is None
+    # The list filter's match set: every router-id of the node; a literal is itself.
+    assert node_key_ids(TOPO_NODES_V6, "pe1") == ["10.0.0.1", PE1_V6]
+    assert node_key_ids(TOPO_NODES_V6, "10.0.0.3") == ["10.0.0.3"]
+    assert node_key_ids([], PE2_V6) == [PE2_V6]  # no topology needed for a literal
+    with pytest.raises(PlatformError, match="no node 'PE9' in the topology"):
+        node_key_ids(TOPO_NODES_V6, "PE9")
+    with pytest.raises(PlatformError, match="node 'SW1' has no TE router-id"):
+        node_key_ids(TOPO_NODES_V6, "SW1")
+    assert ends_text(["10.0.0.1", PE1_V6], names) == "PE1 (10.0.0.1, 2001:db8::1)"
+    assert ends_text(["10.0.0.1"], names) == "PE1 (10.0.0.1)"
+    assert ends_text(["10.0.0.8", "fc00::8"], names) == "10.0.0.8, fc00::8"
+    # The GET tools' one retry after a 409: the IPv6 pair of two host-name ends.
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE1", "pe2", "10.0.0.1", "10.0.0.3") == (PE1_V6, PE2_V6)
+    assert ipv6_key_pair(TOPO_NODES, "PE1", "PE2", "10.0.0.1", "10.0.0.3") is None  # no IPv6
+    assert ipv6_key_pair(None, "PE1", "PE2", "10.0.0.1", "10.0.0.3") is None  # nothing read
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE1", "P1", "10.0.0.1", "10.0.0.2") is None
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE1", "PE2", PE1_V6, PE2_V6) is None  # unchanged
+    # An IPv4 literal on either end fixes the family: no retry; an IPv6 literal keeps its value.
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE1", "10.0.0.3", "10.0.0.1", "10.0.0.3") is None
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE1", PE2_V6, "10.0.0.1", PE2_V6) == (PE1_V6, PE2_V6)
+    assert ipv6_key_pair(TOPO_NODES_V6, "PE9", "PE2", "10.0.0.1", "10.0.0.3") is None
+
+
+def test_ip_literals_are_canonicalised_once():
+    """An IPv6 address has many spellings and every comparison here is textual, so a literal
+    an agent types is normalised to the RFC 5952 form (what IOS-XR / Crosswork emit) before
+    it becomes a filter or a wire key; the topology's wire text is kept but deduplicated on
+    the same form."""
+    assert canonical_ip("2001:0db8::1") == PE1_V6 and canonical_ip("2001:DB8:0:0::1") == PE1_V6
+    assert canonical_ip(" 10.0.0.1 ") == "10.0.0.1" and canonical_ip("PE1") == "PE1"
+    assert canonical_ip("") == "" and canonical_ip(" pe1 ") == "pe1"  # non-IP text as given
+    # The list filter's match set and the GET tools' key: canonical.
+    assert node_key_ids([], "2001:0db8::1") == [PE1_V6]
+    assert node_key_ids([], "2001:DB8::1") == [PE1_V6]
+    # The topology side keeps the wire spelling but two spellings of one address are one id.
+    upper = {
+        "node-id": "X",
+        L3_NODE: {"router-id": ["10.0.0.9"], "ipv6-router-id": ["2001:DB8::9"]},
+    }
+    upper[L3_NODE]["ipv6-router-id"].append("2001:db8::9")
+    assert node_te_router_ids(upper) == ["10.0.0.9", "2001:DB8::9"]
+    # find_node and the filter compare in the canonical form, both directions.
+    assert find_node(TOPO_NODES_V6, "2001:DB8:0:0::1")["node-id"] == "PE1"
+    assert find_node([upper], "2001:db8::9")["node-id"] == "X"
+    no_filter = dict(headend=None, endpoint=None, color=None, oper_state=None, pce_controlled=None)
+    assert matches_policy_filter(SRV6_POLICY, **{**no_filter, "headend": "2001:0DB8::1"})
+    upper_key = {**SRV6_POLICY, "headend": "2001:DB8:0:0::1"}
+    assert matches_policy_filter(upper_key, **{**no_filter, "headend": [PE1_V6]})
+    assert not matches_policy_filter(upper_key, **{**no_filter, "headend": "2001:db8::2"})
+
+
+def test_matches_policy_filter_accepts_router_id_sets_and_dataplane():
+    no_filter = dict(headend=None, endpoint=None, color=None, oper_state=None, pce_controlled=None)
+    # A host name resolves to its node's IPv4 AND IPv6 router-ids: both of PE1's policies match.
+    pe1 = ["10.0.0.1", PE1_V6]
+    assert matches_policy_filter(PE1_POLICY, **{**no_filter, "headend": pe1})
+    assert matches_policy_filter(SRV6_POLICY, **{**no_filter, "headend": pe1})
+    assert not matches_policy_filter(PE2_POLICY, **{**no_filter, "headend": pe1})
+    assert matches_policy_filter(SRV6_POLICY, **{**no_filter, "endpoint": [PE2_V6.upper()]})
+    assert not matches_policy_filter(SRV6_POLICY, **{**no_filter, "endpoint": "10.0.0.3"})
+    assert matches_policy_filter(SRV6_POLICY, **{**no_filter, "dataplane": "srv6"})
+    assert not matches_policy_filter(SRV6_POLICY, **{**no_filter, "dataplane": "sr-mpls"})
+    assert matches_policy_filter(PE1_POLICY, **{**no_filter, "dataplane": "sr-mpls"})
+    assert not matches_policy_filter(PE1_POLICY, **{**no_filter, "dataplane": "srv6"})
 
 
 def test_path_hops_prefers_flat_hop_list_then_first_segment_list():
@@ -580,9 +975,19 @@ def test_sr_policy_summary_counts():
         "down": 1,
         "pce_controlled": 3,
         "by_type": {"REGULAR": 3, "CIRCUIT-STYLE": 1},
+        "by_dataplane": {"sr-mpls": 4, "srv6": 0},
         "down_policies": ["10.0.0.1 -> 10.0.0.3 color 100"],
     }
-    assert sr_policy_summary([])["total"] == 0 and sr_policy_summary([])["by_type"] == {}
+    empty = sr_policy_summary([])
+    assert empty["total"] == 0 and empty["by_type"] == {}
+    # Both dataplane keys are always present, so the dimension shows on an SR-MPLS-only
+    # network; an SRv6 policy (spec-shaped) counts under srv6 and keys its DOWN entry by
+    # the IPv6 router-ids.
+    assert empty["by_dataplane"] == {"sr-mpls": 0, "srv6": 0}
+    srv6_down = {**SRV6_POLICY, "oper-state": "DOWN"}
+    mixed = sr_policy_summary([PE1_POLICY, PE2_POLICY, srv6_down])
+    assert mixed["by_dataplane"] == {"sr-mpls": 2, "srv6": 1}
+    assert mixed["down_policies"] == ["2001:db8::1 -> 2001:db8::3 color 6001"]
 
 
 def test_is_ip_address_is_the_no_lookup_fast_path():
@@ -613,6 +1018,10 @@ def test_end_label_shows_both_spellings_only_when_a_name_was_resolved():
     assert end_label("pe2", "10.0.0.3", names) == "PE2 (10.0.0.3)"
     assert end_label("10.0.0.1", "10.0.0.1", names) == "PE1 (10.0.0.1)"
     assert end_label("10.0.0.9", "10.0.0.9", names) == "10.0.0.9"
+    # A non-canonical spelling of the router-id itself is not a host name (live 2026-09-15:
+    # it rendered '2001:0DB8::1 (2001:db8::1)' before this rule).
+    assert end_label("2001:0DB8::1", PE1_V6) == PE1_V6
+    assert end_label("2001:db8:0:0::1", PE1_V6, {}) == PE1_V6
 
 
 def test_router_id_names_and_node_text_come_from_the_topology_nodes_alone():
@@ -674,18 +1083,23 @@ async def test_list_sr_policies_markdown_url_accept_and_lines(settings):
     assert request.method == "GET" and request.headers["Accept"] == YANG_JSON
     assert networks.call_count == 1
     assert "# SR policies (2 of 2, no filter)" in text
+    # The verified SR-MPLS rows, exactly as before plus the derived dataplane column.
     assert (
         "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP oper=UP type=REGULAR "
-        "bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.1 | active path: "
-        "CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
+        "dataplane=sr-mpls bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.1 "
+        "| active path: CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
         "hops=16003(IPV4-NODE-SID/10.0.0.3) updated=2026-09-13T"
     ) in text
     assert (
         "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100** admin=UP oper=UP type=REGULAR "
-        "bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.3 | active path: "
-        "CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
+        "dataplane=sr-mpls bsid=24005 origin=PCC-initiated pce-controlled=True pcc=10.0.0.3 "
+        "| active path: CNC-DYN-100 pref=100 PT-DYNAMIC metric=IGP-METRIC:20 "
         "hops=16001(IPV4-NODE-SID/10.0.0.1) updated="
     ) in text
+    assert "dataplane=srv6" not in text
+    # The dataplane legend and where SRv6 policies come from (the OE RPCs are SR-MPLS only).
+    assert "Dataplane is derived (the NBI has no dataplane leaf)" in text
+    assert "cnc_create_sr_policy_service" in text and "SR-MPLS only" in text
     assert "- **10.0.0.1 -> 10.0.0.3 color 100**" not in text
     assert "host names are shown next to the TE router-ids" in text
     assert "resolved through the topology nodes" in text and "cnc_get_sr_policy" in text
@@ -802,7 +1216,8 @@ async def test_list_sr_policies_json_is_raw_entries(settings):
     assert data["count"] == 2 and data["total"] == 2
     assert data["items"] == [PE2_POLICY, PE1_POLICY]
     assert data["filter"] == {
-        "headend": None, "endpoint": None, "color": None, "oper_state": None, "pce_controlled": None
+        "headend": None, "endpoint": None, "color": None, "oper_state": None,
+        "pce_controlled": None, "dataplane": None,
     }  # fmt: skip
 
 
@@ -875,6 +1290,7 @@ async def test_list_sr_policies_empty_container_is_not_error(settings):
             "color": None,
             "oper_state": None,
             "pce_controlled": None,
+            "dataplane": None,
         },
         "items": [],
     }
@@ -900,14 +1316,162 @@ async def test_list_sr_policies_policy_without_details_says_no_path_reported(set
     mock_networks()
     text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
     assert not text.startswith("Error:") and "# SR policies (2 of 2, no filter)" in text
+    # Nothing to derive a dataplane from but the IPv4 keys: sr-mpls.
     assert (
-        "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP oper=UP type=REGULAR bsid=- "
-        "origin=unknown pce-controlled=None pcc=- | no path reported updated=-"
+        "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP oper=UP type=REGULAR "
+        "dataplane=sr-mpls bsid=- origin=unknown pce-controlled=None pcc=- | no path reported "
+        "updated=-"
     ) in text
     assert (
-        "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100** admin=UP oper=UP type=REGULAR bsid=- "
-        "origin=unknown pce-controlled=True pcc=- | no path reported updated=-"
+        "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100** admin=UP oper=UP type=REGULAR "
+        "dataplane=sr-mpls bsid=- origin=unknown pce-controlled=True pcc=- | no path reported "
+        "updated=-"
     ) in text
+
+
+@respx.mock
+async def test_list_sr_policies_dataplane_srv6_matches_nothing_on_the_sr_mpls_lab(settings):
+    """Today's lab: the two verified SR-MPLS policies and no SRv6 one, so dataplane='srv6'
+    is a normal empty answer that says where SRv6 policies would come from."""
+    networks = mock_networks()
+    route = respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"dataplane": "SRv6"})
+    assert route.call_count == 1 and networks.call_count == 0  # nothing to name, no read
+    assert not text.startswith("Error:")
+    assert "# SR policies (0 of 2, dataplane=srv6)" in text
+    assert "No SR policies match the filter (dataplane=srv6); 2 are reported in total." in text
+    assert "SRv6 policies come from the NSO SR-TE CFP only in 7.2" in text
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"dataplane": "mpls", "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 2 and data["filter"]["dataplane"] == "sr-mpls"
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"dataplane": "srv6", "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 0 and data["total"] == 2 and data["items"] == []
+
+
+@respx.mock
+async def test_list_sr_policies_dataplane_srv6_with_other_filter_does_not_claim_none_exist(
+    settings,
+):
+    """'none is reported' is a claim about the whole container: when an SRv6 policy IS
+    reported (PE1 -> PE2 colour 6001) and a second filter term excluded it, the empty
+    answer must say so, not that the network has no SRv6 policy."""
+    networks = mock_networks(NETWORKS_V6)
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(MIXED_POLICIES))
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"headend": "P1", "dataplane": "srv6"}
+    )
+    assert networks.call_count == 1 and not text.startswith("Error:")
+    assert "# SR policies (0 of 3, headend=P1 (10.0.0.2), dataplane=srv6)" in text
+    assert "No SR policies match the filter (headend=P1 (10.0.0.2), dataplane=srv6)" in text
+    assert "none is reported by the SR-PCE feed" not in text
+    assert (
+        "1 SRv6 policy is reported in total; none matches the other filter terms "
+        "(headend=P1 (10.0.0.2))."
+    ) in text
+    # Two SRv6 policies, excluded by oper_state: the plural form, no topology read.
+    two = {
+        "cisco-crosswork-segment-routing-policy:sr-policies": {
+            "policy": [PE1_POLICY, SRV6_POLICY, {**SRV6_POLICY, "color": 6002}]
+        }
+    }
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(two))
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"oper_state": "down", "dataplane": "srv6"}
+    )
+    assert networks.call_count == 1
+    assert "# SR policies (0 of 3, oper_state=DOWN, dataplane=srv6)" in text
+    assert "none is reported by the SR-PCE feed" not in text
+    assert (
+        "2 SRv6 policies are reported in total; none matches the other filter terms "
+        "(oper_state=DOWN)."
+    ) in text
+    # Only the dataplane filter, on a container without any SRv6 policy: the "none is
+    # reported" sentence is the right one (the SR-MPLS lab today).
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"headend": "P1", "dataplane": "srv6"}
+    )
+    assert "none is reported by the SR-PCE feed" in text
+    assert "none matches the other filter terms" not in text
+
+
+@respx.mock
+async def test_list_sr_policies_renders_an_srv6_policy_and_filters_by_dataplane(settings):
+    """Spec-shaped (awaits the underlay): an SRv6 policy keyed by the IPv6 TE router-ids,
+    named through the topology's ipv6-router-id leaf-list, its SRv6 BSID in the bsid column
+    and its hops as <sid>(<type>/<address> <behavior>)."""
+    mock_networks(NETWORKS_V6)
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(MIXED_POLICIES))
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {})
+    assert "# SR policies (3 of 3, no filter)" in text
+    assert (
+        "- **PE1 (2001:db8::1) -> PE2 (2001:db8::3) color 6001** admin=UP oper=UP type=REGULAR "
+        "dataplane=srv6 bsid=fc00:0:1:1:: origin=PCC-initiated pce-controlled=True "
+        "pcc=2001:db8::1 | active path: srte_c_6001_ep_2001:db8::3 pref=100 PT-DYNAMIC "
+        "metric=IGP-METRIC:20 hops=fc00:0:3::(IPV6-NODE-SID/2001:db8::3 uN) > "
+        "fc00:0:1:e000::(IPV6-ADJ-SID/2001:db8:1::1->2001:db8:1::2 uA)[protected] "
+        "updated=2026-09-13T"
+    ) in text
+    # The SR-MPLS rows are untouched by the IPv6 names (the IPv4 router-id still names PE1).
+    assert "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100** admin=UP" in text
+    assert "dataplane=sr-mpls bsid=24005" in text
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"dataplane": "srv6"})
+    assert "# SR policies (1 of 3, dataplane=srv6)" in text
+    assert "color 6001" in text and "color 100" not in text
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"dataplane": "SR-MPLS", "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 2 and [p["color"] for p in data["items"]] == [100, 100]
+    # An IPv6 literal filters the SRv6 policy directly (no topology read).
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"endpoint": PE2_V6, "response_format": "json"}
+    )
+    data = json.loads(text)
+    assert data["count"] == 1 and data["items"] == [SRV6_POLICY]
+    assert data["filter"]["endpoint"] == PE2_V6
+
+
+@respx.mock
+async def test_list_sr_policies_host_name_filter_matches_ipv4_and_ipv6_keys(settings):
+    """A host name resolves to EVERY TE router-id of its node, so 'PE1' lists PE1's SR-MPLS
+    (IPv4-keyed) and SRv6 (IPv6-keyed) policies together; the header and the json filter
+    show the whole match set."""
+    networks = mock_networks(NETWORKS_V6)
+    respx.get(SR_POLICIES_URL).mock(return_value=ok(MIXED_POLICIES))
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"headend": "pe1"})
+    assert networks.call_count == 1
+    assert "# SR policies (2 of 3, headend=PE1 (10.0.0.1, 2001:db8::1))" in text
+    assert "- **PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100**" in text
+    assert "- **PE1 (2001:db8::1) -> PE2 (2001:db8::3) color 6001**" in text
+    assert "- **PE2 (10.0.0.3) -> PE1 (10.0.0.1) color 100**" not in text
+    text = await call_tool_text(
+        build(settings),
+        "cnc_list_sr_policies",
+        {"headend": "PE1", "endpoint": "PE2", "dataplane": "srv6", "response_format": "json"},
+    )
+    data = json.loads(text)
+    assert data["count"] == 1 and data["items"] == [SRV6_POLICY]
+    assert data["filter"]["headend"] == ["10.0.0.1", PE1_V6]
+    assert data["filter"]["endpoint"] == ["10.0.0.3", PE2_V6]
+    # A node with only an IPv4 router-id keeps the single-string filter value (as before).
+    text = await call_tool_text(
+        build(settings), "cnc_list_sr_policies", {"headend": "P1", "response_format": "json"}
+    )
+    assert json.loads(text)["filter"]["headend"] == "10.0.0.2"
+
+
+@respx.mock
+async def test_list_sr_policies_bad_dataplane_is_error_before_any_call(settings):
+    route = respx.get(SR_POLICIES_URL).mock(return_value=ok(SR_POLICIES))
+    text = await call_tool_text(build(settings), "cnc_list_sr_policies", {"dataplane": "ipv6"})
+    assert text.startswith("Error: dataplane must be one of sr-mpls, srv6")
+    assert route.call_count == 0
 
 
 # --- cnc_get_sr_policy -------------------------------------------------------
@@ -927,11 +1491,12 @@ async def test_get_sr_policy_markdown_url_and_paths(settings):
     assert str(request.url) == f"{SR_POLICIES_URL}/policy={PE1_PE2_KEY}"
     assert request.headers["Accept"] == YANG_JSON
     assert text.startswith("# SR policy 10.0.0.1 -> 10.0.0.3 color 100")
-    assert "- admin-state=UP oper-state=UP type=REGULAR description=-" in text
+    assert "- admin-state=UP oper-state=UP type=REGULAR dataplane=sr-mpls description=-" in text
     assert (
         "- binding-sid=24005 pce-controlled=True pcc-address=10.0.0.1 delegated-pce=- msd=- "
         "updated=2026-09-13T"
     ) in text
+    assert "srv6-binding-sid" not in text
     assert "- pcep-info: pcep-flag-c=0" in text
     # Origin vs delegation spelled out (scenario 3: the agent had to infer it).
     assert (
@@ -1149,6 +1714,165 @@ async def test_get_sr_policy_without_policy_details_reports_no_path(settings):
     )
     assert "- pcep-info: -" in text
     assert "Paths (0):" in text and "- (no path reported)" in text
+
+
+@respx.mock
+async def test_get_sr_policy_ipv6_literal_keys_are_percent_encoded_and_render_srv6(settings):
+    """Verified live: an IPv6 key goes on the wire as policy=2001%3Adb8%3A%3A1,... and the NBI
+    type-checks it as a key (409 data-missing when absent). The SRv6 rendering itself is the
+    7.2 document shape — never observed live."""
+    networks = mock_networks(NETWORKS_V6)
+    route = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_V6_KEY}").mock(
+        return_value=ok(SRV6_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": PE1_V6, "endpoint": PE2_V6, "color": 6001},
+    )
+    assert str(route.calls[0].request.url) == f"{SR_POLICIES_URL}/policy={PE1_PE2_V6_KEY}"
+    assert networks.call_count == 0  # IP literals: the fast path, no topology read
+    assert text.startswith("# SR policy 2001:db8::1 -> 2001:db8::3 color 6001")
+    assert "- admin-state=UP oper-state=UP type=REGULAR dataplane=srv6 description=-" in text
+    # A non-canonical spelling of the same literal goes on the wire canonical (the only
+    # route mocked) and passes the client-side key re-check against the wire entry.
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "2001:0DB8::1", "endpoint": "2001:db8:0:0::3", "color": 6001},
+    )
+    assert route.call_count == 2 and networks.call_count == 0
+    assert text.startswith("# SR policy 2001:db8::1 -> 2001:db8::3 color 6001")
+    assert "- binding-sid=- pce-controlled=True pcc-address=2001:db8::1" in text
+    assert "- srv6-binding-sid: fc00:0:1:1:: behavior=uB6.Insert.Red structure=32/16/16/0" in text
+    assert "- other:" not in text  # the SRv6 BSID is rendered, not a leftover
+    assert (
+        "  segment-list 1 (weight 1): fc00:0:3::(IPV6-NODE-SID/2001:db8::3 uN) > "
+        "fc00:0:1:e000::(IPV6-ADJ-SID/2001:db8:1::1->2001:db8:1::2 uA)[protected]"
+    ) in text
+    # The document's module-prefixed BSID spelling renders the same and is not "other".
+    prefixed = {
+        **SRV6_POLICY,
+        "policy-details": {
+            k: v for k, v in SRV6_POLICY["policy-details"].items() if k != "srv6-binding-sid"
+        },
+    }
+    prefixed["policy-details"]["cisco-crosswork-segment-routing-policy:srv6-binding-sid"] = (
+        SRV6_BSID
+    )
+    respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_V6_KEY}").mock(
+        return_value=ok({"cisco-crosswork-segment-routing-policy:policy": [prefixed]})
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": PE1_V6, "endpoint": PE2_V6, "color": 6001},
+    )
+    assert "- srv6-binding-sid: fc00:0:1:1:: behavior=uB6.Insert.Red" in text
+    assert "- other:" not in text and "dataplane=srv6" in text
+    # A 409 on an IPv6 literal key is "no SR policy", with the IPv6 key rule.
+    respx.get(f"{SR_POLICIES_URL}/policy=2001%3Adb8%3A%3A1,2001%3Adb8%3A%3A3,6002").mock(
+        return_value=DATA_MISSING_409
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": PE1_V6, "endpoint": PE2_V6, "color": 6002},
+    )
+    assert text.startswith("Error: no SR policy 2001:db8::1 -> 2001:db8::3 color 6002")
+    assert "an SRv6 policy is keyed by the IPv6 TE router-ids" in text
+    assert networks.call_count == 0
+
+
+@respx.mock
+async def test_get_sr_policy_host_names_retry_the_ipv6_key_after_a_409(settings):
+    """Spec-only until an SRv6 policy exists: 'PE1' / 'PE2' resolve to the IPv4 router-ids
+    first (the verified path); when that key answers 409 and both nodes carry an
+    ipv6-router-id, the IPv6 pair is tried once — and finds the SRv6 policy."""
+    networks = mock_networks(NETWORKS_V6)
+    v4 = respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.1,10.0.0.3,6001").mock(
+        return_value=DATA_MISSING_409
+    )
+    v6 = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_V6_KEY}").mock(
+        return_value=ok(SRV6_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "PE1", "endpoint": "pe2", "color": 6001}
+    )
+    assert networks.call_count == 1 and v4.call_count == 1 and v6.call_count == 1
+    assert text.startswith("# SR policy PE1 (2001:db8::1) -> PE2 (2001:db8::3) color 6001")
+    assert "dataplane=srv6" in text
+    # An IPv4 key that exists never makes the second request (the verified path is unchanged).
+    v4_100 = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_KEY}").mock(
+        return_value=ok(SR_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "PE1", "endpoint": "PE2", "color": 100}
+    )
+    assert v4_100.call_count == 1 and v6.call_count == 1
+    assert text.startswith("# SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 100")
+    # Both keys absent: one error naming both — leading with the key the resolver chose
+    # (the everyday case is a wrong colour on an SR-MPLS policy), the IPv6 pair as "tried
+    # as well" — then nothing more is tried.
+    v6_9 = respx.get(f"{SR_POLICIES_URL}/policy=2001%3Adb8%3A%3A1,2001%3Adb8%3A%3A3,9").mock(
+        return_value=DATA_MISSING_409
+    )
+    v4_9 = respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.1,10.0.0.3,9").mock(
+        return_value=DATA_MISSING_409
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "PE1", "endpoint": "PE2", "color": 9}
+    )
+    assert v4_9.call_count == 1 and v6_9.call_count == 1
+    assert text.startswith("Error: no SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 9")
+    assert (
+        "The IPv6 router-id key 2001:db8::1 -> 2001:db8::3 (the key an SRv6 policy would "
+        "carry) was tried as well and is absent too."
+    ) in text
+    assert "IPv4 router-id key" not in text  # the first pair is not labelled by family
+    assert "cnc_list_sr_policies" in text
+    # A node without an IPv6 router-id (P1) means no retry: the plain not-found, one request.
+    v4_p1 = respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.1,10.0.0.2,9").mock(
+        return_value=DATA_MISSING_409
+    )
+    text = await call_tool_text(
+        build(settings), "cnc_get_sr_policy", {"headend": "PE1", "endpoint": "P1", "color": 9}
+    )
+    assert v4_p1.call_count == 1
+    assert text.startswith("Error: no SR policy PE1 (10.0.0.1) -> P1 (10.0.0.2) color 9")
+    assert "was tried as well" not in text
+
+
+@respx.mock
+async def test_get_sr_policy_host_name_next_to_an_ipv6_literal_resolves_to_the_ipv6_key(
+    settings,
+):
+    # A policy's two keys share an address family: with one end an IPv6 literal, the host
+    # name resolves straight to the node's IPv6 router-id (one request, no retry).
+    networks = mock_networks(NETWORKS_V6)
+    route = respx.get(f"{SR_POLICIES_URL}/policy={PE1_PE2_V6_KEY}").mock(
+        return_value=ok(SRV6_POLICY_KEYED)
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "PE1", "endpoint": PE2_V6, "color": 6001, "response_format": "json"},
+    )
+    assert networks.call_count == 1 and route.call_count == 1
+    assert json.loads(text) == SRV6_POLICY
+    # On today's lab (no ipv6-router-id anywhere) the same call falls back to the node's
+    # IPv4 router-id — a mixed key the NBI answers 409 for — and is reported as not found.
+    mock_networks()
+    mixed = respx.get(f"{SR_POLICIES_URL}/policy=10.0.0.1,2001%3Adb8%3A%3A3,6001").mock(
+        return_value=DATA_MISSING_409
+    )
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy",
+        {"headend": "PE1", "endpoint": PE2_V6, "color": 6001},
+    )
+    assert mixed.call_count == 1
+    assert text.startswith("Error: no SR policy PE1 (10.0.0.1) -> 2001:db8::3 color 6001")
 
 
 @respx.mock
@@ -1539,6 +2263,63 @@ async def test_get_sr_policy_performance_metrics_accepts_host_names(settings):
 
 
 @respx.mock
+async def test_get_sr_policy_performance_metrics_ipv6_key_is_encoded_and_retried(settings):
+    """Verified live: sr-policy-pm=2001%3Adb8%3A%3A1,... is type-checked as a key (409 when
+    absent). The IPv6 retry after a 409 on host names mirrors cnc_get_sr_policy (spec-only)."""
+    networks = mock_networks(NETWORKS_V6)
+    v6_entry = {
+        "cisco-crosswork-performance-metrics:sr-policy-pm": [
+            {
+                "headend": PE1_V6,
+                "endpoint": PE2_V6,
+                "color": 6001,
+                "delay": 20,
+                "bandwidth-utilization-kbps": "0",
+            }
+        ]
+    }
+    route = respx.get(f"{SR_POLICY_PM_URL}={PE1_PE2_V6_KEY}").mock(return_value=ok(v6_entry))
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": PE1_V6, "endpoint": PE2_V6, "color": 6001},
+    )
+    assert str(route.calls[0].request.url) == f"{SR_POLICY_PM_URL}={PE1_PE2_V6_KEY}"
+    assert networks.call_count == 0
+    assert text.startswith(
+        "# Performance metrics for SR policy 2001:db8::1 -> 2001:db8::3 color 6001"
+    )
+    assert "- delay-us=20 (modelled" in text
+    # Host names: the IPv4 key first, then the IPv6 pair once; the title names the key
+    # that answered.
+    v4 = respx.get(f"{SR_POLICY_PM_URL}=10.0.0.1,10.0.0.3,6001").mock(return_value=DATA_MISSING_409)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": "PE1", "endpoint": "PE2", "color": 6001},
+    )
+    assert networks.call_count == 1 and v4.call_count == 1 and route.call_count == 2
+    assert text.startswith(
+        "# Performance metrics for SR policy PE1 (2001:db8::1) -> PE2 (2001:db8::3) color 6001"
+    )
+    # Both absent: the error leads with the key the resolver chose and names the IPv6 pair
+    # as tried as well.
+    respx.get(f"{SR_POLICY_PM_URL}={PE1_PE2_V6_KEY}").mock(return_value=DATA_MISSING_409)
+    text = await call_tool_text(
+        build(settings),
+        "cnc_get_sr_policy_performance_metrics",
+        {"headend": "PE1", "endpoint": "PE2", "color": 6001},
+    )
+    assert text.startswith(
+        "Error: no performance metrics for SR policy PE1 (10.0.0.1) -> PE2 (10.0.0.3) color 6001"
+    )
+    assert (
+        "The IPv6 router-id key 2001:db8::1 -> 2001:db8::3 (the key an SRv6 policy would "
+        "carry) was tried as well and is absent too."
+    ) in text
+
+
+@respx.mock
 async def test_get_sr_policy_performance_metrics_json_and_409(settings):
     respx.get(f"{SR_POLICY_PM_URL}={PE1_PE2_KEY}").mock(return_value=ok(SR_POLICY_PM))
     text = await call_tool_text(
@@ -1687,11 +2468,13 @@ async def test_get_te_summary_counts_the_lab_state(settings):
         "down": 0,
         "pce_controlled": 2,
         "by_type": {"REGULAR": 2},
+        "by_dataplane": {"sr-mpls": 2, "srv6": 0},
         "down_policies": [],
     }
     assert data["p2mp_policies"] == 0 and data["rsvp_te_tunnels"] == 0
     assert data["summary"] == (
-        "2 SR policies, all UP (2 PCE-controlled); 0 P2MP (Tree-SID) policies; 0 RSVP-TE tunnels."
+        "2 SR policies, all UP (2 PCE-controlled; 2 SR-MPLS, 0 SRv6); 0 P2MP (Tree-SID) "
+        "policies; 0 RSVP-TE tunnels."
     )
 
 
@@ -1709,7 +2492,20 @@ async def test_get_te_summary_with_down_policy_and_other_containers(settings):
     assert data["sr_policies"]["down"] == 1 and data["sr_policies"]["up"] == 1
     assert data["sr_policies"]["down_policies"] == ["10.0.0.3 -> 10.0.0.1 color 100"]
     assert data["p2mp_policies"] == 1 and data["rsvp_te_tunnels"] == 1
-    assert data["summary"].startswith("2 SR policies, 1 DOWN (2 PCE-controlled); 1 P2MP")
+    assert data["summary"].startswith(
+        "2 SR policies, 1 DOWN (2 PCE-controlled; 2 SR-MPLS, 0 SRv6); 1 P2MP"
+    )
+
+
+@respx.mock
+async def test_get_te_summary_counts_srv6_policies_by_dataplane(settings):
+    # Spec-shaped: an SRv6 policy (srv6-binding-sid, IPV6-* hops, IPv6 keys) next to the
+    # two verified SR-MPLS ones — awaits the underlay for a live confirmation.
+    mock_lists(policies=MIXED_POLICIES)
+    data = json.loads(await call_tool_text(build(settings), "cnc_get_te_summary", {}))
+    assert data["sr_policies"]["total"] == 3
+    assert data["sr_policies"]["by_dataplane"] == {"sr-mpls": 2, "srv6": 1}
+    assert data["summary"].startswith("3 SR policies, all UP (3 PCE-controlled; 2 SR-MPLS, 1 SRv6)")
 
 
 @respx.mock
@@ -1717,7 +2513,8 @@ async def test_get_te_summary_all_empty(settings):
     mock_lists(policies=EMPTY)
     data = json.loads(await call_tool_text(build(settings), "cnc_get_te_summary", {}))
     assert data["sr_policies"]["total"] == 0 and data["sr_policies"]["by_type"] == {}
-    assert data["summary"].startswith("no SR policies (0 PCE-controlled)")
+    assert data["sr_policies"]["by_dataplane"] == {"sr-mpls": 0, "srv6": 0}
+    assert data["summary"].startswith("no SR policies (0 PCE-controlled; 0 SR-MPLS, 0 SRv6)")
 
 
 @respx.mock
