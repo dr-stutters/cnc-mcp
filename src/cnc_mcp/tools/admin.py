@@ -106,9 +106,10 @@ logger = logging.getLogger(__name__)
 AAA_V2 = "/crosswork/aaa/v2"
 # "Know my role - Read only" (api id aaa_cw_role_read): a read-only mirror of aaa/v1
 # on the same backend (verified live 2026-09-14 as admin: role/<r>, roleAccess/<r>,
-# user/<u>, userpermission, task/<r>, v1/api and v2/api all answer 200). It is the
-# endpoint a non-admin account is expected to read its own role through; NOT yet
-# verified with a restricted role, hence the aaa/v1 fallback in cnc_check_permissions.
+# user/<u>, userpermission, task/<r>, v1/api and v2/api all answer 200). The AAA
+# service grants it to every role it stores (a baseline row, verified 2026-09-15), so
+# every account can read its own role through it; cnc_check_permissions keeps the
+# aaa/v1 fallback for a role stored some other way.
 AAA_READ = "/crosswork/aaaread/v1"
 
 # platform/v2 — cluster manager
@@ -2437,7 +2438,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         role = policy_id, device access groups, token expiry — the claims are
         read without the signing key, so this is identification, not proof),
         then GETs the role (aaaread/v1/role/<role>, the "Know my role - Read
-        only" mirror every role is expected to reach; falls back to
+        only" mirror the AAA service grants to every role it stores — a
+        baseline row, verified 2026-09-15; falls back to
         aaa/v1/role/<role> when the mirror answers 403/404 and says which one
         answered — either grant suffices) and, from the SAME base, its
         roleAccess (GuiAccess / ApiAccess), and evaluates EVERY tool registered
@@ -2456,9 +2458,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         endpoints; the map is a source-derived heuristic; how the AAA service
         stores a role was verified 2026-09-14 (a Read row is GET /.* plus the
         platform's read-by-POST templates, so POST .../query reads run under
-        Read) but that the role editor's Read/Write/Delete ticks emit that
-        shape is inferred, not observed; a device access group other than
-        ALL-ACCESS restricts
+        Read) and the role editor's Read/Write/Delete ticks were verified
+        2026-09-15 to submit exactly that shape (one /.* entry per row, GET /
+        POST,PUT,PATCH / DELETE; a UI-built role was read back); a device
+        access group other than ALL-ACCESS restricts
         devices, not APIs, and is reported but not evaluated; two gateway
         fail-open cases (an allowed_urls regex that does not compile, an empty
         access_rights map) are reported as refusals — the role as it should be
@@ -2590,9 +2593,9 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 "generated read-only role (every predicted refusal answered 403, nothing "
                 "unpredicted did). How the AAA service stores a role was verified "
                 "2026-09-14 (a Read row is GET /.* plus the platform's read-by-POST "
-                "templates, so POST .../query reads run under Read); that the "
-                "role editor's Read/Write/Delete ticks emit that shape is inferred, not "
-                "observed."
+                "templates, so POST .../query reads run under Read), and the role "
+                "editor's Read/Write/Delete ticks were verified 2026-09-15 to submit "
+                "exactly that shape (a UI-built role read back)."
             )
             fail_open = _fail_open_grants(access_rights)
             if fail_open:

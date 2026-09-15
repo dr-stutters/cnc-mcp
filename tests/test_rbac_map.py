@@ -2,10 +2,11 @@
 (scripts/rbac_map.py): the map names every registered tool, every requirement
 points at a catalogued API, the playbooks are composed from the right siblings,
 the platform block carries the read templates and baseline rows, the generated
-role bodies are UI-shaped and — evaluated as the AAA service stores them —
-permit exactly what docs/RBAC.md says, the generator's model of how the
-service stores a role reproduces the live read-backs in tests/fixtures/rbac/,
-and regenerating offline changes nothing (the --check CI guard).
+role bodies are what the role editor submits (verified 2026-09-15 against a
+UI-built role) and — evaluated as the AAA service stores them — permit exactly
+what docs/RBAC.md says, the generator's model of how the service stores a role
+reproduces the live read-backs in tests/fixtures/rbac/, and regenerating
+offline changes nothing (the --check CI guard).
 
 No network: the generator's --check mode reads the catalogue and the platform
 block embedded in the committed map; the read-backs are committed fixtures.
@@ -103,8 +104,11 @@ def test_every_requirement_names_a_catalogued_api(rbac):
     apis = rbac["apis"]
     assert len(apis) == rbac["generated_from"]["api_count"]
     for api_id, api in apis.items():
-        assert set(api) == {"feature", "listen_path", "name"}, api_id  # sanitised: nothing else
+        assert set(api) == set(rbac_map.CATALOGUE_FIELDS), api_id  # sanitised: nothing else
         assert api["listen_path"].startswith("/"), api_id
+    # every api_id has its place in the aaa/v2/api response (the editor's row order)
+    positions = [api["position"] for api in apis.values()]
+    assert sorted(positions) == list(range(len(apis)))
     for name, spec in rbac["tools"].items():
         assert set(spec) >= {"area", "read_only", "requirements"}, name
         for req in spec["requirements"]:
@@ -122,20 +126,87 @@ def test_every_requirement_names_a_catalogued_api(rbac):
 def test_platform_block_carries_only_url_and_methods(rbac):
     """The captured read templates and baseline rows: every api_id catalogued, every
     entry exactly {url, methods} with a regex that compiles and known methods in order,
-    the two baseline APIs kept apart from the templates, a capture date."""
+    the three baseline APIs kept apart from the templates (only aaa_cw_role_read is
+    also a template), a capture date; the split rule's data (the ten POST-delete APIs,
+    sorted, and the not-delete pattern as read back)."""
     platform = rbac["platform"]
-    assert set(platform) == {"version", "captured", "read_templates", "baseline_rows"}
+    assert set(platform) == {
+        "version",
+        "captured",
+        "read_templates",
+        "baseline_rows",
+        "post_delete_apis",
+        "not_delete_pattern",
+    }
     assert platform["version"] == "7.2.0"
+    assert platform["post_delete_apis"] == sorted(rbac_map.POST_DELETE_APIS)
+    assert len(platform["post_delete_apis"]) == 10
+    # every POST-delete API is either verified (a fixture) or inferred (the 2026-09-14
+    # experiment), the two lists disjoint; the inferred ones are among the nine the
+    # POST-only shape was tried on, and the four two-entry APIs are catalogued too
+    assert set(rbac_map.POST_DELETE_VERIFIED) < set(platform["post_delete_apis"])
+    assert rbac_map.POST_DELETE_VERIFIED == (
+        "cwcollection",
+        "optima_restconf",
+        "platform_cwplatform",
+    )
+    assert rbac_map.POST_DELETE_INFERRED == (
+        "collection_dg-manager",
+        "cw-fault-alarms-api",
+        "cw-fault-events-api",
+        "cw-probe-mgr",
+        "cw-ztp-service",
+        "dg-manager-global-parameters-api",
+        "optima_analytics_api",
+    )
+    assert set(rbac_map.POST_DELETE_APIS) == set(rbac_map.POST_DELETE_VERIFIED) | set(
+        rbac_map.POST_DELETE_INFERRED
+    )
+    assert not set(rbac_map.POST_DELETE_VERIFIED) & set(rbac_map.POST_DELETE_INFERRED)
+    assert len(rbac_map.POST_ONLY_EXPERIMENT_APIS) == 9
+    assert set(rbac_map.POST_DELETE_INFERRED) < set(rbac_map.POST_ONLY_EXPERIMENT_APIS)
+    assert set(rbac_map.POST_ONLY_EXPERIMENT_APIS) - set(rbac_map.POST_DELETE_INFERRED) == {
+        "cwcollection",
+        "optima_restconf",
+    }
+    assert rbac_map.POST_BESIDE_GET_EXPERIMENT_APIS == (
+        "device-config",
+        "inventory_cwinventory",
+        "platform_cwplatform",
+        "tsdn_cat-restconf-nbi",
+    )
+    assert not set(rbac_map.POST_ONLY_EXPERIMENT_APIS) & set(
+        rbac_map.POST_BESIDE_GET_EXPERIMENT_APIS
+    )
+    for api_id in (*rbac_map.POST_ONLY_EXPERIMENT_APIS, *rbac_map.POST_BESIDE_GET_EXPERIMENT_APIS):
+        assert api_id in rbac["apis"], api_id
+    assert all(api_id in rbac["apis"] for api_id in platform["post_delete_apis"])
+    assert platform["not_delete_pattern"] == rbac_map.NOT_DELETE_PATTERN
+    not_delete = re.compile(platform["not_delete_pattern"])
+    for path in ("/crosswork/x/v1/delete", "/crosswork/x/v1/delete/", "/a/delete"):
+        assert not not_delete.search(path), path
+    for path in (
+        "/crosswork/x/v1/query",
+        "/crosswork/x/v1/deletes",
+        "/crosswork/x/v1/delet",
+        "/crosswork/x/v1/Delete",
+        "/crosswork/x/v1/delete/x",
+        "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-"
+        "engine-sr-policy-operations:sr-policy-delete",
+    ):
+        assert not_delete.search(path), path
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", platform["captured"])
     assert set(platform["baseline_rows"]) == set(rbac_map.BASELINE_APIS)
-    assert not set(platform["read_templates"]) & set(rbac_map.BASELINE_APIS)
+    # aaa_cw_role_read is both: its baseline row carries the template it also receives
+    # when submitted as a GET-only row (both read back, 2026-09-14 and 2026-09-15)
+    assert set(platform["read_templates"]) & set(rbac_map.BASELINE_APIS) == {"aaa_cw_role_read"}
     assert len(platform["read_templates"]) == 17
     for block in ("read_templates", "baseline_rows"):
         assert list(platform[block]) == sorted(platform[block])
         for api_id, entries in platform[block].items():
             assert api_id in rbac["apis"], api_id
             assert entries, api_id
-            assert entries == sorted(entries, key=lambda e: (e["url"], e["methods"]))
+            assert entries == sorted(entries, key=rbac_map.entry_order)
             for entry in entries:
                 assert set(entry) == {"url", "methods"}, (api_id, entry)
                 re.compile(entry["url"])
@@ -147,8 +218,23 @@ def test_platform_block_carries_only_url_and_methods(rbac):
     assert platform["read_templates"]["inventory_cwinventory"] == [
         {"url": "/.+/query$", "methods": ["POST"]}
     ]
+    # a baseline row starts with its /.* entry, where the service stores it (the
+    # editor reads only that first entry); the custom-url template follows
+    for api_id, entries in platform["baseline_rows"].items():
+        assert entries[0]["url"] == "/.*", api_id
     assert platform["baseline_rows"]["aaa_selected_pref"] == [
         {"url": "/.*", "methods": ["GET", "PUT"]}
+    ]
+    assert platform["baseline_rows"]["aaa_cwpassword"] == [
+        {"url": "/.*", "methods": ["GET", "PUT"]},
+        {"url": "/(.*passwordHistoryCheck.*)$", "methods": ["POST"]},
+    ]
+    assert platform["baseline_rows"]["aaa_cw_role_read"] == [
+        {"url": "/.*", "methods": ["GET"]},
+        {"url": "/.+/query$", "methods": ["POST"]},
+    ]
+    assert platform["read_templates"]["aaa_cw_role_read"] == [
+        {"url": "/.+/query$", "methods": ["POST"]}
     ]
 
 
@@ -250,93 +336,48 @@ def stored(rbac: dict, kind: str) -> dict:
     return rbac_map.stored_access_rights(body(kind), rbac["platform"], rbac["apis"])
 
 
-def top_level_alternatives(url: str) -> list[str]:
-    """The alternatives of a regex split on ``|`` at nesting depth 0 (an escaped
-    metacharacter never opens, closes or splits a group)."""
-    parts: list[str] = []
-    current: list[str] = []
-    depth = 0
-    i = 0
-    while i < len(url):
-        char = url[i]
-        if char == "\\":
-            current.append(url[i : i + 2])
-            i += 2
-            continue
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-        elif char == "|" and depth == 0:
-            parts.append("".join(current))
-            current = []
-            i += 1
-            continue
-        current.append(char)
-        i += 1
-    parts.append("".join(current))
-    return parts
-
-
-def assert_re2_compatible_and_anchored(url: str, context: object) -> None:
-    """An anchored AAA URL pattern reads the same under Go RE2 (Tyk) and Python's
-    ``re``, and every top-level alternative is anchored at both ends: only the
-    characters the generator can emit, escapes shared by both engines (``\\.`` ``\\+``
-    ``\\(``...), no lookaround ``(?``, no possessive ``++``/``*+``/``?+`` (accepted by
-    Python 3.11, rejected by RE2), no backreference, no ``\\A``/``\\Z``, no ``/.*``;
-    the only wildcards are ``.+`` and ``[^/]+`` (a bare ``.`` or another class is a
-    bug)."""
-    assert re.fullmatch(r"[A-Za-z0-9/:=_\-^$()|.+\[\]\\]+", url), context
-    assert not re.search(r"\\[^.^$*+?()\[\]{}|\\]", url), context
-    assert not re.search(r"[*+?]\+|\(\?", url), context
-    assert not re.search(r"(?<!\\)\.(?!\+)", url), context
-    assert set(re.findall(r"(?<!\\)\[[^\]]*\]", url)) <= {"[^/]"}, context
-    assert "/.*" not in url, context
-    re.compile(url)
-    for alternative in top_level_alternatives(url):
-        assert alternative.startswith("^") and alternative.endswith("$"), (context, alternative)
-
-
 # --- the generated role bodies ---------------------------------------------------------
 
 
 @pytest.mark.parametrize("kind", ["readonly", "operator"])
-def test_role_bodies_are_ui_shaped_one_entry_per_tick(rbac, kind):
-    """Every row carries the entries the UI's ticks are stored as — ``/.*`` with
-    ``[GET]`` (R), ``[POST, PUT, PATCH]`` (W), ``[DELETE]`` (D), in that order, never
-    a custom POST entry — except that the R entry of the two AAA rows is the anchored
-    GET regex. The read-only body is R on every row it carries; the operator body
-    carries exactly the ticks the classification says every tool needs."""
+def test_role_bodies_are_what_the_editor_submits(rbac, kind):
+    """Every row is exactly what the role editor sends for its ticks (verified 2026-09-15
+    against a UI-built role): ONE ``/.*`` entry whose methods are the union of the ticks
+    in the editor's order (GET, POST, PUT, PATCH, DELETE), ``versions []``, the editor's
+    role fields, never a custom url, never a baseline row. The read-only body is R on
+    every row it carries; the operator body carries exactly the ticks the classification
+    says every tool needs (the baseline API the reads use, aaa_cw_role_read, left out)."""
     role_obj = role(kind)
     assert role_obj["name"] == f"cnc-mcp-{kind}"
-    for key, value in rbac_map.ROLE_SKELETON.items():  # copied from the admin role dump
+    assert set(role_obj) == {"name", "access_rights", *rbac_map.ROLE_SKELETON}
+    for key, value in rbac_map.ROLE_SKELETON.items():  # the editor's Afe defaults
         assert role_obj[key] == value, key
+    assert role_obj["rate"] == 1000 and "versions" not in role_obj
     read_templates = rbac["platform"]["read_templates"]
     specs = [s for s in rbac["tools"].values() if kind == "operator" or s["read_only"]]
     needed = rbac_map.ticks_for(specs, read_templates)
-    if kind == "readonly":
-        expected = {api_id: {"R"} for api_id in needed}
-    else:
-        expected = needed
+    assert set(needed) & set(rbac_map.BASELINE_APIS) == {"aaa_cw_role_read"}
+    expected = {
+        api_id: {"R"} if kind == "readonly" else ticks
+        for api_id, ticks in needed.items()
+        if api_id not in rbac_map.BASELINE_APIS
+    }
     assert rbac_map.body_ticks(body(kind)) == expected
     for api_id, grant in role_obj["access_rights"].items():
+        assert api_id not in rbac_map.BASELINE_APIS
         assert grant["api_id"] == api_id
         assert grant["api_name"] == rbac["apis"][api_id]["name"]
-        assert grant["versions"] == ["Default"] and grant["allowance_scope"] == ""
-        entries = grant["allowed_urls"]
-        assert entries, api_id
-        ticks = [
-            tick
-            for tick in rbac_map.TICKS
-            if any(list(rbac_map.TICK_METHODS[tick]) == e["methods"] for e in entries)
-        ]
-        assert [e["methods"] for e in entries] == [list(rbac_map.TICK_METHODS[t]) for t in ticks]
-        for entry in entries:
-            if api_id in rbac_map.AAA_APIS and entry["methods"] == ["GET"]:
-                assert_re2_compatible_and_anchored(entry["url"], (kind, api_id))
-            else:
-                assert entry["url"] == "/.*", (kind, api_id, entry)
-    assert len(role_obj["access_rights"]) == (43 if kind == "readonly" else 47)
+        assert grant["versions"] == [] and grant["allowance_scope"] == ""
+        assert grant["limit"] is None
+        (entry,) = grant["allowed_urls"]
+        assert entry["url"] == "/.*", (kind, api_id)
+        methods = entry["methods"]
+        assert methods and methods == [m for m in RBAC_ALL_METHODS if m in methods]
+        # the union of whole ticks: Write is all of POST, PUT, PATCH or none of them
+        assert ({"POST", "PUT", "PATCH"} <= set(methods)) or not (
+            {"POST", "PUT", "PATCH"} & set(methods)
+        )
+    assert len(role_obj["access_rights"]) == (42 if kind == "readonly" else 46)
 
 
 def test_readonly_body_is_read_only_and_a_subset_of_the_operator_body(rbac):
@@ -368,14 +409,19 @@ def test_stored_readonly_role_permits_168_reads_and_refuses_the_pinned_14(rbac):
     pinned 14 read tools are refused (each through a POST outside its API's read
     template) and cnc_reactivate_probe is the only write tool permitted."""
     access_rights = stored(rbac, "readonly")
-    assert len(access_rights) == 45  # 43 rows + the two baseline rows
+    assert len(access_rights) == 45  # 42 rows + the three baseline rows
     assert set(access_rights) - set(role("readonly")["access_rights"]) == set(
         rbac_map.BASELINE_APIS
     )
     # the templates were added to every row (every row has a GET entry and no POST)
     for api_id, entries in rbac["platform"]["read_templates"].items():
-        if api_id in access_rights and api_id not in rbac_map.BASELINE_APIS:
+        if api_id in access_rights:
             assert all(entry in access_rights[api_id]["allowed_urls"] for entry in entries)
+    # the baseline row every role has is what lets cnc_check_permissions read the role
+    assert access_rights["aaa_cw_role_read"]["allowed_urls"][0] == {
+        "url": "/.*",
+        "methods": ["GET"],
+    }
     names = sorted(rbac["tools"])
     verdict = evaluate_rbac_map(names, rbac, access_rights)
     assert verdict["not_in_map"] == []
@@ -443,45 +489,6 @@ def test_stored_operator_role_permits_every_tool(rbac):
         assert tyk_permits(access_rights, api_id, method, concrete(path)), (method, path)
     for group in rbac["tools"]["cnc_check_permissions"]["any_of"]:
         assert set(group) <= set(access_rights)
-
-
-@pytest.mark.parametrize("kind", ["readonly", "operator"])
-@pytest.mark.parametrize("api_id", rbac_map.AAA_APIS)
-def test_aaa_anchored_get_covers_every_template_and_not_the_api_listing(rbac, kind, api_id):
-    """The anchored GET entry of an AAA row permits every path the tools send on the
-    row (as a concrete request) and nothing else: not the gateway's full
-    API-definition listing (administrative data), not a granted path under another
-    prefix, and no method but GET."""
-    access_rights = role(kind)["access_rights"]
-    (entry,) = [e for e in access_rights[api_id]["allowed_urls"] if "GET" in e["methods"]]
-    assert entry["methods"] == ["GET"]
-    listen = rbac["apis"][api_id]["listen_path"]
-    sent = {
-        (m, p)
-        for m, p, a in requirements(rbac, read_only=True if kind == "readonly" else None)
-        if a == api_id
-    }
-    assert sent and all(m == "GET" for m, _ in sent)
-    for method, path in sent:
-        assert tyk_permits(access_rights, api_id, method, concrete(path)), path
-        assert not tyk_permits(access_rights, api_id, method, "/crosswork/other" + concrete(path))
-        if path.endswith("{}"):  # a role or user name is one segment: nothing below it
-            assert not tyk_permits(access_rights, api_id, method, concrete(path) + "/x"), path
-            assert "/.+" not in access_rights[api_id]["allowed_urls"][0]["url"]
-    for forbidden in (
-        "/crosswork/aaaread/v1/api",
-        "/crosswork/aaa/v1/api",
-        f"{listen}v1/api",
-        f"{listen}v1/api/",
-        f"{listen}v1/api/anything",
-    ):
-        for method in RBAC_ALL_METHODS:
-            assert not tyk_permits(access_rights, api_id, method, forbidden), (forbidden, method)
-    # the stored row keeps the anchored GET (the service keeps a custom GET URL verbatim)
-    # and gains its template only where the platform has one
-    stored_row = stored(rbac, kind)[api_id]["allowed_urls"]
-    assert stored_row[0] == entry
-    assert stored_row[1:] == rbac["platform"]["read_templates"].get(api_id, [])
 
 
 # --- classification --------------------------------------------------------------------
@@ -583,21 +590,6 @@ def test_ticks_for_unions_per_api_and_non_read_requirements_honours_any_of():
     assert rbac_map.non_read_requirements(spec, {}) == [("POST", "/crosswork/a/v1/x", "a", "W")]
 
 
-def test_get_templates_for_collects_get_paths_per_api():
-    specs = [
-        {
-            "requirements": [
-                {"method": "GET", "path": "/crosswork/aaa/v1/role/{}", "api_id": "aaa_cwaaa"},
-                {"method": "*", "path": "/crosswork/aaa/v1/x", "api_id": "aaa_cwaaa"},
-                {"method": "POST", "path": "/crosswork/aaa/v1/y", "api_id": "aaa_cwaaa"},
-            ]
-        }
-    ]
-    assert rbac_map.get_templates_for(specs) == {
-        "aaa_cwaaa": {"/crosswork/aaa/v1/role/{}", "/crosswork/aaa/v1/x"}
-    }
-
-
 # --- bodies and the stored role --------------------------------------------------------
 
 CATALOGUE = {
@@ -642,62 +634,87 @@ CATALOGUE = {
 PLATFORM = {
     "version": "7.2.0",
     "captured": "2026-09-14",
-    "read_templates": {"inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}]},
-    "baseline_rows": {"aaa_cwpassword": [{"url": "/.*", "methods": ["GET", "PUT"]}]},
+    "read_templates": {
+        "aaa_cw_role_read": [{"url": "/.+/query$", "methods": ["POST"]}],
+        "inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}],
+    },
+    "baseline_rows": {
+        "aaa_cw_role_read": [
+            {"url": "/.*", "methods": ["GET"]},
+            {"url": "/.+/query$", "methods": ["POST"]},
+        ],
+        "aaa_cwpassword": [{"url": "/.*", "methods": ["GET", "PUT"]}],
+    },
+    # the split rule's data, on the one POST-delete API this catalogue has
+    "post_delete_apis": ["platform_cwplatform"],
+    "not_delete_pattern": rbac_map.NOT_DELETE_PATTERN,
 }
+SPLIT_RULE = {key: PLATFORM[key] for key in rbac_map.SPLIT_RULE_KEYS}
+NOT_DELETE = {"url": rbac_map.NOT_DELETE_PATTERN, "methods": ["POST"]}
 
 
-def test_allowed_urls_for_renders_the_ui_entries_in_r_w_d_order():
-    assert rbac_map.allowed_urls_for("inventory_cwinventory", {"D", "R", "W"}, {}, CATALOGUE) == [
-        {"url": "/.*", "methods": ["GET"]},
-        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]},
-        {"url": "/.*", "methods": ["DELETE"]},
+def test_allowed_urls_for_renders_one_entry_with_the_union_of_the_ticks():
+    """The editor's getPayload: one ``/.*`` entry per row, methods pushed as GET (Read),
+    POST, PUT, PATCH (Write), DELETE (Delete) — whatever order the ticks come in."""
+    assert rbac_map.allowed_urls_for({"D", "R", "W"}) == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]}
     ]
-    assert rbac_map.allowed_urls_for("inventory_cwinventory", {"W"}, {}, CATALOGUE) == [
-        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]}
-    ]
-    # an AAA row: the R entry is anchored over the GET templates, W/D stay UI-shaped
-    templates = {"aaa_cwaaa": {"/crosswork/aaa/v1/role", "/crosswork/aaa/v1/user/{}"}}
-    assert rbac_map.allowed_urls_for("aaa_cwaaa", {"R", "W"}, templates, CATALOGUE) == [
-        {"url": "^/crosswork/aaa/(v1/role|v1/user/[^/]+)$", "methods": ["GET"]},
-        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]},
-    ]
-    with pytest.raises(SystemExit, match="without a GET template"):
-        rbac_map.allowed_urls_for("aaa_cwaaa", {"R"}, {}, CATALOGUE)
+    assert rbac_map.allowed_urls_for({"W"}) == [{"url": "/.*", "methods": ["POST", "PUT", "PATCH"]}]
+    assert rbac_map.allowed_urls_for({"R"}) == [{"url": "/.*", "methods": ["GET"]}]
+    assert rbac_map.allowed_urls_for({"D", "R"}) == [{"url": "/.*", "methods": ["GET", "DELETE"]}]
+    assert rbac_map.allowed_urls_for(set()) == []
 
 
-def test_role_body_skips_rows_without_ticks_and_copies_the_skeleton():
-    ticks = {"inventory_cwinventory": {"R"}, "ems-inventory": set(), "aaa_cwaaa": {"R"}}
-    templates = {"aaa_cwaaa": {"/crosswork/aaa/v1/role/{}"}}
-    out = rbac_map.role_body("ro", ticks, templates, CATALOGUE)
+def test_role_body_skips_rows_without_ticks_and_baseline_rows_and_uses_the_editor_fields():
+    ticks = {
+        "inventory_cwinventory": {"R"},
+        "ems-inventory": set(),
+        "aaa_cwaaa": {"R", "W"},
+        "aaa_cw_role_read": {"R"},  # a baseline row: the service adds it, never the body
+        "aaa_cwpassword": {"D"},
+    }
+    out = rbac_map.role_body("ro", ticks, CATALOGUE)
     assert list(out) == ["ro"]
     assert out["ro"]["name"] == "ro"
+    assert set(out["ro"]) == {"name", "access_rights", *rbac_map.ROLE_SKELETON}
     for key, value in rbac_map.ROLE_SKELETON.items():
         assert out["ro"][key] == value
+    assert out["ro"]["rate"] == 1000 and out["ro"]["partitions"] == {
+        "quota": False,
+        "rate_limit": False,
+        "acl": False,
+    }
     assert list(out["ro"]["access_rights"]) == ["aaa_cwaaa", "inventory_cwinventory"]
-    row = out["ro"]["access_rights"]["inventory_cwinventory"]
-    assert row == {
+    assert out["ro"]["access_rights"]["inventory_cwinventory"] == {
         "api_name": "Inventory APIs",
         "api_id": "inventory_cwinventory",
-        "versions": ["Default"],
+        "versions": [],
         "allowed_urls": [{"url": "/.*", "methods": ["GET"]}],
         "limit": None,
         "allowance_scope": "",
     }
-    assert rbac_map.body_ticks(out) == {"aaa_cwaaa": {"R"}, "inventory_cwinventory": {"R"}}
+    assert out["ro"]["access_rights"]["aaa_cwaaa"]["allowed_urls"] == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+    ]
+    assert rbac_map.body_ticks(out) == {"aaa_cwaaa": {"R", "W"}, "inventory_cwinventory": {"R"}}
     assert rbac_map.body_permits(out, "aaa_cwaaa", "GET", "/crosswork/aaa/v1/role/x")
-    assert not rbac_map.body_permits(out, "aaa_cwaaa", "GET", "/crosswork/aaa/v1/api")
+    assert rbac_map.body_permits(out, "aaa_cwaaa", "PATCH", "/crosswork/aaa/v1/role/x")
+    assert not rbac_map.body_permits(out, "aaa_cwaaa", "DELETE", "/crosswork/aaa/v1/role/x")
     assert not rbac_map.body_permits(out, "ems-inventory", "GET", "/crosswork/inventory/v1/x")
+    assert not rbac_map.body_permits(out, "aaa_cw_role_read", "GET", "/crosswork/aaaread/v1/x")
+    assert rbac_map.without_row(out, "aaa_cwaaa")["ro"]["access_rights"].keys() == {
+        "inventory_cwinventory"
+    }
+    assert "aaa_cwaaa" in out["ro"]["access_rights"]  # not modified
 
 
 def test_stored_access_rights_adds_templates_under_read_only_and_the_baseline_rows():
-    """Verified 2026-09-14: a row with a GET entry and no POST entry gains its API's
+    """Verified 2026-09-14/15: a row with a GET entry and no POST entry gains its API's
     read template; a row with a POST entry (Read + Write) does not; the baseline rows
-    are added when absent and left alone when the body carries them."""
-    templates = {"aaa_cwaaa": {"/crosswork/aaa/v1/role/{}"}}
-    ro = rbac_map.role_body("ro", {"inventory_cwinventory": {"R"}}, templates, CATALOGUE)
+    are added verbatim when absent and left alone when the body carries them."""
+    ro = rbac_map.role_body("ro", {"inventory_cwinventory": {"R"}}, CATALOGUE)
     stored_ro = rbac_map.stored_access_rights(ro, PLATFORM, CATALOGUE)
-    assert list(stored_ro) == ["inventory_cwinventory", "aaa_cwpassword"]
+    assert list(stored_ro) == ["inventory_cwinventory", "aaa_cw_role_read", "aaa_cwpassword"]
     assert stored_ro["inventory_cwinventory"]["allowed_urls"] == [
         {"url": "/.*", "methods": ["GET"]},
         {"url": "/.+/query$", "methods": ["POST"]},
@@ -705,55 +722,338 @@ def test_stored_access_rights_adds_templates_under_read_only_and_the_baseline_ro
     assert stored_ro["aaa_cwpassword"] == {
         "api_name": "Password Change",
         "api_id": "aaa_cwpassword",
-        "versions": ["Default"],
+        "versions": ["Default"],  # the service's own row (the UI fixture's 'versions')
         "allowed_urls": [{"url": "/.*", "methods": ["GET", "PUT"]}],
         "limit": None,
         "allowance_scope": "",
     }
+    assert stored_ro["aaa_cw_role_read"]["versions"] == rbac_map.BASELINE_VERSIONS
+    assert stored_ro["aaa_cw_role_read"]["allowed_urls"] == [
+        {"url": "/.*", "methods": ["GET"]},
+        {"url": "/.+/query$", "methods": ["POST"]},
+    ]
     # the body is not modified
     assert ro["ro"]["access_rights"]["inventory_cwinventory"]["allowed_urls"] == [
         {"url": "/.*", "methods": ["GET"]}
     ]
-    rw = rbac_map.role_body(
-        "op", {"inventory_cwinventory": {"R", "W"}, "aaa_cwpassword": {"D"}}, templates, CATALOGUE
-    )
+    rw = rbac_map.role_body("op", {"inventory_cwinventory": {"R", "W"}}, CATALOGUE)
     stored_rw = rbac_map.stored_access_rights(rw, PLATFORM, CATALOGUE)
     assert stored_rw["inventory_cwinventory"]["allowed_urls"] == [
-        {"url": "/.*", "methods": ["GET"]},
-        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]},
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
     ]
-    assert stored_rw["aaa_cwpassword"]["allowed_urls"] == [{"url": "/.*", "methods": ["DELETE"]}]
+    # a submitted baseline row (the API-stored experiments did) is kept, plus its template
+    submitted = ui_shaped_body(
+        "x", {"aaa_cw_role_read": "R", "aaa_cwpassword": "D"}, {"apis": CATALOGUE}
+    )
+    stored_sub = rbac_map.stored_access_rights(submitted, PLATFORM, CATALOGUE)
+    assert stored_sub["aaa_cw_role_read"]["allowed_urls"] == [
+        {"url": "/.*", "methods": ["GET"]},
+        {"url": "/.+/query$", "methods": ["POST"]},
+    ]
+    assert stored_sub["aaa_cwpassword"]["allowed_urls"] == [{"url": "/.*", "methods": ["DELETE"]}]
     # an API without a template gains nothing
-    ems = rbac_map.role_body("ro", {"ems-inventory": {"R"}}, {}, CATALOGUE)
+    ems = rbac_map.role_body("ro", {"ems-inventory": {"R"}}, CATALOGUE)
     assert rbac_map.stored_access_rights(ems, PLATFORM, CATALOGUE)["ems-inventory"][
         "allowed_urls"
     ] == [{"url": "/.*", "methods": ["GET"]}]
 
 
+def test_stored_access_rights_splits_write_without_delete_on_a_post_delete_api():
+    """Verified 2026-09-15 (the operator body read back): on a POST-delete API a row whose
+    single entry carries POST without DELETE is split — the other methods stay on the
+    entry's url in ALPHABETICAL order, POST moves to the not-delete pattern; a row
+    carrying DELETE, a row of two entries (Read and Write submitted separately, the
+    2026-09-14 experiment) and any row on another API are stored verbatim; a Read-only
+    row on a POST-delete API gets its template as usual."""
+
+    def stored(ticks: dict[str, set[str]]) -> list[dict]:
+        body_obj = rbac_map.role_body("x", ticks, CATALOGUE)
+        rights = rbac_map.stored_access_rights(body_obj, PLATFORM, CATALOGUE)
+        (api_id,) = ticks
+        return rights[api_id]["allowed_urls"]
+
+    assert stored({"platform_cwplatform": {"R", "W"}}) == [
+        {"url": "/.*", "methods": ["GET", "PATCH", "PUT"]},
+        NOT_DELETE,
+    ]
+    # a Write-only row on such an API: the model's extrapolation (none in the bodies)
+    assert stored({"platform_cwplatform": {"W"}}) == [
+        {"url": "/.*", "methods": ["PATCH", "PUT"]},
+        NOT_DELETE,
+    ]
+    # DELETE on the entry: stored verbatim (extrapolated from the five DELETE rows read
+    # back on other APIs)
+    assert stored({"platform_cwplatform": {"R", "W", "D"}}) == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]}
+    ]
+    assert stored({"platform_cwplatform": {"R", "D"}}) == [
+        {"url": "/.*", "methods": ["GET", "DELETE"]}
+    ]
+    assert stored({"platform_cwplatform": {"R"}}) == [{"url": "/.*", "methods": ["GET"]}]
+    # the same union entry on an API off the list: verbatim (cw-inventory-job-dashboard
+    # in the operator read-back)
+    assert stored({"inventory_cwinventory": {"R", "W"}}) == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+    ]
+    # Read and Write as two entries beside each other: not split (the WD experiment)
+    two = ui_shaped_body("x", {"platform_cwplatform": "RW"}, {"apis": CATALOGUE})
+    assert rbac_map.stored_access_rights(two, PLATFORM, CATALOGUE)["platform_cwplatform"][
+        "allowed_urls"
+    ] == [
+        {"url": "/.*", "methods": ["GET"]},
+        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]},
+    ]
+    # the POST-only single entry (the 2026-09-14 custom-url experiment's shape): the same
+    # rule — the entry is kept with its methods stripped to [] (it permits nothing) and
+    # the pattern entry appended, as that experiment read back (the maintainer's notes
+    # and the guide's earlier generation: "its methods stripped to [] and a service
+    # pattern ... added"); the entry is never dropped
+    assert rbac_map.split_post_entry({"url": "/x", "methods": ["POST"]}, "p") == [
+        {"url": "/x", "methods": []},
+        {"url": "p", "methods": ["POST"]},
+    ]
+    assert rbac_map.split_post_entry({"url": "/.*", "methods": ["GET", "POST"]}, "p") == [
+        {"url": "/.*", "methods": ["GET"]},
+        {"url": "p", "methods": ["POST"]},
+    ]
+    custom_post_only = {
+        "x": {
+            "name": "x",
+            **rbac_map.ROLE_SKELETON,
+            "access_rights": {
+                "platform_cwplatform": rbac_map.role_row(
+                    "platform_cwplatform", [{"url": "/x", "methods": ["POST"]}], CATALOGUE
+                )
+            },
+        }
+    }
+    assert rbac_map.stored_access_rights(custom_post_only, PLATFORM, CATALOGUE)[
+        "platform_cwplatform"
+    ]["allowed_urls"] == [{"url": "/x", "methods": []}, NOT_DELETE]
+    union = {"url": "/.*", "methods": ["GET", "POST"]}
+    assert rbac_map.is_split_row("platform_cwplatform", [union], PLATFORM)
+    assert not rbac_map.is_split_row("platform_cwplatform", [], PLATFORM)
+    assert not rbac_map.is_split_row("platform_cwplatform", [union, union], PLATFORM)
+    assert not rbac_map.is_split_row("ems-inventory", [union], PLATFORM)
+    # the body is not modified
+    body_obj = rbac_map.role_body("x", {"platform_cwplatform": {"R", "W"}}, CATALOGUE)
+    rbac_map.stored_access_rights(body_obj, PLATFORM, CATALOGUE)
+    assert body_obj["x"]["access_rights"]["platform_cwplatform"]["allowed_urls"] == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+    ]
+
+
+def test_post_delete_requests_names_the_posts_the_not_delete_pattern_refuses(rbac):
+    """No POST any tool sends on a POST-delete API ends in the segment 'delete' (the
+    Optimization Engine's delete RPC ends in '...:sr-policy-delete', which the pattern
+    permits); a tool that did would be named."""
+    assert rbac_map.post_delete_requests(rbac["tools"], rbac["platform"]) == []
+    delete_rpc = rbac["tools"]["cnc_delete_sr_policy"]["requirements"]
+    assert [r["path"].rsplit("/", 1)[1] for r in delete_rpc if r["method"] == "POST"] == [
+        "cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete"
+    ]
+    tools = {
+        "cnc_x": {
+            "read_only": False,
+            "requirements": [
+                {
+                    "method": "POST",
+                    "path": "/crosswork/platform/v2/x/delete",
+                    "api_id": "platform_cwplatform",
+                },
+                {
+                    "method": "*",
+                    "path": "/crosswork/platform/v2/{}/delete",
+                    "api_id": "platform_cwplatform",
+                },
+                {
+                    "method": "POST",
+                    "path": "/crosswork/platform/v2/x/query",
+                    "api_id": "platform_cwplatform",
+                },
+                {
+                    "method": "DELETE",
+                    "path": "/crosswork/platform/v2/y/delete",
+                    "api_id": "platform_cwplatform",
+                },
+                {
+                    "method": "POST",
+                    "path": "/crosswork/inventory/v1/delete",
+                    "api_id": "inventory_cwinventory",
+                },
+            ],
+        }
+    }
+    assert rbac_map.post_delete_requests(tools, PLATFORM) == [
+        ("cnc_x", "/crosswork/platform/v2/x/delete", "platform_cwplatform"),
+        ("cnc_x", "/crosswork/platform/v2/{}/delete", "platform_cwplatform"),
+    ]
+
+
+def test_display_groups_and_editor_rows():
+    """A row in the editor is every api_id sharing a display name (HTML-unescaped), the
+    hidden api_ids left out; editor_rows maps per-api_id ticks to those rows with the
+    sibling api_ids a tick grants as well."""
+    catalogue = {
+        **CATALOGUE,
+        "cw-fault-alarms-api": {
+            "name": "Alarms &amp; Events",
+            "feature": "Alarms and Events",
+            "listen_path": "/crosswork/alarms/v1/query",
+        },
+        "cw-fault-ack-api": {
+            "name": "Alarms &amp; Events",
+            "feature": "Alarms and Events",
+            "listen_path": "/crosswork/alarms/v1/ack",
+        },
+        "aaa_selected_pref": {
+            "name": "User Selected Preferences",
+            "feature": "AAA",
+            "listen_path": "/crosswork/pref/",
+        },
+    }
+    groups = rbac_map.display_groups(catalogue)
+    assert groups["Alarms & Events"] == ["cw-fault-ack-api", "cw-fault-alarms-api"]
+    assert groups["Inventory APIs"] == ["inventory_cwinventory"]
+    assert not set(groups) & {"Know my role", "Password Change", "User Selected Preferences"}
+    rows = rbac_map.editor_rows(
+        {
+            "cw-fault-alarms-api": {"R"},
+            "inventory_cwinventory": {"R", "W"},
+            "aaa_cw_role_read": {"R"},
+        },
+        catalogue,
+        groups,
+    )
+    assert rows == [
+        (
+            "Alarms and Events",
+            "Alarms & Events",
+            ["cw-fault-alarms-api"],
+            ["cw-fault-ack-api"],
+            {"R"},
+        ),
+        ("Inventory", "Inventory APIs", ["inventory_cwinventory"], [], {"R", "W"}),
+    ]
+    assert rbac_map.editor_row_cells(*rows[0][:4]) == (
+        "| Alarms and Events | Alarms & Events | `cw-fault-alarms-api` | `cw-fault-ack-api`"
+    )
+
+
+def test_first_in_editor_order_and_rows_shown_unticked():
+    """The editor displays a group as its first api_id in aaa/v2/api order (the bundle's
+    setAllApis / setDuplicateApi), not the alphabetical order the tables use; a role
+    granting a sibling but not that api_id shows the row unticked."""
+    catalogue = {
+        "cw-fault-alarms-api": {
+            "name": "Alarms &amp; Events",
+            "feature": "Alarms and Events",
+            "listen_path": "/crosswork/alarms/v1/query",
+            "position": 12,
+        },
+        "cw-fault-ack-api": {
+            "name": "Alarms &amp; Events",
+            "feature": "Alarms and Events",
+            "listen_path": "/crosswork/alarms/v1/ack",
+            "position": 11,
+        },
+        "alarm-rest-service-summary-rest-api": {
+            "name": "Alarms &amp; Events",
+            "feature": "Alarms and Events",
+            "listen_path": "/crosswork/alarms/v1/summary",
+            "position": 10,
+        },
+        "inventory_cwinventory": {**CATALOGUE["inventory_cwinventory"], "position": 0},
+        "ems-inventory": {**CATALOGUE["ems-inventory"], "position": 1},
+    }
+    groups = rbac_map.display_groups(catalogue)
+    # alphabetically alarm-rest-service-summary-rest-api is first as well: use ack vs alarms
+    assert rbac_map.first_in_editor_order(
+        ["cw-fault-alarms-api", "cw-fault-ack-api"], catalogue
+    ) == ("cw-fault-ack-api")
+    assert rbac_map.first_in_editor_order(groups["Alarms & Events"], catalogue) == (
+        "alarm-rest-service-summary-rest-api"
+    )
+    # a sibling granted, the displayed api_id not: shown unticked
+    assert rbac_map.rows_shown_unticked({"cw-fault-alarms-api"}, catalogue, groups) == [
+        ("Alarms and Events", "Alarms & Events", "alarm-rest-service-summary-rest-api")
+    ]
+    # the displayed api_id granted, or no member granted, or a single-api_id row: nothing
+    assert (
+        rbac_map.rows_shown_unticked(
+            {"alarm-rest-service-summary-rest-api", "cw-fault-alarms-api"}, catalogue, groups
+        )
+        == []
+    )
+    assert rbac_map.rows_shown_unticked({"inventory_cwinventory"}, catalogue, groups) == []
+    assert rbac_map.rows_shown_unticked(set(), catalogue, groups) == []
+    with pytest.raises(SystemExit, match="no aaa/v2/api position"):
+        rbac_map.first_in_editor_order(["inventory_cwinventory"], CATALOGUE)
+
+
+def test_doc_names_the_rows_the_bodies_leave_unticked_in_the_editor(rbac):
+    """The six rows of the guide are computed from the map's v2 positions and the two
+    bodies: neither grants the first api_id of the group while granting a sibling."""
+    groups = rbac_map.display_groups(rbac["apis"])
+    granted = set(role("readonly")["access_rights"]) | set(role("operator")["access_rights"])
+    rows = rbac_map.rows_shown_unticked(granted, rbac["apis"], groups)
+    assert [(name, shown) for _feature, name, shown in rows] == [
+        ("Users and Roles Management", "get-WebSocket-Subscription"),
+        ("External Notification Subscription", "external-kafka-subscription"),
+        ("RESTCONF Notification Subscription", "nb-api-alarm-nt-5"),
+        ("Alarms & Events", "alarm-rest-service-summary-rest-api"),
+        ("Alarms and Events RESTCONF", "nb-api-alarm-1"),
+        ("Device Inventory", "cw-inventory-job-dashboard-deprecated"),
+    ]
+    for _feature, name, shown in rows:
+        assert shown == rbac_map.first_in_editor_order(groups[name], rbac["apis"])
+        assert shown not in granted and granted & set(groups[name])
+        # not what the alphabetical order of the tables would suggest, on most rows
+    assert sorted(groups["Users and Roles Management"])[0] == "aaa_cwaaa"
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert "On 6 rows neither generated body grants that first api_id" in text
+    for _feature, name, shown in rows:
+        assert f"*{name}* (`{shown}`)" in text
+
+
 # --- the stored-role model against the live read-backs ---------------------------------
 
 FIXTURE_DIR = REPO / "tests" / "fixtures" / "rbac"
-FIXTURES = (
-    "stored_readonly_R_experiment",
-    "stored_operator_WD_experiment",
-    "stored_readonly_body",
-)
+EXPERIMENT_FIXTURES = ("stored_readonly_R_experiment", "stored_operator_WD_experiment")
+UI_FIXTURE = "stored_ui_built_role"
+# the generated bodies as committed, PUT through an admin API session and read back
+GENERATED_FIXTURES = {
+    "readonly": "stored_generated_readonly",
+    "operator": "stored_generated_operator",
+}
+FIXTURES = (*EXPERIMENT_FIXTURES, UI_FIXTURE, *GENERATED_FIXTURES.values())
+# the read-backs that keep the role's other fields (role_fields, versions, api_names)
+FULL_FIXTURES = (UI_FIXTURE, *GENERATED_FIXTURES.values())
 
 
 def fixture(name: str) -> dict:
-    """A sanitised read-back (``GET aaa/v1/role/<r>`` after a PUT): what was submitted
-    (per-row ticks, or the committed body) and, per api_id, only the url and methods of
-    every stored ``allowed_urls`` entry."""
+    """A sanitised read-back (``GET aaa/v1/role/<r>`` after a PUT, or after saving in the
+    role editor): what was submitted (per-api_id ticks for the API-stored experiments,
+    per-editor-row ticks for the UI-built role, the committed body for the generated
+    ones) and, per api_id, only the url and methods of every stored ``allowed_urls``
+    entry in the order read back."""
     data = json.loads((FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8"))
-    assert set(data) == {"captured", "how", "submitted", "stored"}, name
+    full = {"captured", "how", "role_fields", "stored", "api_names", "versions"}
+    if name == UI_FIXTURE:
+        assert set(data) == full | {"ticks"}
+    elif name in FULL_FIXTURES:
+        assert set(data) == full, name
+    else:
+        assert set(data) == {"captured", "how", "submitted", "stored"}, name
     return data
 
 
 def normalised(rows: dict) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
-    """Per api_id the sorted (url, methods) entries: the order the service lists a row's
-    entries in is not part of the model."""
+    """Per api_id the (url, methods) entries IN STORED ORDER: the service lists a row's
+    ``/.*`` entry first, then what it appended (the templates, the not-delete POST
+    entry), and the model reproduces that order."""
     return {
-        api_id: sorted((e["url"], tuple(e["methods"])) for e in entries)
+        api_id: [(e["url"], tuple(e["methods"])) for e in entries]
         for api_id, entries in rows.items()
     }
 
@@ -764,8 +1064,9 @@ def modelled_rows(body_obj: dict, rbac: dict) -> dict:
 
 
 def ui_shaped_body(name: str, ticks: dict[str, str], rbac: dict) -> dict:
-    """A role body in the shape the experiments submitted: per row one ``/.*`` entry per
-    tick letter, the AAA rows included (no anchored pattern)."""
+    """A role body in the shape the API-stored experiments submitted: per row one ``/.*``
+    entry per tick letter (the earlier generation's shape — the editor sends the union
+    in one entry, which the service stores the same way), the AAA rows included."""
     access_rights = {
         api_id: {
             "api_name": rbac["apis"][api_id]["name"],
@@ -792,48 +1093,234 @@ def fixture_access_rights(data: dict) -> dict:
     }
 
 
+def test_fixture_dir_holds_exactly_the_pinned_read_backs():
+    """Five real read-backs, nothing stale: the two generated bodies as committed, the
+    UI-built role and the two 2026-09-14 experiments; the earlier read-back of the
+    committed read-only body (custom-URL AAA rows, superseded 2026-09-15) was deleted
+    with that shape."""
+    assert sorted(p.stem for p in FIXTURE_DIR.glob("*.json")) == sorted(FIXTURES)
+    assert len(FIXTURES) == 5
+    assert {str(p) for p in rbac_map.GENERATED_FIXTURES.values()} == {
+        f"tests/fixtures/rbac/{name}.json" for name in GENERATED_FIXTURES.values()
+    }
+
+
 @pytest.mark.parametrize("name", FIXTURES)
 def test_fixture_is_sanitised_and_well_formed(name):
     data = fixture(name)
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", data["captured"])
-    assert set(data["submitted"]) in ({"ticks"}, {"body"})
-    for api_id, letters in data["submitted"].get("ticks", {}).items():
-        assert letters and re.fullmatch(r"R?W?D?", letters), api_id
-        assert api_id in data["stored"], api_id
-    if "body" in data["submitted"]:
-        assert (REPO / data["submitted"]["body"]).exists()
+    if name == UI_FIXTURE:
+        for row, letters in data["ticks"].items():
+            assert letters and re.fullmatch(r"R?W?D?", letters), row
+    elif name in FULL_FIXTURES:
+        assert "as committed" in data["how"] and "PUT /crosswork/aaa/v1/role/" in data["how"]
+        assert set(data["versions"]) == set(data["api_names"]) == set(data["stored"])
+    else:
+        assert set(data["submitted"]) == {"ticks"}
+        for api_id, letters in data["submitted"]["ticks"].items():
+            assert letters and re.fullmatch(r"R?W?D?", letters), api_id
+            assert api_id in data["stored"], api_id
     assert list(data["stored"]) == sorted(data["stored"])
     for api_id, entries in data["stored"].items():
         assert entries, api_id
+        # the service stores the /.* entry first on every row: the templates it appends
+        # sit at index 1 or later (which the editor never reads — the guide's warning)
+        assert entries[0]["url"] == "/.*", (name, api_id)
         for entry in entries:
             assert set(entry) == {"url", "methods"}, (api_id, entry)
             re.compile(entry["url"])
-            assert entry["methods"] == [m for m in RBAC_ALL_METHODS if m in entry["methods"]]
+            wire_order = [m for m in RBAC_ALL_METHODS if m in entry["methods"]]
+            if entry["url"] == "/.*" and entries[-1]["url"] == rbac_map.NOT_DELETE_PATTERN:
+                # a split row: the remaining methods come back in alphabetical order
+                assert api_id in rbac_map.POST_DELETE_VERIFIED, (name, api_id)
+                assert entry["methods"] == sorted(entry["methods"]) != wire_order, (name, api_id)
+            else:
+                assert entry["methods"] == wire_order, (name, api_id, entry)
     text = (FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8").lower()
-    for marker in ("last_updated", "meta_data", '"_id"', "198.18.", "jwt", "api_name", "org_id"):
+    for marker in ("last_updated", "meta_data", '"_id"', "198.18.", "jwt", "org_id"):
+        if name in FULL_FIXTURES and marker == "org_id":
+            continue  # these fixtures keep the role fields that were submitted
         assert marker not in text, (name, marker)
+    if name not in FULL_FIXTURES:
+        assert "api_name" not in text
+
+
+@pytest.mark.parametrize("kind", ["readonly", "operator"])
+def test_stored_model_reproduces_the_generated_body_read_back(rbac, kind):
+    """The committed body, PUT through an admin API session and read back (2026-09-15):
+    ``stored_access_rights`` reproduces every stored row entry for entry, in stored
+    order — the read-only body's 42 Read rows with their templates (45 rows with the
+    baseline three); the operator body's 46 rows, its union entries verbatim except the
+    three Write-without-Delete rows on the verified POST-delete APIs, which came back
+    split (the other methods alphabetical on ``/.*``, POST under the not-delete
+    pattern). The role fields are the editor's plus what the service adds; ``versions``
+    is ``[]`` on every submitted row and ``["Default"]`` on the baseline rows;
+    ``api_name`` is what the body submitted (the v1 catalogue's HTML-escaped name)."""
+    data = fixture(GENERATED_FIXTURES[kind])
+    body_obj = body(kind)
+    stored_rows = rbac_map.stored_access_rights(body_obj, rbac["platform"], rbac["apis"])
+    assert {a: g["allowed_urls"] for a, g in stored_rows.items()} == data["stored"]
+    assert modelled_rows(body_obj, rbac) == normalised(data["stored"])
+    assert set(data["stored"]) - set(role(kind)["access_rights"]) == set(rbac_map.BASELINE_APIS)
+    assert len(data["stored"]) == (45 if kind == "readonly" else 49)
+    assert data["role_fields"] == {
+        "name": f"cnc-mcp-{kind}",
+        **rbac_map.ROLE_SKELETON,
+        **rbac_map.STORED_ROLE_FIELDS,
+    }
+    for api_id, grant in stored_rows.items():
+        assert data["versions"][api_id] == grant["versions"], api_id
+        assert data["versions"][api_id] == (
+            rbac_map.BASELINE_VERSIONS if api_id in rbac_map.BASELINE_APIS else []
+        ), api_id
+        assert data["api_names"][api_id] == grant["api_name"], api_id
+    split_rows = sorted(
+        api_id
+        for api_id, grant in role(kind)["access_rights"].items()
+        if rbac_map.is_split_row(api_id, grant["allowed_urls"], rbac["platform"])
+    )
+    if kind == "readonly":
+        assert split_rows == []
+        for api_id, entries in data["stored"].items():
+            if api_id not in rbac_map.BASELINE_APIS:
+                assert entries[0] == {"url": "/.*", "methods": ["GET"]}, api_id
+                assert entries[1:] == rbac["platform"]["read_templates"].get(api_id, []), api_id
+        return
+    assert split_rows == sorted(rbac_map.POST_DELETE_VERIFIED)
+    for api_id in split_rows:
+        assert role(kind)["access_rights"][api_id]["allowed_urls"] == [
+            {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+        ]
+        assert data["stored"][api_id] == [
+            {"url": "/.*", "methods": ["GET", "PATCH", "PUT"]},
+            {"url": rbac_map.NOT_DELETE_PATTERN, "methods": ["POST"]},
+        ]
+    # every other submitted row came back verbatim: the same union entry on an API off
+    # the list, the rows carrying DELETE, the Write-only rows
+    op_ticks = rbac_map.body_ticks(body_obj)
+    verbatim = {a for a in role(kind)["access_rights"] if a not in split_rows}
+    for api_id in verbatim:
+        assert data["stored"][api_id][0] == role(kind)["access_rights"][api_id]["allowed_urls"][0]
+    assert data["stored"]["cw-inventory-job-dashboard"] == [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+    ]
+    delete_rows = sorted(a for a, t in op_ticks.items() if "D" in t)
+    assert delete_rows == [
+        "device-config",
+        "event-processing-service-suppressionpolicy-api",
+        "inventory_cwinventory",
+        "nb-api-subscription-api-700",
+        "proxy_cw-proxy",
+    ]
+    for api_id in delete_rows:
+        assert data["stored"][api_id] == [
+            {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]}
+        ]
+    for api_id in ("cw-fault-ack-api", "cw-fault-clear-api", "cw-fault-notes-api", "nso-connector"):
+        assert data["stored"][api_id] == [{"url": "/.*", "methods": ["POST", "PUT", "PATCH"]}]
+    # none of the verbatim rows is on the POST-delete list, and no Write-without-Delete
+    # row on that list escaped the split
+    post_delete = set(rbac["platform"]["post_delete_apis"])
+    assert not (set(delete_rows) | {a for a, t in op_ticks.items() if "R" not in t}) & post_delete
+    assert {a for a, t in op_ticks.items() if t == {"R", "W"}} & post_delete == set(split_rows)
+
+
+def test_stored_model_reproduces_the_ui_built_role(rbac):
+    """The role built in the editor with three ticks (Read on 'Alarm Settings', Write on
+    'Alarm Suppression Policies', Delete on 'Alarms and Events RESTCONF'), read back
+    through the API: a body carrying, for every api_id of each ticked display-name
+    group, the single entry the editor submits for the tick — and nothing else — is
+    stored as ``stored_access_rights`` predicts: those entries verbatim, the three
+    baseline rows added, no template anywhere (none of the seventeen templated APIs is
+    in a ticked group). The role fields are the editor's defaults plus what the service
+    adds; ``versions`` is ``[]`` on every submitted row."""
+    data = fixture(UI_FIXTURE)
+    groups = rbac_map.display_groups(rbac["apis"])
+    ticks = {}
+    for row, letters in data["ticks"].items():
+        assert row in groups, row
+        for api_id in groups[row]:
+            ticks[api_id] = set(letters)
+    assert len(ticks) == 7 + 1 + 6
+    body_obj = rbac_map.role_body("cnc-mcp-ui-test", ticks, rbac["apis"])
+    (role_obj,) = body_obj.values()
+    for api_id, grant in role_obj["access_rights"].items():
+        assert grant["api_name"] == data["api_names"][api_id], api_id
+        assert grant["versions"] == data["versions"][api_id] == [], api_id
+    assert modelled_rows(body_obj, rbac) == normalised(data["stored"])
+    assert set(data["stored"]) - set(ticks) == set(rbac_map.BASELINE_APIS)
+    stored_rows = rbac_map.stored_access_rights(body_obj, rbac["platform"], rbac["apis"])
+    for api_id in rbac_map.BASELINE_APIS:
+        # the service's own rows: versions ['Default'], which the model reproduces
+        assert data["versions"][api_id] == rbac_map.BASELINE_VERSIONS == ["Default"]
+        assert stored_rows[api_id]["versions"] == data["versions"][api_id]
+        assert normalised({api_id: data["stored"][api_id]}) == normalised(
+            {api_id: rbac["platform"]["baseline_rows"][api_id]}
+        )
+    # the fixture pins single-tick entries only: no union entry was read back
+    for api_id, entries in data["stored"].items():
+        if api_id not in rbac_map.BASELINE_APIS:
+            assert entries[0]["methods"] in (["GET"], ["POST", "PUT", "PATCH"], ["DELETE"])
+    # the GET-only rows outside the read-only body the guide names as template-free
+    get_only = rbac_map.ui_fixture_get_only_rows()
+    assert get_only == sorted(
+        api_id for api_id in ticks if data["stored"][api_id] == [{"url": "/.*", "methods": ["GET"]}]
+    )
+    assert [a for a in get_only if a not in role("readonly")["access_rights"]] == [
+        "cw-fault-alarm-autoclear",
+        "cw-fault-alarm-autoclear-revert",
+    ]
+    # the editor's tick -> entry mapping, observed
+    for row, letters in data["ticks"].items():
+        expected = [
+            {
+                "url": "/.*",
+                "methods": rbac_map.ordered(
+                    m for tick in letters for m in rbac_map.TICK_METHODS[tick]
+                ),
+            }
+        ]
+        for api_id in groups[row]:
+            assert data["stored"][api_id] == expected, (row, api_id)
+    assert data["stored"]["event-processing-service-suppressionpolicy-api"] == [
+        {"url": "/.*", "methods": ["POST", "PUT", "PATCH"]}
+    ]
+    # the role fields: the editor's defaults, plus what the service adds
+    expected_fields = {
+        "name": "cnc-mcp-ui-test",
+        **rbac_map.ROLE_SKELETON,
+        **rbac_map.STORED_ROLE_FIELDS,
+    }
+    assert data["role_fields"] == expected_fields
+    assert set(rbac_map.STORED_ROLE_FIELDS) - set(rbac_map.ROLE_SKELETON) == {
+        "throttle_interval",
+        "throttle_retry_limit",
+        "enable_http_signature_validation",
+    }
 
 
 def test_stored_model_reproduces_the_all_read_experiment(rbac):
-    """(a) A body whose every row is ``{url: "/.*", methods: ["GET"]}``: stored_access_rights
-    reproduces the read-back exactly — the read template on the 17 rows that have one, GET
-    only on the other 26, the two baseline rows added although none was submitted. The
-    rows are the read-only body's, which the capture was taken on: when a read tool starts
-    using another API, re-capture (scripts/rbac_map.py --read-templates) and refresh this
-    fixture."""
+    """(a) A body whose every row is ``{url: "/.*", methods: ["GET"]}`` — the 43 rows the
+    read tools used at the time, the two AAA rows included: stored_access_rights
+    reproduces the read-back exactly — the read template on the 17 rows that have one,
+    GET only on the other 26, the two baseline rows the body lacked added. The rows are
+    the read-only body's plus aaa_cw_role_read (now a baseline row the body never
+    carries): when a read tool starts using another API, re-capture
+    (scripts/rbac_map.py --read-templates) and refresh this fixture."""
     data = fixture("stored_readonly_R_experiment")
     ticks = data["submitted"]["ticks"]
     assert set(ticks.values()) == {"R"}
-    assert set(ticks) == set(role("readonly")["access_rights"]), (
+    assert set(ticks) == set(role("readonly")["access_rights"]) | {"aaa_cw_role_read"}, (
         "the read-only body's rows changed since the capture: re-capture and refresh the fixture"
     )
     assert modelled_rows(ui_shaped_body("x", ticks, rbac), rbac) == normalised(data["stored"])
-    assert set(data["stored"]) - set(ticks) == set(rbac_map.BASELINE_APIS)
-    # the platform block IS this capture: a template on exactly the rows that gained one
+    assert set(data["stored"]) - set(ticks) == set(rbac_map.BASELINE_APIS) - {"aaa_cw_role_read"}
+    # the platform block's templates ARE this capture: a template on exactly the rows
+    # that gained one
     templated = {
         api_id
         for api_id, entries in data["stored"].items()
-        if api_id not in rbac_map.BASELINE_APIS and len(entries) > 1
+        if api_id not in ("aaa_cwpassword", "aaa_selected_pref") and len(entries) > 1
     }
     assert templated == set(rbac["platform"]["read_templates"])
     assert len(templated) == 17 and len(ticks) - len(templated) == 26
@@ -842,11 +1329,10 @@ def test_stored_model_reproduces_the_all_read_experiment(rbac):
         assert data["stored"][api_id][1:] == sorted(
             rbac["platform"]["read_templates"][api_id], key=lambda e: e["url"]
         )
-    for api_id, entries in data["stored"].items():
-        if api_id in rbac_map.BASELINE_APIS:
-            assert normalised({api_id: entries}) == normalised(
-                {api_id: rbac["platform"]["baseline_rows"][api_id]}
-            )
+    for api_id in rbac_map.BASELINE_APIS:
+        assert normalised({api_id: data["stored"][api_id]}) == normalised(
+            {api_id: rbac["platform"]["baseline_rows"][api_id]}
+        )
 
 
 def test_stored_model_reproduces_the_read_write_delete_experiment(rbac):
@@ -868,39 +1354,20 @@ def test_stored_model_reproduces_the_read_write_delete_experiment(rbac):
             assert any(entry["url"] != "/.*" for entry in entries), api_id
     # the operator body's rows and ticks are within what was submitted
     op_ticks = rbac_map.body_ticks(body("operator"))
-    assert set(op_ticks) == set(ticks), (
+    assert set(op_ticks) | {"aaa_cw_role_read"} == set(ticks), (
         "the operator body's rows changed since the capture: re-capture and refresh the fixture"
     )
     for api_id, tick_set in op_ticks.items():
         assert tick_set <= set(ticks[api_id]), api_id
 
 
-def test_stored_model_reproduces_the_read_back_of_the_committed_read_only_body(rbac):
-    """(c) The committed read-only body itself, PUT and read back: the anchored GET pattern
-    of the two AAA rows kept verbatim (``[^/]+`` and all), the read templates on the rows
-    that have one, the baseline rows — exactly ``stored_access_rights`` of the body. Refresh
-    the fixture whenever the body changes (re-PUT, read back, sanitise)."""
-    data = fixture("stored_readonly_body")
-    assert data["submitted"] == {"body": "docs/rbac/cnc-mcp-readonly.role.json"}
-    assert modelled_rows(body("readonly"), rbac) == normalised(data["stored"]), (
-        "the read-only body changed since the capture: re-PUT it, read it back and refresh "
-        "tests/fixtures/rbac/stored_readonly_body.json"
-    )
-    for api_id in rbac_map.AAA_APIS:
-        (submitted,) = role("readonly")["access_rights"][api_id]["allowed_urls"]
-        assert data["stored"][api_id][0] == submitted, api_id  # kept verbatim, listed first
-    assert len(data["stored"]) == 45
-    verdict = evaluate_rbac_map(sorted(rbac["tools"]), rbac, fixture_access_rights(data))
-    assert {r["tool"] for r in verdict["refused"]} == READ_TOOLS_REFUSED_BY_READ | {
-        name for name, spec in rbac["tools"].items() if not spec["read_only"]
-    } - WRITE_TOOLS_PERMITTED_BY_READ
-    assert len(verdict["permitted"]) == 168 + len(WRITE_TOOLS_PERMITTED_BY_READ)
-
-
 def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rbac):
     """The pinned verdicts hold against the rows the service actually stored, not only
     against the generator's model of them: the all-Read read-back refuses the 14 and
-    permits cnc_reactivate_probe; the R/W/D read-back permits every tool."""
+    permits cnc_reactivate_probe; the R/W/D read-back permits every tool; the UI-built
+    role (three alarm rows) permits only the alarm-settings reads and the suppression-
+    policy writes, and lets cnc_check_permissions read the role through the baseline
+    mirror row it never asked for."""
     names = sorted(rbac["tools"])
     reads = {name for name in names if rbac["tools"][name]["read_only"]}
     verdict = evaluate_rbac_map(
@@ -915,11 +1382,192 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
     )
     assert set(verdict["permitted"]) == set(names) and len(names) == TOOL_COUNT
     assert verdict["refused"] == [] and verdict["not_in_map"] == []
+    verdict = evaluate_rbac_map(names, rbac, fixture_access_rights(fixture(UI_FIXTURE)))
+    permitted = set(verdict["permitted"])
+    assert "cnc_check_permissions" in permitted
+    assert {"cnc_get_alarm_settings", "cnc_create_alarm_suppression_policy"} <= permitted
+    assert not permitted & {"cnc_list_alarms", "cnc_list_devices", "cnc_list_roles"}
+    missing = {
+        r["tool"]: {(m["method"], m["missing_methods"][0]) for m in r["missing"]}
+        for r in verdict["refused"]
+    }
+    # Write ticked on the suppression-policy row, not Read or Delete
+    assert missing["cnc_list_alarm_suppression_policies"] == {("GET", "GET")}
+    assert missing["cnc_delete_alarm_suppression_policy"] == {("DELETE", "DELETE")}
+
+
+def test_generated_bodies_read_back_give_the_model_verdict_for_every_tool(rbac):
+    """The read-backs of the committed bodies, evaluated by cnc_check_permissions'
+    evaluator on the rows the service actually stored: the read-only role permits 168 of
+    the 182 read tools and refuses the pinned 14 (plus cnc_reactivate_probe permitted),
+    the operator role permits all 245 — the same verdict, tool for tool, as the model's
+    stored form of each body (the split rows permit every request the tools send on
+    the POST-delete APIs). ``read_back_verdict`` / ``verdict_drift`` are what the
+    generator uses to say so in section 6."""
+    names = sorted(rbac["tools"])
+    reads = {name for name in names if rbac["tools"][name]["read_only"]}
+    data, verdict = rbac_map.read_back_verdict(rbac_map.READONLY_ROLE, rbac)
+    assert data == fixture(GENERATED_FIXTURES["readonly"])
+    assert verdict["not_in_map"] == []
+    assert {r["tool"] for r in verdict["refused"]} & reads == READ_TOOLS_REFUSED_BY_READ
+    assert len(set(verdict["permitted"]) & reads) == 168
+    assert set(verdict["permitted"]) - reads == WRITE_TOOLS_PERMITTED_BY_READ
+    model = evaluate_rbac_map(names, rbac, stored(rbac, "readonly"))
+    assert rbac_map.verdict_drift(model, verdict) == []
+    assert model["permitted"] == verdict["permitted"]
+    assert [r["tool"] for r in model["refused"]] == [r["tool"] for r in verdict["refused"]]
+    data, verdict = rbac_map.read_back_verdict(rbac_map.OPERATOR_ROLE, rbac)
+    assert data == fixture(GENERATED_FIXTURES["operator"])
+    assert set(verdict["permitted"]) == set(names) and len(names) == TOOL_COUNT
+    assert verdict["refused"] == [] and verdict["not_in_map"] == []
+    assert (
+        rbac_map.verdict_drift(evaluate_rbac_map(names, rbac, stored(rbac, "operator")), verdict)
+        == []
+    )
+    # every requirement on a split row, under Tyk's rule against the stored entries
+    rows = fixture_access_rights(data)
+    for method, path, api_id in requirements(rbac, read_only=None):
+        if api_id in rbac_map.POST_DELETE_VERIFIED:
+            assert tyk_permits(rows, api_id, method, concrete(path)), (method, path)
+    assert not tyk_permits(rows, "optima_restconf", "POST", "/crosswork/nbi/optimization/v3/delete")
+    assert not tyk_permits(rows, "optima_restconf", "DELETE", "/crosswork/nbi/optimization/v3/x")
+    assert tyk_permits(
+        rows,
+        "optima_restconf",
+        "POST",
+        "/crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-"
+        "engine-sr-policy-operations:sr-policy-delete",
+    )
+    assert rbac_map.verdict_drift({"permitted": ["a", "b"]}, {"permitted": ["b", "c"]}) == [
+        "a",
+        "c",
+    ]
+
+
+def write_generated_fixtures(fixture_dir: Path, edit) -> None:
+    """The two generated-body fixtures copied under ``fixture_dir`` after ``edit(name,
+    data)`` has changed them — a repo the generator reads the read-backs from."""
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    for name in GENERATED_FIXTURES.values():
+        data = fixture(name)
+        edit(name, data)
+        (fixture_dir / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_render_doc_and_generate_report_a_read_back_of_a_previous_body(rbac, tmp_path):
+    """A generated-body fixture that is not of the current body — its verdict differs
+    from the model's (here: the operator read-back with a row removed, which also
+    changes the verdict on one tool), or only its stored rows differ while the verdict
+    is unchanged (the previous generation's situation: the same refusals from different
+    entries): the guide's sections 1 and 6 say the read-backs are of a previous body and
+    name the tools and rows, and generate() returns the same as a warning — never a
+    silent claim that the bodies as committed were read back."""
+    fixture_dir = tmp_path / "tests" / "fixtures" / "rbac"
+
+    def drop_row(name: str, data: dict) -> None:
+        if name == GENERATED_FIXTURES["operator"]:
+            del data["stored"]["nso-connector"]
+
+    write_generated_fixtures(fixture_dir, drop_row)
+    text = rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("operator"), tmp_path)
+    assert "are of a PREVIOUS body" in text
+    assert (
+        "under `cnc-mcp-operator` its verdict differs on 1 tool(s) "
+        "(`cnc_resync_service_inventory`); its stored rows differ on 1 row(s) (`nso-connector`)"
+    ) in text
+    assert "give the same verdict for every tool" not in text
+    assert "What the fixtures pin: both bodies as committed" not in text
+    assert "What the fixtures pinned for a PREVIOUS generation of the bodies" in text
+    assert "re-PUT the bodies, read them back and refresh the fixtures" in text
+    catalogue = rbac_map.load_catalogue_map(MAP_PATH)
+    _files, _map, warnings = rbac_map.generate(
+        catalogue, rbac["platform"], rbac_map.DEFAULT_SRC, tmp_path
+    )
+    assert warnings == [
+        "tests/fixtures/rbac/stored_generated_operator.json is a read-back of a previous "
+        "cnc-mcp-operator body: its verdict differs on 1 tool(s) (cnc_resync_service_inventory); "
+        "its stored rows differ on 1 row(s) (nso-connector) — re-PUT the body, read it back and "
+        "refresh the fixture"
+    ]
+    # rows that differ from the committed body's stored form WITHOUT changing the verdict
+    # (a Write entry where the tools need GET only, and a template-less row): the verdict
+    # comparison alone would pass this as the body as committed
+    changed = {"cw-fault-ack-api": "operator", "cw-grouping-service": "readonly"}
+
+    def change_rows(name: str, data: dict) -> None:
+        for api_id, kind in changed.items():
+            if name == GENERATED_FIXTURES[kind]:
+                data["stored"][api_id][0]["methods"] = ["GET", "POST", "PUT", "PATCH"]
+
+    write_generated_fixtures(fixture_dir, change_rows)
+    for kind in ("readonly", "operator"):
+        data, verdict = rbac_map.read_back_verdict(
+            getattr(rbac_map, f"{kind.upper()}_ROLE"), rbac, tmp_path
+        )
+        model = rbac_map.evaluate_body(body(kind), rbac, rbac["apis"])
+        assert rbac_map.verdict_drift(model, verdict) == []
+    assert rbac_map.row_drift(body("operator"), data, rbac["platform"], rbac["apis"]) == [
+        "cw-fault-ack-api"
+    ]
+    text = rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("operator"), tmp_path)
+    assert "are of a PREVIOUS body" in text
+    assert (
+        "under `cnc-mcp-readonly` its stored rows differ on 1 row(s) (`cw-grouping-service`); "
+        "under `cnc-mcp-operator` its stored rows differ on 1 row(s) (`cw-fault-ack-api`)"
+    ) in text
+    assert "its verdict differs" not in text
+    assert "the bodies as committed were stored through the API and read back" not in text
+    _files, _map, warnings = rbac_map.generate(
+        catalogue, rbac["platform"], rbac_map.DEFAULT_SRC, tmp_path
+    )
+    assert warnings == [
+        "tests/fixtures/rbac/stored_generated_readonly.json is a read-back of a previous "
+        "cnc-mcp-readonly body: its stored rows differ on 1 row(s) (cw-grouping-service) — "
+        "re-PUT the body, read it back and refresh the fixture",
+        "tests/fixtures/rbac/stored_generated_operator.json is a read-back of a previous "
+        "cnc-mcp-operator body: its stored rows differ on 1 row(s) (cw-fault-ack-api) — "
+        "re-PUT the body, read it back and refresh the fixture",
+    ]
+
+    # the order of a row's entries is part of the comparison (the service's stored order)
+    def swap_entries(name: str, data: dict) -> None:
+        if name == GENERATED_FIXTURES["readonly"]:
+            data["stored"]["inventory_cwinventory"].reverse()
+
+    write_generated_fixtures(fixture_dir, swap_entries)
+    data, _verdict = rbac_map.read_back_verdict(rbac_map.READONLY_ROLE, rbac, tmp_path)
+    assert rbac_map.row_drift(body("readonly"), data, rbac["platform"], rbac["apis"]) == [
+        "inventory_cwinventory"
+    ]
+    # a fixture that is not a read-back at all, and a missing one
+    (fixture_dir / "stored_generated_readonly.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(SystemExit, match="expected a read-back"):
+        rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("operator"), tmp_path)
+    (fixture_dir / "stored_generated_readonly.json").unlink()
+    with pytest.raises(SystemExit, match="stored_generated_readonly.json is missing: PUT the"):
+        rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("operator"), tmp_path)
+    with pytest.raises(SystemExit, match="is missing"):
+        rbac_map.generate(catalogue, rbac["platform"], rbac_map.DEFAULT_SRC, tmp_path)
+    # the committed state: no warning, the read-backs are of the bodies as committed
+    _files, _map, warnings = rbac_map.generate(catalogue, rbac["platform"], rbac_map.DEFAULT_SRC)
+    assert warnings == []
+    for kind in ("readonly", "operator"):
+        data = fixture(GENERATED_FIXTURES[kind])
+        assert rbac_map.row_drift(body(kind), data, rbac["platform"], rbac["apis"]) == []
 
 
 def test_render_doc_stops_when_the_operator_body_does_not_permit_every_tool(rbac):
     with pytest.raises(SystemExit, match="operator body does not permit every tool"):
         rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("readonly"))
+
+
+def test_render_doc_stops_when_a_body_carries_a_baseline_row(rbac):
+    bad = json.loads(json.dumps(body("operator")))
+    bad["cnc-mcp-operator"]["access_rights"]["aaa_cw_role_read"] = rbac_map.role_row(
+        "aaa_cw_role_read", [{"url": "/.*", "methods": ["GET"]}], rbac["apis"]
+    )
+    with pytest.raises(SystemExit, match="baseline row"):
+        rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), bad)
 
 
 def test_refused_read_rows_stops_when_evaluation_and_classification_disagree(rbac):
@@ -945,32 +1593,13 @@ def test_doc_names_the_refused_tools_and_the_permitted_write(rbac):
     assert "`cnc_reactivate_probe` (`POST /crosswork/probemgr/v1/reactivateProbe`" in text
     assert "**Read permits this write**" in text
     assert "charset=UTF-8" in text
-    assert "custom-URL POST entry is reinterpreted" in text
-    for api_id in rbac_map.REINTERPRETED_POST_APIS:
-        assert f"`{api_id}`" in text
-    assert (
-        "was kept verbatim (and no template added) on "
-        + ", ".join(f"`{api_id}`" for api_id in rbac_map.VERBATIM_POST_BESIDE_GET_APIS)
-        in text
-    )
-    # The refusal itself was observed 2026-09-15 with a user on the read-only role.
-    assert "no user carrying one has logged in yet" not in text
+    # the refusal itself was observed 2026-09-15 with users on the generated roles
     assert "Access to this API has been disallowed" in text
     assert "Access to this resource has been disallowed" in text
     assert "confirmed live 2026-09-15 by users carrying the generated roles" in text
     assert "all 432 read and write steps of the smoke answered" in text
-    # the UI equivalence is an inference, said so in every place it is used
-    assert "The role editor's own wire shape. No UI-built role exists on the lab" in text
-    assert "is taken to produce (inferred, section 1)" in text
-    assert "This is what the UI's Read tick grants" not in text
-    assert "cannot be narrowed" not in text
-    assert "A narrowed POST entry beside the GET entry was stored verbatim on " in text
-    # the templates sentence is data-driven, the AAA template note rendered from the map
-    assert "The 17 APIs with a template among the 43 rows the read tools use" in text
-    assert (
-        "(The `aaa_cw_role_read` row still receives its read template, POST `/.+/query$`, "
-        "when stored; no read tool sends a POST there.)"
-    ) in text
+    # the templates sentence is data-driven
+    assert "The 16 APIs with a template among the 42 rows the read-only body carries" in text
     # a refused read with a declared Read-permitted form says so, once, and the disable
     # list notes it
     for name, (path, how) in rbac_map.READ_FORMS.items():
@@ -980,143 +1609,324 @@ def test_doc_names_the_refused_tools_and_the_permitted_write(rbac):
         "(`cnc_get_lcm_recommendation_preview` is in the list although one form of the "
         "call runs under Read, above — leave it out to keep that form.)"
     ) in text
-    # the old exact-path model is gone from every generated file
+    # the old exact-path and custom-URL models are gone from every generated file
     for path in ROLE_FILES.values():
         role_text = path.read_text(encoding="utf-8")
-        assert role_text.count('"url": "/.*"') >= 41
-        assert re.findall(r'"url": "\^[^"]+"', role_text).__len__() == 2  # the two AAA rows
+        assert role_text.count('"url": "/.*"') >= 42
+        assert not re.findall(r'"url": "\^', role_text)
     assert "one entry per HTTP method" not in text
 
 
-# --- the anchored AAA pattern ----------------------------------------------------------
-
-
-def test_path_regex_renders_mid_path_and_tail_placeholders():
-    """The regex builder: ``^<base>/(alt|alt)$``, a ``{}`` is one segment (``[^/]+``) —
-    also in the last segment, where a role or user name goes — except the last segment
-    of a ``/restconf/`` template, whose key may carry ``/`` (``.+``); a template equal to
-    the listen path is ``^<base>$``, alternatives sorted and deduplicated, a listen-path
-    variable (``v{.}``) rendered as the literal the template carries."""
-    url = rbac_map.path_regex(
-        "/crosswork/aaa/",
-        [
-            "/crosswork/aaa/v1/role",
-            "/crosswork/aaa/v1/role/{}",
-            "/crosswork/aaa/v1/role/{}",  # duplicate
-            "/crosswork/aaa/v1/user/{}/task",
-            "/crosswork/aaa/v2/api",
-            "/crosswork/aaa/v2/{}:{}/vpn-service={}",
-            "/crosswork/aaa/restconf/data/{}",
-        ],
+def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rbac):
+    """Section 1: the editor's tick -> wire mapping citing the UI-built fixture, the
+    display-name groups and their consequence, the three baseline rows (neutral wording
+    about the mirror's listing), the custom-URL crash as a warning, the first-entry
+    display rule (first api_id in aaa/v2/api order); 'Not verified' names what is read
+    from the bundle or extrapolated; sections 2/3 by editor row; section 6's body
+    sentence. And none of the removed wording — in the README and SECURITY.md too."""
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert "**What a tick submits.**" in text
+    assert (
+        '`{url: "/.*", methods: <union>}` — **Read** adds `GET`, **Write** adds `POST, PUT, '
+        "PATCH`, **Delete** adds `DELETE`"
+    ) in text
+    assert "(`tests/fixtures/rbac/stored_ui_built_role.json`)" in text
+    assert "**A row is a display-name group.**" in text
+    assert "**the UI cannot grant a single api_id of a group; the API can**" in text
+    assert "15 of the editor's 102 rows cover more than one api_id" in text
+    assert "(7 for *Alarm Settings*, 6 for *Alarms and Events RESTCONF*, 31 for" in text
+    assert "reads only the FIRST `allowed_urls` entry of each api_id" in text
+    assert (
+        "a group row shows the ticks of its first api_id in `aaa/v2/api` order (the editor's "
+        "row order, not the alphabetical order of the tables here)"
+    ) in text
+    assert "so the editor shows those rows unticked while the grant is live" in text
+    assert (
+        "`rate`/`per` is the gateway's per-key rate limit — 1000 requests per 60 s, the "
+        "editor's default, where the built-in `admin` role carries 5000"
+    ) in text
+    assert "Every stored role gains 3 **baseline rows**" in text
+    assert "`aaa_cw_role_read` (GET `/.*`; POST `/.+/query$`)" in text
+    # the /.* entry rendered first, as stored — not the map's url order
+    assert "`aaa_cwpassword` (GET, PUT `/.*`; POST `/(.*passwordHistoryCheck.*)$`)" in text
+    assert "the mirror's catalogue listing, by platform design" in text
+    # what the fixtures pin about the baseline rows, and nothing more
+    assert (
+        "the UI-built role, submitted with none of them, came back with all three; the two "
+        "2026-09-14 API-stored experiments, submitted with `aaa_cw_role_read` only, came "
+        "back with the other two"
+    ) in text
+    assert (
+        "were not in the template capture (2026-09-14), so their templates are unknown and "
+        "any POST there is classed W — except that the UI-built role stored "
+        "`cw-fault-alarm-autoclear`, `cw-fault-alarm-autoclear-revert` as GET-only rows, "
+        "template-free"
+    ) in text
+    # the smoke ran on the previous generation of the bodies, the committed bodies were
+    # read back and give the same verdict: said in both places (section 1 and 6)
+    assert (
+        text.count(
+            "the smoke runs were on the previous generation of the bodies, which differed only in"
+        )
+        == 2
     )
-    assert url == (
-        "^/crosswork/aaa/(restconf/data/.+|v1/role|v1/role/[^/]+|v1/user/[^/]+/task"
-        "|v2/[^/]+:[^/]+/vpn-service=[^/]+|v2/api)$"
+    read_back_clause = (
+        "the bodies as committed were stored through the API and read back (2026-09-15: "
+        "`tests/fixtures/rbac/stored_generated_readonly.json`, "
+        "`tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form "
+        "they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of "
+        "the 182 read tools permitted, 14 refused, 1 write tool permitted "
+        "(`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted"
     )
-    pattern = re.compile(url)
-    for ok in (
-        "/crosswork/aaa/v1/role",
-        "/crosswork/aaa/v1/role/admin",
-        "/crosswork/aaa/v1/user/mcp-ro/task",
-        "/crosswork/aaa/v2/api",
-        "/crosswork/aaa/v2/ietf:l3vpn/vpn-service=x",
-        "/crosswork/aaa/restconf/data/a/b=c",
-        "/crosswork/aaa/restconf/data/tailf-ncs:devices/device=x/config",
-    ):
-        assert pattern.search(ok), ok
-    for bad in (
-        "/crosswork/aaa/v1/api",
-        "/crosswork/aaa/v1/roles",
-        "/crosswork/aaa/v1/role/a/b=c",  # a name is one segment: nothing below it
-        "/crosswork/aaa/v1/role/admin/anything",
-        "/crosswork/aaa/v1/user/a/b/task",  # mid-path value is one segment
-        "/crosswork/aaa/v1/user/mcp-ro",
-        "/crosswork/aaa/v2/api/x",
-        "/crosswork/aaa/v2/x/vpn-service=1",
-        "/crosswork/aaa/v2/ietf:l3vpn/vpn-service=x/y",
-        "/crosswork/aaaread/v1/role/admin",
-        "/x/crosswork/aaa/v1/role",
-    ):
-        assert not pattern.search(bad), bad
-    # the sample request paths follow the same rule
-    assert rbac_map.concrete_path("/crosswork/aaa/v1/user/{}") == "/crosswork/aaa/v1/user/abc"
-    assert rbac_map.concrete_path("/crosswork/aaa/v1/user/{}/task") == (
-        "/crosswork/aaa/v1/user/abc/task"
+    assert text.count(read_back_clause) == 2
+    assert "have not been stored in their current shape" not in text
+    assert "the two generated bodies as committed stored through the API and read back" in text
+    # the split rule: the pattern quoted, what it means, the three verified APIs, the
+    # seven inferred, the consequence, and what the map says of the OE delete RPC
+    split_bullet = next(line for line in text.splitlines() if "is **split**" in line)
+    assert split_bullet.startswith("- A row ticked Read **and** Write is stored as its single")
+    # why the service carves the segment out is a presumption, marked as one: no tool
+    # POSTs a `/delete` tail on any of the ten APIs
+    assert (
+        "**except on the APIs on which the service reserves a last segment `delete` for the "
+        "Delete tick** (presumably the ones that delete through `POST .../delete` — no tool "
+        "POSTs such a path, so the map does not show one)"
+    ) in split_bullet
+    assert "the APIs that delete through" not in text
+    assert f'`{{url: "{rbac_map.NOT_DELETE_PATTERN}", methods: [POST]}}`' in split_bullet
+    assert "matches every path whose LAST segment is not the six-character word `delete`" in (
+        split_bullet
     )
-    assert rbac_map.concrete_path("/crosswork/proxy/nso/restconf/data/{}") == (
-        "/crosswork/proxy/nso/restconf/data/a/b=c"
+    assert "read back as `[GET, PATCH, PUT] /.*` + `[POST] <the pattern>`" in split_bullet
+    assert (
+        "Verified 2026-09-15 on `cwcollection`, `optima_restconf`, `platform_cwplatform` (the "
+        "operator body's Write rows there, `tests/fixtures/rbac/stored_generated_operator.json`)"
+    ) in split_bullet
+    assert (
+        "**inferred** for `collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`, "
+        "`cw-probe-mgr`, `cw-ztp-service`, `dg-manager-global-parameters-api`, "
+        "`optima_analytics_api` from the 2026-09-14 experiment"
+    ) in split_bullet
+    # the POST-only experiment's stored shape as the maintainer's notes and the guide's
+    # earlier generation record it — the entry kept with methods [], the pattern
+    # appended — the counts and the parenthetical derived from the constants
+    assert (
+        "in which a row whose only entry was a custom-url POST came back with its methods "
+        "stripped to `[]` and this same pattern entry appended, on those seven (and on "
+        "`cwcollection`, `optima_restconf`) — the same split, POST being the entry's only "
+        "method; no union entry has been stored on them"
+    ) in split_bullet
+    assert "came back as this same pattern" not in text
+    assert "the split there is the model's extrapolation, not a read-back" in split_bullet
+    assert (
+        "so were the operator body's 5 rows carrying DELETE and its 4 Write-only rows "
+        "(`[POST, PUT, PATCH]`) — none of them on this list"
+    ) in split_bullet
+    # the two-entry observation of the same submission — what the single-entry condition
+    # of the split keys on
+    assert (
+        "In the same 2026-09-14 submission a custom GET entry beside a custom POST entry was "
+        "stored verbatim on `platform_cwplatform` (and on three APIs off this list, "
+        "`device-config`, `inventory_cwinventory`, `tsdn_cat-restconf-nbi`) — the split keys "
+        "on the row having a single entry."
+    ) in split_bullet
+    assert (
+        "**Consequence: Write without Delete on these APIs still permits every POST except a "
+        "path ending in `/delete`.**"
+    ) in split_bullet
+    assert (
+        "an operator role without Delete can still create policies, and the delete RPC the "
+        "map records — `POST /crosswork/nbi/optimization/v3/restconf/operations/"
+        "cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete` "
+        "(`cnc_delete_sr_policy`) — ends in the segment "
+        "`cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete`, not "
+        "`delete`, so it stays permitted too; no POST any tool sends on these 10 APIs ends "
+        "in `/delete`."
+    ) in split_bullet
+    assert text.count("inferred") == 1  # the seven APIs, and nothing else
+    assert (
+        "came back with its methods stripped to `[]` and the not-delete pattern above appended "
+        "— a wider grant than the url submitted — on the nine APIs it was tried on"
+    ) in text
+    assert "came back as the not-delete pattern" not in text
+    # section 2, option 1: Write's POST on a POST-delete API is the not-delete pattern,
+    # not the whole API
+    assert (
+        "because Write is `/.*` on the whole API for PUT/PATCH and — except on the "
+        "POST-delete APIs of section 1 — for POST, and a narrower custom-URL entry is not an "
+        "option (section 1's warning):"
+    ) in text
+    assert "Write is `/.*` for POST/PUT/PATCH on the whole API" not in text
+    option_rows = [
+        line
+        for line in text.splitlines()
+        if line.startswith("  - `") and "Write also permits" in line
+    ]
+    assert [line.split("`")[1] for line in option_rows] == [
+        "cwcollection",
+        "device-config",
+        "inventory_cwinventory",
+        "optima_restconf",
+    ]
+    pattern_note = (
+        "— POST under the not-delete pattern, every path except one ending in `/delete` "
+        "(section 1)."
     )
-    assert not rbac_map.tail_may_carry_slash("/crosswork/aaa/v1/user/{}")
-    assert rbac_map.tail_may_carry_slash("/crosswork/nbi/topology/v3/restconf/data/x/node={}")
-    # the listen path itself, escaped metacharacters, and a listen-path variable
-    assert rbac_map.path_regex("/crosswork/alarms/v1/ack", ["/crosswork/alarms/v1/ack"]) == (
-        "^/crosswork/alarms/v1/ack$"
+    for line in option_rows:
+        api_id = line.split("`")[1]
+        assert line.endswith(pattern_note) == (api_id in rbac["platform"]["post_delete_apis"]), line
+    assert (
+        "  - `cwcollection`: Write also permits every POST/PUT/PATCH the API serves (no cnc-mcp "
+        f"write tool uses it) {pattern_note}"
+    ) in text
+    assert '> **Warning — never load a role body with a url other than `"/.*"`.**' in text
+    assert "crashes the Roles page for everyone" in text
+    assert "Cannot read properties of undefined (reading 'read')" in text
+    assert "**Not verified:**\n\n- The editor's wire shape, the display-name groups" in text
+    assert (
+        "the stored form of single-tick, per-tick and union entries (the generated bodies "
+        "read back), the baseline rows, the split of a Write-without-Delete row on "
+        "`cwcollection`, `optima_restconf`, `platform_cwplatform` and the gateway's refusals "
+        "are all observed"
+    ) in text
+    assert (
+        "Extrapolated, not read back: the same split on the 7 other POST-delete APIs (from a "
+        "POST-only experiment), and what the service stores for a row carrying DELETE, or a "
+        "Write-only row, on any of them (the bodies have none)"
+    ) in text
+    assert "Extrapolated from the per-row rule" not in text
+    assert "**By editor row** (tick Read on each):" in text
+    assert "| feature | editor row | api_ids the read tools use | sibling api_ids" in text
+    assert "| AAA | Users and Roles Management | `aaa_cwaaa` | `get-WebSocket-Subscription`" in text
+    assert "**By api_id** (what an API-loaded body grants" in text
+    assert "| R (baseline row: every role has it) |" in text
+    assert (
+        "Drop that row and the account can no longer read them: the gateway refuses these 10 tools"
+        in text
     )
-    assert rbac_map.path_regex("/crosswork/x.y/", ["/crosswork/x.y/a+b/(c)"]) == (
-        r"^/crosswork/x\.y/a\+b/\(c\)$"
+    assert "`cnc_list_roles`, `cnc_list_secured_apis`, `cnc_list_users`" in text
+    assert (
+        "| feature | editor row | api_ids the writes use | sibling api_ids the tick also "
+        "grants | ticks to add |"
+    ) in text
+    assert (
+        "**The generated bodies are the shape the editor submits** (verified 2026-09-15 "
+        "against the UI-built role's read-back, `tests/fixtures/rbac/stored_ui_built_role.json`)"
+    ) in text
+    assert "minus the empty `_id`/`id` the editor also sends" in text
+    assert (
+        "What the fixtures pin: both bodies as committed, stored and read back (2026-09-15: "
+        "`tests/fixtures/rbac/stored_generated_readonly.json`, "
+        "`tests/fixtures/rbac/stored_generated_operator.json` — the model reproduces every "
+        "stored row entry for entry: the read-only body's 42 Read rows with their templates; "
+        "the operator body's union entries, `[GET, POST, PUT, PATCH]` on 4 rows and all five "
+        "methods on 5, verbatim except the 3 split rows section 1 describes — `cwcollection`, "
+        "`optima_restconf`, `platform_cwplatform` — where POST came back under the "
+        "not-delete pattern; plus the three baseline rows on each)"
+    ) in text
+    assert "have not been read back" not in text
+    assert "follow from the per-row rule" not in text
+    assert "**an API-loaded role is managed through the API only**" in text
+    assert "a Save rebuilds every group from the editor's model" in text
+    assert (
+        "`cnc-mcp-operator.role.json` carries 46 rows: 13 with Write, 5 with Delete, 4 Write-only"
+        in text
+    )
+    # none of the removed wording — in the guide, the README and SECURITY.md alike
+    # (SECURITY.md kept the superseded AAA-row paragraph once); the CHANGELOG describes
+    # what changed, so it is checked for the claims no fixture supports only
+    removed_wording = (
+        "administrative data",
+        "is taken to",
+        "plausibly",
+        "No UI-built role exists",
+        "restrict the URL",
+        "The two AAA rows",
+        "custom-URL POST entry is reinterpreted",
+        "reinterpreted into a wider grant",
+        "narrowed POST entry",
+        "have not yet been loaded",
+        "have not been read back",
+        "have not been stored in their current shape",
+    )
+    unsupported_claims = (
+        "exactly what the editor submits",
+        "exactly what the Crosswork role editor submits",
+        "the two generated roles stored",
+        "generated roles opened in the editor",
+        "lab verified both",
+        "were never stored as GET-only rows",
+        "none submitted with any of them",
+    )
+    for doc in (DOC_PATH, REPO / "README.md", REPO / "SECURITY.md"):
+        doc_text = doc.read_text(encoding="utf-8")
+        for gone in (*removed_wording, *unsupported_claims):
+            assert gone not in doc_text, (doc.name, gone)
+        assert not re.search(r"\banchored\b", doc_text), doc.name  # 'unanchored' stays
+        if doc != DOC_PATH:
+            assert "inferred" not in doc_text, doc.name  # only the split rule's seven APIs
+    changelog = " ".join((REPO / "CHANGELOG.md").read_text(encoding="utf-8").split())
+    for gone in unsupported_claims:
+        assert gone not in changelog, gone
+    assert "The smoke runs were on the previous generation of the bodies" in changelog
+    assert "`cnc-mcp-readonly` permits 168 of the 182 read tools" in changelog
+    assert "`cnc-mcp-operator` all 245" in changelog
+    assert "split" in changelog and "inferred for the seven" in changelog
+    # the same in the generator's own documentation and in the map: 'inferred' names the
+    # seven APIs the split is extrapolated to, nothing else
+    source = (REPO / "scripts" / "rbac_map.py").read_text(encoding="utf-8")
+    assert "# VERIFIED for the union entry (2026-09-15" in source
+    assert "# INFERRED from the 2026-09-14 POST-only experiment (not a fixture)" in source
+    for gone in removed_wording:
+        assert gone not in source, gone
+    assert not re.search(r"\banchored\b", source)
+    ticks = rbac["generated_from"]["ticks"]
+    assert "inferred" not in ticks
+    assert "verified 2026-09-15 by reading a UI-built role back" in ticks
+    # the counts are the constants' (three verified, seven inferred), spelled out
+    assert (rbac_map.count_word(3), rbac_map.count_word(7), rbac_map.count_word(12)) == (
+        "three",
+        "seven",
+        "12",
     )
     assert (
-        rbac_map.path_regex(
-            "/crosswork/performance/v{.}/dashboards/",
-            [
-                "/crosswork/performance/v1/dashboards/summary",
-                "/crosswork/performance/v2/dashboards",
-            ],
-        )
-        == "^/crosswork/performance/v1/dashboards/summary$|^/crosswork/performance/v2/dashboards$"
-    )
-    with pytest.raises(SystemExit, match="not under listen path"):
-        rbac_map.path_regex("/crosswork/aaa/", ["/crosswork/aaaread/v1/role"])
+        "on the 'platform.post_delete_apis' a row whose single entry carries POST without "
+        "DELETE is split — the other methods stay on '/.*' in alphabetical order and POST "
+        "moves to 'platform.not_delete_pattern', every path except one ending in the "
+        "segment 'delete' (verified 2026-09-15 by reading the generated operator role back "
+        f"on {rbac_map.count_word(len(rbac_map.POST_DELETE_VERIFIED))} of them, extrapolated "
+        f"to the {rbac_map.count_word(len(rbac_map.POST_DELETE_INFERRED))} others from a "
+        "POST-only experiment)"
+    ) in ticks
+    assert "on three of them, extrapolated to the seven others" in ticks
 
 
-def test_path_regex_renders_a_template_a_runtime_value_could_extend_into_the_listen_path():
-    """build_map records a runtime-valued template on a second API when a value of its
-    ``{}`` could extend it into that API's longer listen path (Router.ambiguous): the
-    listen path claims nothing literal of the template, so the row's alternative is the
-    whole rendered template — exactly the paths the tool can send there."""
-    listen = CATALOGUE["ems-inventory"]["listen_path"]  # /crosswork/inventory/v1/networkelement
-    template = "/crosswork/inventory/v1/{}"
-    assert rbac_map.Router(CATALOGUE).ambiguous(template, "inventory_cwinventory") == [
-        "ems-inventory"
-    ]
-    assert rbac_map.could_extend_into(template, listen)
-    assert rbac_map.path_regex(listen, [template]) == "^/crosswork/inventory/v1/.+$"
-    # next to a template the listen path does claim; a mid-path value is one segment
-    assert rbac_map.path_regex(
-        listen, [template, f"{listen}/query", "/crosswork/inventory/v1/{}/count"]
-    ) == (
-        "^/crosswork/inventory/v1/.+$|^/crosswork/inventory/v1/[^/]+/count$"
-        "|^/crosswork/inventory/v1/networkelement/query$"
-    )
-    # a template no runtime value could extend into the listen path is still refused
-    for other in ("/crosswork/inventory/v1/nodes/{}", "/crosswork/inventory/v1/nodes"):
-        assert not rbac_map.could_extend_into(other, listen)
-        with pytest.raises(SystemExit, match="not under listen path"):
-            rbac_map.path_regex(listen, [other])
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "^a$|b|^c$",  # an unanchored top-level alternative
-        "^a$|^b",  # a missing end anchor
-        "^a++$",  # possessive: Python 3.11 accepts, RE2 rejects
-        "^(?=a)b$",  # lookaround
-        "^(a)\\1$",  # backreference
-        "^\\Aa\\Z$",  # Python-only anchors
-        "^/x/.*$",  # every path
-        "^a.b$",  # a bare dot that is not the .+ wildcard
-        "^a\\-b$",  # an escape the generator never writes
-        "^[a-z]+$",  # a class other than [^/]
-        "^a{2}$",  # counted repetition
-        "^a|b$",  # anchors at both ends of the whole, neither alternative carrying both
-    ],
-)
-def test_re2_assertion_rejects_what_the_generator_must_not_emit(bad):
-    """The per-entry check of the AAA rows is not vacuous."""
-    with pytest.raises(AssertionError):
-        assert_re2_compatible_and_anchored(bad, "self-test")
-    assert top_level_alternatives("^a/(b|c)$|^d\\|e$|^f$") == ["^a/(b|c)$", "^d\\|e$", "^f$"]
+def test_render_doc_stops_when_post_delete_apis_carry_an_undocumented_api(rbac):
+    """The guide documents every POST-delete API as verified or inferred and counts
+    them: a platform block (from a --read-templates capture) carrying an api_id in
+    neither list, or lacking one, stops the generator instead of being documented as
+    'inferred from the 2026-09-14 experiment' with the wrong count."""
+    platform = rbac["platform"]
+    extra = {
+        **rbac,
+        "platform": {
+            **platform,
+            "post_delete_apis": [*platform["post_delete_apis"], "ems-inventory"],
+        },
+    }
+    with pytest.raises(
+        SystemExit, match="neither verified nor in the 2026-09-14 experiment: \\['ems-inventory'\\]"
+    ):
+        rbac_map.render_doc(extra, rbac["apis"], body("readonly"), body("operator"))
+    fewer = {
+        **rbac,
+        "platform": {
+            **platform,
+            "post_delete_apis": [a for a in platform["post_delete_apis"] if a != "cw-probe-mgr"],
+        },
+    }
+    with pytest.raises(SystemExit, match="lacks a verified or inferred API: \\['cw-probe-mgr'\\]"):
+        rbac_map.render_doc(fewer, rbac["apis"], body("readonly"), body("operator"))
 
 
 # --- the map's overrides -----------------------------------------------------------------
@@ -1160,8 +1970,8 @@ def test_generated_files_carry_no_gateway_material_or_lab_identifiers():
     url/methods; none of a Tyk API definition's other fields (its auth configuration,
     ``proxy.target_url``, ...), no server-assigned role field and no lab address may
     reach the repository. (``secret`` alone is not a marker — the catalogue carries a
-    real api_id ``cwm_secret`` — and ``hmac_enabled: false`` is a policy field the role
-    skeleton copies from admin.)"""
+    real api_id ``cwm_secret`` — and ``hmac_enabled: false`` is one of the editor's
+    default role fields.)"""
     for path in (MAP_PATH, DOC_PATH, *ROLE_FILES.values()):
         text = path.read_text(encoding="utf-8").lower()
         for marker in (
@@ -1217,9 +2027,10 @@ def test_generate_is_deterministic_and_reuses_the_committed_platform_block(rbac)
         assert (REPO / relative).read_text(encoding="utf-8") == content, relative
 
 
-def test_sanitise_catalogue_copies_only_three_fields():
-    """api_id, name and proxy.listen_path — never a Tyk API definition's other fields
-    (its auth configuration, the target URL, ...)."""
+def test_sanitise_catalogue_copies_only_four_fields():
+    """api_id, name and proxy.listen_path from v1, the feature and the position from
+    v2 (response order: features, then entries — the role editor's row order) — never
+    a Tyk API definition's other fields (its auth configuration, the target URL, ...)."""
     v1 = [
         {
             "api_id": "inventory_cwinventory",
@@ -1229,74 +2040,166 @@ def test_sanitise_catalogue_copies_only_three_fields():
             "hmac_allowed_algorithms": ["hmac-sha512"],
         },
         {"api_id": "orphan", "name": "Orphan", "proxy": {"listen_path": "/crosswork/orphan/"}},
+        {"api_id": "ems-inventory", "name": "Device Inventory", "proxy": {"listen_path": "/x"}},
     ]
-    v2 = {"Inventory": [{"api_id": "inventory_cwinventory", "name": "Inventory APIs"}]}
+    v2 = {
+        "Device Monitoring": [{"api_id": "ems-inventory", "name": "Device Inventory"}],
+        "Inventory": [{"api_id": "inventory_cwinventory", "name": "Inventory APIs"}],
+    }
     catalogue = rbac_map.sanitise_catalogue(v1, v2)
     assert catalogue == {
         "inventory_cwinventory": {
             "name": "Inventory APIs",
             "feature": "Inventory",
             "listen_path": "/crosswork/inventory/",
+            "position": 1,
         },
         "orphan": {
             "name": "Orphan",
             "feature": rbac_map.UNCATEGORISED,
             "listen_path": "/crosswork/orphan/",
+            "position": None,
+        },
+        "ems-inventory": {
+            "name": "Device Inventory",
+            "feature": "Device Monitoring",
+            "listen_path": "/x",
+            "position": 0,
         },
     }
     assert "c2VjcmV0" not in json.dumps(catalogue)
+    # the committed map carries the positions and the offline loader requires them
+    loaded = rbac_map.load_catalogue_map(MAP_PATH)
+    assert loaded == {
+        api_id: dict(api) for api_id, api in json.loads(MAP_PATH.read_text())["apis"].items()
+    }
 
 
-def test_sanitise_platform_keeps_url_and_methods_only_and_splits_the_baseline_rows():
-    raw = {
+def test_sanitise_platform_keeps_url_and_methods_only_and_checks_the_baseline_rows():
+    def sanitise(templates, baseline, captured, catalogue):
+        return rbac_map.sanitise_platform(templates, baseline, captured, catalogue, **SPLIT_RULE)
+
+    templates = {
         "inventory_cwinventory": [
             {"url": "/.+/query$", "methods": ["post"], "limit": None, "extra": "x"}
         ],
+        "aaa_cw_role_read": [{"url": "/.+/query$", "methods": ["POST"]}],
+    }
+    baseline = {
         "aaa_cwpassword": [
             {"url": "/.*", "methods": ["PUT", "GET"]},
             {"url": "/(.*passwordHistoryCheck.*)$", "methods": ["POST"]},
         ],
+        "aaa_cw_role_read": [
+            {"url": "/.+/query$", "methods": ["POST"]},
+            {"url": "/.*", "methods": ["GET"], "versions": ["Default"]},
+        ],
     }
-    platform = rbac_map.sanitise_platform(raw, {}, "2026-09-14", CATALOGUE)
+    platform = sanitise(templates, baseline, "2026-09-14", CATALOGUE)
     assert platform == {
         "version": "7.2.0",
         "captured": "2026-09-14",
-        "read_templates": {"inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}]},
-        "baseline_rows": {
-            "aaa_cwpassword": [
-                {"url": "/(.*passwordHistoryCheck.*)$", "methods": ["POST"]},
-                {"url": "/.*", "methods": ["GET", "PUT"]},
-            ]
+        "read_templates": {
+            "aaa_cw_role_read": [{"url": "/.+/query$", "methods": ["POST"]}],
+            "inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}],
         },
+        "baseline_rows": {
+            "aaa_cw_role_read": [
+                {"url": "/.*", "methods": ["GET"]},
+                {"url": "/.+/query$", "methods": ["POST"]},
+            ],
+            "aaa_cwpassword": [
+                {"url": "/.*", "methods": ["GET", "PUT"]},
+                {"url": "/(.*passwordHistoryCheck.*)$", "methods": ["POST"]},
+            ],
+        },
+        **SPLIT_RULE,
     }
-    assert "limit" not in json.dumps(platform) and "extra" not in json.dumps(platform)
+    for marker in ("limit", "extra", "versions"):
+        assert marker not in json.dumps(platform), marker
+    # a capture in the previous format — the baseline rows listed among the templates
+    # with their GET/PUT entries — is refused, not re-split
+    with pytest.raises(SystemExit, match="is a baseline row, not a read template"):
+        sanitise(
+            {"aaa_cwpassword": [{"url": "/.*", "methods": ["GET", "PUT"]}]},
+            {},
+            "2026-09-14",
+            CATALOGUE,
+        )
+    with pytest.raises(SystemExit, match="is a baseline row, not a read template"):
+        sanitise({"aaa_cwpassword": []}, {}, "2026-09-14", CATALOGUE)
+    with pytest.raises(SystemExit, match="a read template is the POST entries"):
+        sanitise(
+            {"inventory_cwinventory": [{"url": "/.*", "methods": ["GET", "PUT"]}]},
+            {},
+            "2026-09-14",
+            CATALOGUE,
+        )
+    with pytest.raises(SystemExit, match="a read template is the POST entries"):
+        sanitise(
+            {"inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST", "GET"]}]},
+            {},
+            "2026-09-14",
+            CATALOGUE,
+        )
     with pytest.raises(SystemExit, match="not in the secured-API catalogue"):
-        rbac_map.sanitise_platform({"nope": []}, {}, "2026-09-14", CATALOGUE)
+        sanitise({"nope": []}, {}, "2026-09-14", CATALOGUE)
+    with pytest.raises(SystemExit, match="not a baseline API"):
+        sanitise({}, {"inventory_cwinventory": []}, "2026-09-14", CATALOGUE)
     with pytest.raises(SystemExit, match="unknown method"):
-        rbac_map.sanitise_platform(
+        sanitise(
             {"inventory_cwinventory": [{"url": "/x", "methods": ["FETCH"]}]},
             {},
             "2026-09-14",
             CATALOGUE,
         )
     with pytest.raises(SystemExit, match="not a valid regex"):
-        rbac_map.sanitise_platform(
+        sanitise(
             {"inventory_cwinventory": [{"url": "/(x", "methods": ["POST"]}]},
             {},
             "2026-09-14",
             CATALOGUE,
         )
     with pytest.raises(SystemExit, match="without url/methods"):
-        rbac_map.sanitise_platform(
-            {"inventory_cwinventory": [{"url": "/x"}]}, {}, "2026-09-14", CATALOGUE
-        )
+        sanitise({"inventory_cwinventory": [{"url": "/x"}]}, {}, "2026-09-14", CATALOGUE)
     with pytest.raises(SystemExit, match="YYYY-MM-DD"):
-        rbac_map.sanitise_platform({}, {}, "yesterday", CATALOGUE)
+        sanitise({}, {}, "yesterday", CATALOGUE)
     with pytest.raises(SystemExit, match="must be"):
-        rbac_map.sanitise_platform([], {}, "2026-09-14", CATALOGUE)
+        sanitise([], {}, "2026-09-14", CATALOGUE)
 
 
-def test_load_platform_file_accepts_a_capture_or_a_bare_mapping(tmp_path):
+def test_sanitise_platform_checks_the_split_rule_data():
+    """post_delete_apis: catalogued api_ids, stored sorted and de-duplicated;
+    not_delete_pattern: a regex that refuses a path ending in the segment 'delete' and
+    permits any other (the meaning the guide states) — the constants pass, and a capture
+    that carries something else is refused before the guide could misdescribe it."""
+    platform = rbac_map.sanitise_platform(
+        {}, {}, "2026-09-15", CATALOGUE, ["platform_cwplatform", "platform_cwplatform"]
+    )
+    assert platform["post_delete_apis"] == ["platform_cwplatform"]
+    assert platform["not_delete_pattern"] == rbac_map.NOT_DELETE_PATTERN
+    catalogue = rbac_map.load_catalogue_map(MAP_PATH)
+    platform = rbac_map.sanitise_platform({}, {}, "2026-09-15", catalogue)  # the defaults
+    assert platform["post_delete_apis"] == sorted(rbac_map.POST_DELETE_APIS)
+    with pytest.raises(SystemExit, match="post_delete_apis: cwcollection is not in the catalogue"):
+        rbac_map.sanitise_platform({}, {}, "2026-09-15", CATALOGUE)
+    with pytest.raises(SystemExit, match="must be a list of api_ids"):
+        rbac_map.sanitise_platform({}, {}, "2026-09-15", CATALOGUE, "platform_cwplatform")
+    with pytest.raises(SystemExit, match="must be a regex string"):
+        rbac_map.sanitise_platform({}, {}, "2026-09-15", CATALOGUE, [], None)
+    with pytest.raises(SystemExit, match="not a valid regex"):
+        rbac_map.sanitise_platform({}, {}, "2026-09-15", CATALOGUE, [], "/(x")
+    for wrong in ("/.*", "/delete$", "^/x$", "/[^d]+$"):
+        with pytest.raises(SystemExit, match="does not mean 'every path except one ending"):
+            rbac_map.sanitise_platform({}, {}, "2026-09-15", CATALOGUE, [], wrong)
+    # an equivalent spelling of the rule is accepted: the meaning is checked, not the text
+    platform = rbac_map.sanitise_platform(
+        {}, {}, "2026-09-15", CATALOGUE, [], r"^(?!.*/delete/?$).*$"
+    )
+    assert platform["not_delete_pattern"] == r"^(?!.*/delete/?$).*$"
+
+
+def test_load_platform_file_takes_a_capture_and_falls_back_to_the_committed_baseline(tmp_path):
     capture = tmp_path / "capture.json"
     capture.write_text(
         json.dumps(
@@ -1304,27 +2207,74 @@ def test_load_platform_file_accepts_a_capture_or_a_bare_mapping(tmp_path):
                 "captured": "2026-09-15",
                 "how": "GET role after PUT",
                 "read_templates": {
+                    "inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}]
+                },
+                "baseline_rows": {"aaa_cwpassword": [{"url": "/.*", "methods": ["GET", "PUT"]}]},
+                "post_delete_apis": ["platform_cwplatform"],
+            }
+        )
+    )
+    platform = rbac_map.load_platform_file(capture, CATALOGUE, None)
+    assert platform["captured"] == "2026-09-15"
+    assert list(platform["read_templates"]) == ["inventory_cwinventory"]
+    assert list(platform["baseline_rows"]) == ["aaa_cwpassword"]
+    # the capture's post_delete_apis, the constant pattern (no committed map to take it from)
+    assert platform["post_delete_apis"] == ["platform_cwplatform"]
+    assert platform["not_delete_pattern"] == rbac_map.NOT_DELETE_PATTERN
+    templates_only = tmp_path / "templates.json"
+    templates_only.write_text(
+        json.dumps(
+            {
+                "read_templates": {
+                    "inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}]
+                }
+            }
+        )
+    )
+    platform = rbac_map.load_platform_file(templates_only, CATALOGUE, PLATFORM)
+    assert platform["captured"] == rbac_map.TEMPLATES_CAPTURED
+    assert platform["baseline_rows"] == PLATFORM["baseline_rows"]
+    # without the split rule's keys a capture keeps the committed map's
+    assert platform["post_delete_apis"] == PLATFORM["post_delete_apis"]
+    assert platform["not_delete_pattern"] == PLATFORM["not_delete_pattern"]
+    spelling = r"^(?!.*/delete/?$).*$"
+    fallback = {**PLATFORM, "post_delete_apis": [], "not_delete_pattern": spelling}
+    platform = rbac_map.load_platform_file(templates_only, CATALOGUE, fallback)
+    assert platform["post_delete_apis"] == [] and platform["not_delete_pattern"] == spelling
+    # ... and the constants when there is no committed map either (the real catalogue:
+    # the constants name ten of its APIs)
+    full = tmp_path / "full.json"
+    full.write_text(json.dumps({"read_templates": {}, "baseline_rows": {}}))
+    platform = rbac_map.load_platform_file(full, rbac_map.load_catalogue_map(MAP_PATH), None)
+    assert platform["post_delete_apis"] == sorted(rbac_map.POST_DELETE_APIS)
+    assert platform["not_delete_pattern"] == rbac_map.NOT_DELETE_PATTERN
+    with pytest.raises(SystemExit, match="no 'baseline_rows'"):
+        rbac_map.load_platform_file(templates_only, CATALOGUE, None)
+    # the previous capture format (2026-09-14: the baseline APIs under read_templates with
+    # their GET/PUT entries, no baseline_rows) is refused even with a committed fallback
+    previous = tmp_path / "previous.json"
+    previous.write_text(
+        json.dumps(
+            {
+                "captured": "2026-09-14",
+                "read_templates": {
+                    "aaa_cw_role_read": [{"url": "/.+/query$", "methods": ["POST"]}],
+                    "aaa_cwpassword": [
+                        {"url": "/.*", "methods": ["GET", "PUT"]},
+                        {"url": "/(.*passwordHistoryCheck.*)$", "methods": ["POST"]},
+                    ],
                     "inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}],
-                    "aaa_cwpassword": [{"url": "/.*", "methods": ["GET", "PUT"]}],
                 },
             }
         )
     )
-    platform = rbac_map.load_platform_file(capture, CATALOGUE)
-    assert platform["captured"] == "2026-09-15"
-    assert list(platform["read_templates"]) == ["inventory_cwinventory"]
-    assert list(platform["baseline_rows"]) == ["aaa_cwpassword"]
-    bare = tmp_path / "bare.json"
-    bare.write_text(
-        json.dumps({"inventory_cwinventory": [{"url": "/.+/query$", "methods": ["POST"]}]})
-    )
-    platform = rbac_map.load_platform_file(bare, CATALOGUE)
-    assert platform["captured"] == rbac_map.TEMPLATES_CAPTURED
-    assert platform["baseline_rows"] == {}
-    bad = tmp_path / "bad.json"
-    bad.write_text("[]")
-    with pytest.raises(SystemExit, match="expected a JSON object"):
-        rbac_map.load_platform_file(bad, CATALOGUE)
+    with pytest.raises(SystemExit, match="aaa_cwpassword is a baseline row"):
+        rbac_map.load_platform_file(previous, CATALOGUE, PLATFORM)
+    for bad_text in ("[]", json.dumps({"inventory_cwinventory": []})):
+        bad = tmp_path / "bad.json"
+        bad.write_text(bad_text)
+        with pytest.raises(SystemExit, match="'read_templates' mapping"):
+            rbac_map.load_platform_file(bad, CATALOGUE, None)
 
 
 def test_load_platform_map_requires_the_platform_block(tmp_path):
@@ -1332,6 +2282,21 @@ def test_load_platform_map_requires_the_platform_block(tmp_path):
     stale.write_text(json.dumps({"apis": CATALOGUE, "tools": {}}))
     with pytest.raises(SystemExit, match="--read-templates"):
         rbac_map.load_platform_map(stale, CATALOGUE)
+
+
+def test_load_platform_map_takes_the_split_rule_from_the_map_or_the_constants(rbac, tmp_path):
+    """A map from before the split rule was modelled (no post_delete_apis /
+    not_delete_pattern in its platform block) loads with the constants; one that carries
+    them keeps what it carries."""
+    catalogue = rbac_map.load_catalogue_map(MAP_PATH)
+    previous = tmp_path / "rbac_map.json"
+    platform = {k: v for k, v in rbac["platform"].items() if k not in rbac_map.SPLIT_RULE_KEYS}
+    previous.write_text(json.dumps({**rbac, "platform": platform}))
+    assert rbac_map.load_platform_map(previous, catalogue) == rbac["platform"]
+    carried = tmp_path / "carried.json"
+    platform = {**rbac["platform"], "post_delete_apis": ["cwcollection"]}
+    carried.write_text(json.dumps({**rbac, "platform": platform}))
+    assert rbac_map.load_platform_map(carried, catalogue)["post_delete_apis"] == ["cwcollection"]
 
 
 @pytest.mark.parametrize(

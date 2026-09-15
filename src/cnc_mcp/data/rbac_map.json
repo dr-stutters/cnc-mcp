@@ -3,1087 +3,1304 @@
   "aa_dss": {
    "feature": "Automated Assurance DSS instance",
    "listen_path": "/crosswork/aa/dss",
-   "name": "Data Store Service API"
+   "name": "Data Store Service API",
+   "position": 98
   },
   "aa_dss_admin": {
    "feature": "Automated Assurance DSS instance",
    "listen_path": "/crosswork/aa/dss/admin",
-   "name": "Data Store Service Administrator settings"
+   "name": "Data Store Service Administrator settings",
+   "position": 97
   },
   "aaa_cw_role_read": {
    "feature": "AAA",
    "listen_path": "/crosswork/aaaread/",
-   "name": "Know my role - Read only"
+   "name": "Know my role - Read only",
+   "position": 0
   },
   "aaa_cwaaa": {
    "feature": "AAA",
    "listen_path": "/crosswork/aaa/",
-   "name": "Users and Roles Management"
+   "name": "Users and Roles Management",
+   "position": 7
   },
   "aaa_cwauthconfig": {
    "feature": "AAA",
    "listen_path": "/crosswork/authconfig/",
-   "name": "Remote Authentication Servers Integration"
+   "name": "Remote Authentication Servers Integration",
+   "position": 2
   },
   "aaa_cwpassword": {
    "feature": "AAA",
    "listen_path": "/crosswork/password/",
-   "name": "Password Change"
+   "name": "Password Change",
+   "position": 1
   },
   "aaa_pref": {
    "feature": "AAA",
    "listen_path": "/crosswork/aaa/preferences/",
-   "name": "User Preferences"
+   "name": "User Preferences",
+   "position": 3
   },
   "aaa_selected_pref": {
    "feature": "AAA",
    "listen_path": "/crosswork/aaa/v1/user-selected-preference",
-   "name": "User Selected Preferences"
+   "name": "User Selected Preferences",
+   "position": 4
   },
   "alarm-forwarding-service": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm-forwarding/",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 48
   },
   "alarm-forwarding-service-cw-rest-create-delete-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/rest-dest",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 38
   },
   "alarm-forwarding-service-cw-rest-dest-cache-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/rest-dest/cache",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 46
   },
   "alarm-forwarding-service-cw-rest-dest-get-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/rest-dest/query",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 50
   },
   "alarm-forwarding-service-cw-syslog-get-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/syslog-dest/query",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 39
   },
   "alarm-forwarding-service-cw-syslog-post-delete-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/syslog-dest",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 47
   },
   "alarm-forwarding-service-cw-trap-get-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/trap-dest/query",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 51
   },
   "alarm-forwarding-service-cw-trap-post-delete-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/trap-dest",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 49
   },
   "alarm-forwarding-service-email-destination": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/destination/email",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 44
   },
   "alarm-forwarding-service-external-kafka-destination": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/destination/externalkafka",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 40
   },
   "alarm-forwarding-service-notificationpolicy-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/notificationpolicy",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 45
   },
   "alarm-forwarding-service-restconf-destination": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/destination/restconf",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 41
   },
   "alarm-forwarding-service-syslog-destination": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/destination/syslog",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 42
   },
   "alarm-forwarding-service-trap-destination": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/destination/trap",
-   "name": "Alarm Notification Policies"
+   "name": "Alarm Notification Policies",
+   "position": 43
   },
   "alarm-processing-service": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm-processing/",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 72
   },
   "alarm-rest-service": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm-rest-service/",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 80
   },
   "alarm-rest-service-networkinventory-rest-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/equipment",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 76
   },
   "alarm-rest-service-summary-rest-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/summary",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 60
   },
   "alarm-topics-filter": {
    "feature": "Administrative Operations",
    "listen_path": "/external/kafka/subscription/alarmTopics",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 13
   },
   "cat-fp-deployment-manager": {
    "feature": "CNC",
    "listen_path": "/crosswork/cat/cat-fp-deployment-manager-service/v1/",
-   "name": "CAT FP Deployment Manager APIs"
+   "name": "CAT FP Deployment Manager APIs",
+   "position": 99
   },
   "cat-restconf-istp-rest-api": {
    "feature": "CNC",
    "listen_path": "/crosswork/cat/istp/api/v1/",
-   "name": "CAT ISTP REST APIs"
+   "name": "CAT ISTP REST APIs",
+   "position": 101
   },
   "cat-service-overlay": {
    "feature": "CNC",
    "listen_path": "/crosswork/cat/cat-service-overlay/v1/",
-   "name": "CAT Service Overlay"
+   "name": "CAT Service Overlay",
+   "position": 102
   },
   "cnc_cat_aa_ui_service": {
    "feature": "Service Health",
    "listen_path": "/crosswork/cnc/api/v1/aa/",
-   "name": "CAT SH UI"
+   "name": "CAT SH UI",
+   "position": 164
   },
   "cnc_cat_ui_service": {
    "feature": "CNC",
    "listen_path": "/crosswork/cnc/",
-   "name": "CAT UI"
+   "name": "CAT UI",
+   "position": 103
   },
   "collection_dg-manager": {
    "feature": "Collection Infra",
    "listen_path": "/crosswork/dg-manager/",
-   "name": "Data Gateway Manager APIs"
+   "name": "Data Gateway Manager APIs",
+   "position": 108
   },
   "cw-aa-ag-mgr": {
    "feature": "Service Health",
    "listen_path": "/crosswork/aa/agmgr/",
-   "name": "Assurance Graph Manager APIs"
+   "name": "Assurance Graph Manager APIs",
+   "position": 163
   },
   "cw-aa-app": {
    "feature": "Service Health",
    "listen_path": "/crosswork/aa/aaapp/",
-   "name": "Archiver APIs"
+   "name": "Archiver APIs",
+   "position": 162
   },
   "cw-aa-config-mgr": {
    "feature": "Service Health",
    "listen_path": "/crosswork/aa/cfgmgr/",
-   "name": "Config Manager APIs"
+   "name": "Config Manager APIs",
+   "position": 165
   },
   "cw-aa-hp-mgr": {
    "feature": "Service Health",
    "listen_path": "/crosswork/aa/hpmgr/",
-   "name": "Heuristic Package Manager APIs"
+   "name": "Heuristic Package Manager APIs",
+   "position": 166
   },
   "cw-aa-ms": {
    "feature": "Service Health",
    "listen_path": "/crosswork/aa/ms/",
-   "name": "Metric Scheduler APIs"
+   "name": "Metric Scheduler APIs",
+   "position": 167
   },
   "cw-clms": {
    "feature": "Licensing",
    "listen_path": "/crosswork/clms/",
-   "name": "Common Licensing Management Service (CLMS) APIs"
+   "name": "Common Licensing Management Service (CLMS) APIs",
+   "position": 151
   },
   "cw-config-service": {
    "feature": "Zero Touch Provisioning",
    "listen_path": "/crosswork/ztpconfig/",
-   "name": "Config Service"
+   "name": "Config Service",
+   "position": 211
   },
   "cw-config-service-deprecated": {
    "feature": "Zero Touch Provisioning",
    "listen_path": "/crosswork/configsvc/",
-   "name": "Config Service"
+   "name": "Config Service",
+   "position": 210
   },
   "cw-distributed-cache": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/distcache/",
-   "name": "Diagnostic Information"
+   "name": "Diagnostic Information",
+   "position": 11
   },
   "cw-fault-ack-alarm": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/acknowledge",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 65
   },
   "cw-fault-ack-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/ack",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 61
   },
   "cw-fault-ack-api-v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/acknowledge",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 83
   },
   "cw-fault-alarm-autoclear": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/autoclear",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 56
   },
   "cw-fault-alarm-autoclear-revert": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/autoclear/revert",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 55
   },
   "cw-fault-alarm-categories": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/category",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 71
   },
   "cw-fault-alarm-custom-eventtype": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/custom/eventtype",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 68
   },
   "cw-fault-alarm-custom-subeventtype": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/custom/subeventtype",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 69
   },
   "cw-fault-alarm-custom-syslog": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/custom/syslog",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 66
   },
   "cw-fault-alarm-custom-trap": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/custom/trap",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 67
   },
   "cw-fault-alarm-eventtype": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/eventtype",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 70
   },
   "cw-fault-alarm-manager-settings": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/manager/settings",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 52
   },
   "cw-fault-alarm-recommended-action": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/recommended-action",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 53
   },
   "cw-fault-alarm-settings": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/settings",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 58
   },
   "cw-fault-alarm-severity-settings": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/severity-config",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 54
   },
   "cw-fault-alarms-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/query",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 75
   },
   "cw-fault-alarms-api-v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/query",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 85
   },
   "cw-fault-clear-alarm": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/clear",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 64
   },
   "cw-fault-clear-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/clear",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 87
   },
   "cw-fault-clear-api-v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/clear",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 82
   },
   "cw-fault-create_events_api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/event",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 90
   },
   "cw-fault-create_events_api_v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/event",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 78
   },
   "cw-fault-events-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/event/query",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 73
   },
   "cw-fault-events-api-v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/event/query",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 84
   },
   "cw-fault-get-alarms": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/alarms",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 88
   },
   "cw-fault-get-events": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/events",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 63
   },
   "cw-fault-gnmi-settings": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/gnmi/settings",
-   "name": "Alarm Settings"
+   "name": "Alarm Settings",
+   "position": 57
   },
   "cw-fault-manifest_api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/manifest",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 79
   },
   "cw-fault-manifest_api_v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/manifest",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 77
   },
   "cw-fault-notes-alarm": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/platform/alarms/v1/notes",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 62
   },
   "cw-fault-notes-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarms/v1/note",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 86
   },
   "cw-fault-notes-api-v2": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/note",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 81
   },
   "cw-geo-service": {
    "feature": "Topology",
    "listen_path": "/crosswork/geoserver/",
-   "name": "Geo"
+   "name": "Geo",
+   "position": 176
   },
   "cw-grouping-service": {
    "feature": "Platform",
    "listen_path": "/crosswork/grouping/",
-   "name": "Grouping"
+   "name": "Grouping",
+   "position": 157
   },
   "cw-image-service": {
    "feature": "Zero Touch Provisioning",
    "listen_path": "/crosswork/ztpimage/",
-   "name": "Image Service"
+   "name": "Image Service",
+   "position": 213
   },
   "cw-image-service-deprecated": {
    "feature": "Zero Touch Provisioning",
    "listen_path": "/crosswork/imagesvc/",
-   "name": "Image Service"
+   "name": "Image Service",
+   "position": 212
   },
   "cw-inventory": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventoryRestServiceSub/ifm",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 124
   },
   "cw-inventory-job-dashboard": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/rs/json/jobSchedulerServiceInv/v1/",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 125
   },
   "cw-inventory-job-dashboard-deprecated": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/rs/json/jobSchedulerServiceInv/",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 120
   },
   "cw-nbi-alarm-notification-changeLogLevel": {
    "feature": "Administrative Operations",
    "listen_path": "/alarm/notification/logger/changeLogLevel/",
-   "name": "Logging"
+   "name": "Logging",
+   "position": 20
   },
   "cw-nbi-alarm-notification-listAllLoggers": {
    "feature": "Administrative Operations",
    "listen_path": "/alarm/notification/logger/listAllLoggers/",
-   "name": "Logging"
+   "name": "Logging",
+   "position": 21
   },
   "cw-probe-mgr": {
    "feature": "Probe Manager",
    "listen_path": "/crosswork/probemgr/",
-   "name": "Probe Manager APIs"
+   "name": "Probe Manager APIs",
+   "position": 160
   },
   "cw-te-manager": {
    "feature": "CNC",
    "listen_path": "/crosswork/te-manager/v1/",
-   "name": "TE Auto Policy Binding Service"
+   "name": "TE Auto Policy Binding Service",
+   "position": 106
   },
   "cw-topo-visualization": {
    "feature": "Topology",
    "listen_path": "/crosswork/topology/",
-   "name": "Topology"
+   "name": "Topology",
+   "position": 177
   },
   "cw-views-service": {
    "feature": "Platform",
    "listen_path": "/crosswork/views/",
-   "name": "Views"
+   "name": "Views",
+   "position": 159
   },
   "cw-ztp-service": {
    "feature": "Zero Touch Provisioning",
    "listen_path": "/crosswork/ztp/",
-   "name": "ZTP Service"
+   "name": "ZTP Service",
+   "position": 214
   },
   "cwcollection": {
    "feature": "Collection Infra",
    "listen_path": "/crosswork/collection/",
-   "name": "Collection APIs"
+   "name": "Collection APIs",
+   "position": 107
   },
   "cwm-solutions-automation": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/automations",
-   "name": "Automation APIs"
+   "name": "Automation APIs",
+   "position": 204
   },
   "cwm-solutions-fleetupgrade": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/fleetupgrade",
-   "name": "FleetUpgrade APIs"
+   "name": "FleetUpgrade APIs",
+   "position": 205
   },
   "cwm-solutions-imagerepo": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/repository",
-   "name": "Image Repository APIs"
+   "name": "Image Repository APIs",
+   "position": 207
   },
   "cwm_adapter": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/adapter",
-   "name": "Adapter Handler"
+   "name": "Adapter Handler",
+   "position": 180
   },
   "cwm_eventtype": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/eventType",
-   "name": "Event Type Handler"
+   "name": "Event Type Handler",
+   "position": 181
   },
   "cwm_form_export": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/formExport",
-   "name": "Form Export Handler"
+   "name": "Form Export Handler",
+   "position": 182
   },
   "cwm_form_import": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/formImport",
-   "name": "Form Import Handler"
+   "name": "Form Import Handler",
+   "position": 184
   },
   "cwm_forms": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/form",
-   "name": "Form Handler"
+   "name": "Form Handler",
+   "position": 183
   },
   "cwm_http_event": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/event/http",
-   "name": "Http Event Handler"
+   "name": "Http Event Handler",
+   "position": 185
   },
   "cwm_jobs": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/job",
-   "name": "Jobs Handler"
+   "name": "Jobs Handler",
+   "position": 186
   },
   "cwm_payload": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/payload",
-   "name": "Workflow Payload Handler"
+   "name": "Workflow Payload Handler",
+   "position": 202
   },
   "cwm_public_key": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/publicKey",
-   "name": "Workflow Public Key Handler"
+   "name": "Workflow Public Key Handler",
+   "position": 203
   },
   "cwm_resource": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/resource",
-   "name": "Resource Handler"
+   "name": "Resource Handler",
+   "position": 188
   },
   "cwm_resource_export": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/resourceExport",
-   "name": "Resource Export Handler"
+   "name": "Resource Export Handler",
+   "position": 187
   },
   "cwm_resource_import": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/resourceImport",
-   "name": "Resource Import Handler"
+   "name": "Resource Import Handler",
+   "position": 189
   },
   "cwm_resource_type": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/resourceType",
-   "name": "Resource Type Handler"
+   "name": "Resource Type Handler",
+   "position": 190
   },
   "cwm_schedule": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/schedule",
-   "name": "Schedule Handler"
+   "name": "Schedule Handler",
+   "position": 191
   },
   "cwm_secret": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/secret",
-   "name": "Secret Handler"
+   "name": "Secret Handler",
+   "position": 192
   },
   "cwm_secret_type": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/secretType",
-   "name": "Secret Type Handler"
+   "name": "Secret Type Handler",
+   "position": 193
   },
   "cwm_tasks": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/task",
-   "name": "Task Handler"
+   "name": "Task Handler",
+   "position": 194
   },
   "cwm_worker": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/worker",
-   "name": "Worker Handler"
+   "name": "Worker Handler",
+   "position": 195
   },
   "cwm_worker_profile": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/workerProfile",
-   "name": "Worker Profile Handler"
+   "name": "Worker Profile Handler",
+   "position": 196
   },
   "cwm_workflow": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/workflow",
-   "name": "Workflow Handler"
+   "name": "Workflow Handler",
+   "position": 199
   },
   "cwm_workflow_default_settings": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/config/defaults",
-   "name": "Workflow Default Settings Handler"
+   "name": "Workflow Default Settings Handler",
+   "position": 197
   },
   "cwm_workflow_export": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/workflowExport",
-   "name": "Workflow Export Handler"
+   "name": "Workflow Export Handler",
+   "position": 198
   },
   "cwm_workflow_import": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/workflowImport",
-   "name": "Workflow Import Handler"
+   "name": "Workflow Import Handler",
+   "position": 200
   },
   "cwm_workflow_mcp": {
    "feature": "Workflow Manager",
    "listen_path": "/crosswork/cwm/v2/mcp",
-   "name": "Workflow MCP Handler"
+   "name": "Workflow MCP Handler",
+   "position": 201
   },
   "cwms-golden-config": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/gc/",
-   "name": "Golden Config APIs"
+   "name": "Golden Config APIs",
+   "position": 206
   },
   "cwms-inventory": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/inventory",
-   "name": "Inventory Lite APIs"
+   "name": "Inventory Lite APIs",
+   "position": 208
   },
   "cwms-mop": {
    "feature": "Workflow Manager Solutions",
    "listen_path": "/crosswork/cwms/mop",
-   "name": "Mop APIs"
+   "name": "Mop APIs",
+   "position": 209
   },
   "data-retention-service": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/data-retention/",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 89
   },
   "device-config": {
    "feature": "Device Configuration",
    "listen_path": "/crosswork/config/",
-   "name": "Device Configuration"
+   "name": "Device Configuration",
+   "position": 119
   },
   "dg-manager-global-parameters-api": {
    "feature": "Data Gateway Global Settings",
    "listen_path": "/crosswork/dg-manager/v1/command/global-parameter",
-   "name": "Data Gateway Global Parameters API"
+   "name": "Data Gateway Global Parameters API",
+   "position": 114
   },
   "dg-manager-global-resources-reset-api": {
    "feature": "Data Gateway Global Settings",
    "listen_path": "/crosswork/dg-manager/v1/oam/container/resources/reset",
-   "name": "Data Gateway Global Resources Reset API"
+   "name": "Data Gateway Global Resources Reset API",
+   "position": 115
   },
   "dg-manager-global-resources-update-api": {
    "feature": "Data Gateway Global Settings",
    "listen_path": "/crosswork/dg-manager/v1/oam/container/resources",
-   "name": "Data Gateway Global Resources Update API"
+   "name": "Data Gateway Global Resources Update API",
+   "position": 116
   },
   "dg-manager-reboot-api": {
    "feature": "Data Gateway Troubleshooting",
    "listen_path": "/crosswork/dg-manager/v1/command/reboot",
-   "name": "Data Gateway Reboot API"
+   "name": "Data Gateway Reboot API",
+   "position": 117
   },
   "dg-manager-showtech-api": {
    "feature": "Data Gateway Troubleshooting",
    "listen_path": "/crosswork/dg-manager/v1/command/showtech",
-   "name": "Data Gateway Showtech API"
+   "name": "Data Gateway Showtech API",
+   "position": 118
   },
   "ems-inventory": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/v1/networkelement",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 123
   },
   "ems-inventory-deprecated": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/ems/inventory/v1/nodes",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 122
   },
   "ems-inventory-diagnostics": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/v1/diagnostics",
-   "name": "Device Inventory"
+   "name": "Device Inventory",
+   "position": 121
   },
   "ems-network-inventory": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/ems/inventory/v1/networkinventory",
-   "name": "Network Inventory"
+   "name": "Network Inventory",
+   "position": 139
   },
   "enso-tarball-download-https": {
    "feature": "enso",
    "listen_path": "/crosswork/platform/v1/geo/data-tarball/download",
-   "name": "Enso Geo Data Tarball Download API (HTTPS)"
+   "name": "Enso Geo Data Tarball Download API (HTTPS)",
+   "position": 215
   },
   "epnm-nbi-inv-notification-changeLogLevel": {
    "feature": "Administrative Operations",
    "listen_path": "/inventory/notification/logger/changeLogLevel/",
-   "name": "Logging"
+   "name": "Logging",
+   "position": 19
   },
   "epnm-nbi-inv-notification-listAllLoggers": {
    "feature": "Administrative Operations",
    "listen_path": "/inventory/notification/logger/listAllLoggers/",
-   "name": "Logging"
+   "name": "Logging",
+   "position": 18
   },
   "event-processing-service": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/event-processing/",
-   "name": "Alarms &amp; Events"
+   "name": "Alarms &amp; Events",
+   "position": 74
   },
   "event-processing-service-suppressionpolicy-api": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/v1/suppressionpolicy",
-   "name": "Alarm Suppression Policies"
+   "name": "Alarm Suppression Policies",
+   "position": 59
   },
   "external-kafka-destination": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/v1/externalkafka/destination",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 14
   },
   "external-kafka-destination-v2": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/v2/externalkafka/destination",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 15
   },
   "external-kafka-subscription": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/v1/externalkafka/subscription",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 12
   },
   "external-notification-subscription": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/v2/subscription",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 16
   },
   "get-WebSocket-Subscription": {
    "feature": "AAA",
    "listen_path": "/websocket/subscriptions/data",
-   "name": "Users and Roles Management"
+   "name": "Users and Roles Management",
+   "position": 5
   },
   "get-WebSocket-Subscription-700": {
    "feature": "AAA",
    "listen_path": "/crosswork/notification/v2/websocket/subscriptions/data",
-   "name": "Users and Roles Management"
+   "name": "Users and Roles Management",
+   "position": 6
   },
   "inventory-job-rest": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/inventoryJobRestServiceInv/",
-   "name": "Inventory Job"
+   "name": "Inventory Job",
+   "position": 138
   },
   "inventory_cwinventory": {
    "feature": "Inventory",
    "listen_path": "/crosswork/inventory/",
-   "name": "Inventory APIs"
+   "name": "Inventory APIs",
+   "position": 150
   },
   "kafka-destinations-to-cw-ui": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/v1/externalkafka/securedestination",
-   "name": "External Notification Subscription"
+   "name": "External Notification Subscription",
+   "position": 17
   },
   "metricmanager": {
    "feature": "metric manager",
    "listen_path": "/crosswork/metricmanager/",
-   "name": "Metric Manager"
+   "name": "Metric Manager",
+   "position": 216
   },
   "nb-api-alarm-1": {
    "feature": "Alarms and Events",
    "listen_path": "/restconf/data/v1/cisco-rtm:alarm",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 91
   },
   "nb-api-alarm-1-700": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/restconf/data/v2/rtm:alarm",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 95
   },
   "nb-api-alarm-2": {
    "feature": "Alarms and Events",
    "listen_path": "/restconf/data/v1/cisco-rtm:alarm-with-root-cause",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 92
   },
   "nb-api-alarm-3": {
    "feature": "Alarms and Events",
    "listen_path": "/restconf/data/v1/cisco-rtm:alarm-with-symptom",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 93
   },
   "nb-api-alarm-5": {
    "feature": "Alarms and Events",
    "listen_path": "/restconf/data/v1/cisco-alarm:handle-alarm",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 96
   },
   "nb-api-alarm-5-700": {
    "feature": "Alarms and Events",
    "listen_path": "/crosswork/alarm/restconf/data/v2/alarm:handle-alarm",
-   "name": "Alarms and Events RESTCONF"
+   "name": "Alarms and Events RESTCONF",
+   "position": 94
   },
   "nb-api-alarm-nt-2": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/cisco-notifications:subscription-admin",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 36
   },
   "nb-api-alarm-nt-2-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/notifications:subscription-admin",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 27
   },
   "nb-api-alarm-nt-3": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/clear-by-topic",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 35
   },
   "nb-api-alarm-nt-3-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/clear-by-topic",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 28
   },
   "nb-api-alarm-nt-4": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/clear-all-subscriptions",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 34
   },
   "nb-api-alarm-nt-4-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/clear-all-subscriptions",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 29
   },
   "nb-api-alarm-nt-5": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/clear-sockets",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 24
   },
   "nb-api-alarm-nt-5-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/clear-sockets",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 30
   },
   "nb-api-alarm-nt-6": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/clear-connection-less",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 33
   },
   "nb-api-alarm-nt-6-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/clear-connection-less",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 31
   },
   "nb-api-alarm-nt-9": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/ietf-restconf-monitoring:restconf-state/streams",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 25
   },
   "nb-api-alarm-nt-9-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/ietf-restconf-monitoring:restconf-state/streams",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 32
   },
   "nb-api-inv-chassis": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-physical:chassis",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 128
   },
   "nb-api-inv-chassis-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:chassis",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 136
   },
   "nb-api-inv-equipment": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-physical:equipment",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 131
   },
   "nb-api-inv-equipment-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:equipment",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 126
   },
   "nb-api-inv-module": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-physical:module",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 137
   },
   "nb-api-inv-module-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:module",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 135
   },
   "nb-api-inv-node": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-physical:node",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 130
   },
   "nb-api-inv-node-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:node",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 134
   },
   "nb-api-inv-physicalconnector": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-physical:physical-connector",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 129
   },
   "nb-api-inv-physicalconnector-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-physical:physical-connector",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 127
   },
   "nb-api-inv-tp": {
    "feature": "Device Monitoring",
    "listen_path": "/restconf/data/v1/cisco-resource-ems:termination-point",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 132
   },
   "nb-api-inv-tp-700": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/inventory/restconf/data/v2/resource-ems:termination-point",
-   "name": "Device Inventory RESTCONF"
+   "name": "Device Inventory RESTCONF",
+   "position": 133
   },
   "nb-api-pm-cpu-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-cpu-utilization",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 142
   },
   "nb-api-pm-crc-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-crc",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 146
   },
   "nb-api-pm-env-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-device-env-temperature",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 144
   },
   "nb-api-pm-interface-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-interface-utilization",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 145
   },
   "nb-api-pm-memory-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-metrics-memory-utilization",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 143
   },
   "nb-api-pm-optical-sfps-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-optical-sfps",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 149
   },
   "nb-api-pm-optics-lane-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-optics-lane",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 147
   },
   "nb-api-pm-otu-controller-api": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/restconf/data/v1/resource-network:performance-otu-controller",
-   "name": "Performance Monitoring RESTCONF"
+   "name": "Performance Monitoring RESTCONF",
+   "position": 148
   },
   "nb-api-subscription-api": {
    "feature": "Administrative Operations",
    "listen_path": "/restconf/data/v1/cisco-notifications:subscription",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 37
   },
   "nb-api-subscription-api-700": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/notification/restconf/data/v2/notifications:subscription",
-   "name": "RESTCONF Notification Subscription"
+   "name": "RESTCONF Notification Subscription",
+   "position": 26
   },
   "nso-connector": {
    "feature": "CNC",
    "listen_path": "/crosswork/cat/nso-connector/v1/",
-   "name": "NSO Connector APIs"
+   "name": "NSO Connector APIs",
+   "position": 104
   },
   "nso-fp-dep-mngr": {
    "feature": "NSO Management",
    "listen_path": "/crosswork/nso-fp-dep-mngr/",
-   "name": "Function Pack Deployment APIs"
+   "name": "Function Pack Deployment APIs",
+   "position": 152
   },
   "oam": {
    "feature": "CNC",
    "listen_path": "/crosswork/oam/",
-   "name": "OAM Service APIs"
+   "name": "OAM Service APIs",
+   "position": 105
   },
   "optima_analytics_api": {
    "feature": "Crosswork Optimization Engine",
    "listen_path": "/crosswork/optima-analytics/",
-   "name": "OPTIMA Analytics"
+   "name": "OPTIMA Analytics",
+   "position": 109
   },
   "optima_analytics_service": {
    "feature": "Crosswork Optimization Engine",
    "listen_path": "/crosswork/optima-analytics-service/",
-   "name": "OPTIMA Analytics Service"
+   "name": "OPTIMA Analytics Service",
+   "position": 110
   },
   "optima_optima_ui_service": {
    "feature": "Crosswork Optimization Engine",
    "listen_path": "/crosswork/optima/",
-   "name": "Optimization Engine UI"
+   "name": "Optimization Engine UI",
+   "position": 113
   },
   "optima_restconf": {
    "feature": "Crosswork Optimization Engine",
    "listen_path": "/crosswork/nbi/optimization/v3/restconf/",
-   "name": "Optimization Engine RESTCONF"
+   "name": "Optimization Engine RESTCONF",
+   "position": 111
   },
   "optima_restconf_legacy": {
    "feature": "Crosswork Optimization Engine",
    "listen_path": "/crosswork/nbi/optima/v2/restconf/operations/",
-   "name": "Optimization Engine RESTCONF API for backwards compatibility"
+   "name": "Optimization Engine RESTCONF API for backwards compatibility",
+   "position": 112
   },
   "path-analytics-grpc-1": {
    "feature": "Path Analytics",
    "listen_path": "/rca.analytics.PathAnalytics/GetPaths",
-   "name": "Path Analytics - Get Paths"
+   "name": "Path Analytics - Get Paths",
+   "position": 153
   },
   "path-analytics-grpc-2": {
    "feature": "Path Analytics",
    "listen_path": "/rca.analytics.PathAnalytics/Subscribe",
-   "name": "Path Analytics - Subscribe"
+   "name": "Path Analytics - Subscribe",
+   "position": 155
   },
   "path-analytics-http": {
    "feature": "Path Analytics",
    "listen_path": "/crosswork/path_analytics/v1/pathmonitor",
-   "name": "Path Analytics - Get Registrations/Register/Unregister"
+   "name": "Path Analytics - Get Registrations/Register/Unregister",
+   "position": 154
   },
   "performance-changeLogLevel-rest-api": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/performance/v{.}/logger/changeLogLevel/",
-   "name": "Diagnostic Information"
+   "name": "Diagnostic Information",
+   "position": 8
   },
   "performance-dataretention-apis": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/performance/v{.}/dataretention",
-   "name": "Performance Monitoring Data Retention"
+   "name": "Performance Monitoring Data Retention",
+   "position": 22
   },
   "performance-export-apis": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/ems/data-export",
-   "name": "Performance Monitoring Export APIs"
+   "name": "Performance Monitoring Export APIs",
+   "position": 23
   },
   "performance-listAllLoggers-rest-api": {
    "feature": "Administrative Operations",
    "listen_path": "/crosswork/performance/v{.}/logger/listAllLoggers",
-   "name": "Diagnostic Information"
+   "name": "Diagnostic Information",
+   "position": 9
   },
   "performance-policies-rest-apis": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/v{.}/policies",
-   "name": "Performance Monitoring Policies"
+   "name": "Performance Monitoring Policies",
+   "position": 141
   },
   "performance-rest-apis": {
    "feature": "Device Monitoring",
    "listen_path": "/crosswork/performance/v{.}/dashboards/",
-   "name": "Performance Monitoring Dashboards"
+   "name": "Performance Monitoring Dashboards",
+   "position": 140
   },
   "platform_cwplatform": {
    "feature": "Platform",
    "listen_path": "/crosswork/platform",
-   "name": "Platform APIs"
+   "name": "Platform APIs",
+   "position": 158
   },
   "proxy_cw-proxy": {
    "feature": "Proxy",
    "listen_path": "/crosswork/proxy/",
-   "name": "Crosswork Proxy APIs"
+   "name": "Crosswork Proxy APIs",
+   "position": 161
   },
   "ra_optima_ui_service": {
    "feature": "Path Analytics",
    "listen_path": "/crosswork/ra/",
-   "name": "Path Analytics UI"
+   "name": "Path Analytics UI",
+   "position": 156
   },
   "showtech_inventory": {
    "feature": "Administrative Operations",
    "listen_path": "/inventory/notification/showtech",
-   "name": "Diagnostic Information"
+   "name": "Diagnostic Information",
+   "position": 10
   },
   "swim-collection": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/json/SwimImageCollectionService",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 170
   },
   "swim-jobrest": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/swim/jobSchedulerService",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 175
   },
   "swim-nbi": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/api/v1/op/swim",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 168
   },
   "swim-nbi-new": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/swim",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 169
   },
   "swim-recommendation": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/json/SwimRecommendRestService",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 173
   },
   "swim-repository": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/json/SwimRepositoryRestService",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 171
   },
   "swim-rest": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/json/SwimRestService",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 172
   },
   "swim-treetable": {
    "feature": "Software Image Management",
    "listen_path": "/crosswork/rs/swimTreetable/swimTreetableRestService/",
-   "name": "SWIM"
+   "name": "SWIM",
+   "position": 174
   },
   "topo_restconf": {
    "feature": "Topology RESTCONF",
    "listen_path": "/crosswork/nbi/topology/v3/restconf/",
-   "name": "Topology RESTCONF"
+   "name": "Topology RESTCONF",
+   "position": 179
   },
   "topo_restconf_legacy": {
    "feature": "Topology RESTCONF",
    "listen_path": "/crosswork/nbi/optima/v2/restconf/data/",
-   "name": "Topo RESTCONF API for backwards compatibility"
+   "name": "Topo RESTCONF API for backwards compatibility",
+   "position": 178
   },
   "tsdn_cat-restconf-nbi": {
    "feature": "CNC",
    "listen_path": "/crosswork/nbi/cat-inventory/v1/restconf/",
-   "name": "CAT Inventory RESTCONF APIs"
+   "name": "CAT Inventory RESTCONF APIs",
+   "position": 100
   }
  },
  "generated_from": {
@@ -1094,24 +1311,38 @@
   "generator": "scripts/rbac_map.py",
   "platform": "CNC 7.2.0",
   "routing": "a path is routed to the secured API with the longest matching listen path ({...} = one segment, trailing slash optional); a role's allowed_urls regex is an unanchored search on the full request path (Tyk v5.1.1 source); '{}' in a path is a runtime value; method '*' means the tool passes the method through (all five needed); 'any_of' lists groups of api_ids of which one group's rows suffice (the tool falls back from the first to the next)",
-  "ticks": "a row submitted as {url: '/.*', methods: [GET]} / [POST, PUT, PATCH] / [DELETE] is stored verbatim; a row with a GET entry and no POST entry also receives the platform's read templates ('platform.read_templates', extra POST entries for that API's read-by-POST paths) and every stored role the 'platform.baseline_rows'; a requirement is permitted by Read when its method is GET or a read template of its API matches its path under the unanchored-search rule (the stored forms were verified 2026-09-14 by storing a test role through an admin session; that the role editor's Read / Write / Delete ticks emit exactly these entries is inferred — the editor's wire shape was not captured, no UI-built role exists on the lab)",
+  "ticks": "the role editor submits per ticked row one entry {url: '/.*', methods: <union>} — Read adds GET, Write adds POST, PUT, PATCH, Delete adds DELETE (verified 2026-09-15 by reading a UI-built role back); a row with a GET entry and no POST entry also receives the platform's read templates ('platform.read_templates', extra POST entries for that API's read-by-POST paths) and every stored role the 'platform.baseline_rows'; on the 'platform.post_delete_apis' a row whose single entry carries POST without DELETE is split — the other methods stay on '/.*' in alphabetical order and POST moves to 'platform.not_delete_pattern', every path except one ending in the segment 'delete' (verified 2026-09-15 by reading the generated operator role back on three of them, extrapolated to the seven others from a POST-only experiment); a requirement is permitted by Read when its method is GET or a read template of its API matches its path under the unanchored-search rule",
   "tool_count": 245
  },
  "platform": {
   "baseline_rows": {
-   "aaa_cwpassword": [
+   "aaa_cw_role_read": [
+    {
+     "methods": [
+      "GET"
+     ],
+     "url": "/.*"
+    },
     {
      "methods": [
       "POST"
      ],
-     "url": "/(.*passwordHistoryCheck.*)$"
-    },
+     "url": "/.+/query$"
+    }
+   ],
+   "aaa_cwpassword": [
     {
      "methods": [
       "GET",
       "PUT"
      ],
      "url": "/.*"
+    },
+    {
+     "methods": [
+      "POST"
+     ],
+     "url": "/(.*passwordHistoryCheck.*)$"
     }
    ],
    "aaa_selected_pref": [
@@ -1125,6 +1356,19 @@
    ]
   },
   "captured": "2026-09-14",
+  "not_delete_pattern": ".+(?:/[^/]{1,5}|/[^/]{7,}|/[^d][^/]{5}|/[^/][^e][^/]{4}|/[^/]{2}[^l][^/]{3}|/[^/]{3}[^e][^/]{2}|/[^/]{4}[^t][^/]|/[^/]{5}[^e])[/]?$",
+  "post_delete_apis": [
+   "collection_dg-manager",
+   "cw-fault-alarms-api",
+   "cw-fault-events-api",
+   "cw-probe-mgr",
+   "cw-ztp-service",
+   "cwcollection",
+   "dg-manager-global-parameters-api",
+   "optima_analytics_api",
+   "optima_restconf",
+   "platform_cwplatform"
+  ],
   "read_templates": {
    "aaa_cw_role_read": [
     {

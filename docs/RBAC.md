@@ -1,29 +1,29 @@
 # RBAC: what a Crosswork account needs to run cnc-mcp
 
-> **Generated** by `scripts/rbac_map.py` from the tool source, the gateway's secured-API catalogue (CNC 7.2.0, 217 APIs in 27 features, catalogue verified live 2026-09-14) and the platform's read templates (captured 2026-09-14) — do not edit by hand. Regenerate with `make rbac` (offline, from the catalogue and templates embedded in `src/cnc_mcp/data/rbac_map.json`) or `make rbac-fetch` (re-read the catalogue from a live instance; `--read-templates <capture>` loads a fresh template capture); `make rbac-check` fails when the committed files are stale.
+> **Generated** by `scripts/rbac_map.py` from the tool source, the gateway's secured-API catalogue (CNC 7.2.0, 217 APIs in 27 features, catalogue verified live 2026-09-14) and the platform's read templates and baseline rows (captured 2026-09-14 and 2026-09-15) — do not edit by hand. Regenerate with `make rbac` (offline, from the catalogue and templates embedded in `src/cnc_mcp/data/rbac_map.json`) or `make rbac-fetch` (re-read the catalogue from a live instance; `--read-templates <capture>` loads a fresh template capture); `make rbac-check` fails when the committed files are stale.
 
 The server registers 245 tools (182 read-only, 63 write). Each sends a known set of HTTP requests; each request is routed by the gateway to one secured API, and a role must grant that API (with the method) or the gateway refuses the call (403). This page lists exactly which API rows a role needs and which of the role editor's **Read / Write / Delete** ticks on each — first for a read-only account, then per write area, then per tool.
 
 ## 1. How Crosswork RBAC works
 
-**Verified live** (CNC 7.2.0 single-VM lab, 2026-09-14):
+**Verified live** (CNC 7.2.0 single-VM lab, 2026-09-14 and 2026-09-15):
 
 - The API gateway is **Tyk** (v5.1.1, from its `/hello` health endpoint). Every `/crosswork/*` request is routed to one of 217 secured API definitions (`GET /crosswork/aaa/v1/api`), each with an `api_id`, a display `name` and a gorilla-mux **listen path** (`/crosswork/inventory/`, `/crosswork/alarms/v1/query`, `/crosswork/performance/v{.}/dashboards/`, ...).
-- A **role** (`GET /crosswork/aaa/v1/role` → a dict keyed by role name) is a Tyk policy: `access_rights{<api_id>: {api_name, api_id, versions ["Default"], allowed_urls [{url: <regex>, methods: [GET, POST, PUT, PATCH, DELETE]}], allowance_scope}}` plus `rate 5000 / per 60 / quota_max -1 / active true`. The lab's built-in role, `admin`, grants every API with `url "/.*"` and all five methods.
-- `GET /crosswork/aaa/v2/api` → `{<feature>: [{api_id, name}]}` (27 features) is the grouping the UI's role editor (Administration > Users and Roles > Roles) shows; the `feature` column below is it.
+- A **role** (`GET /crosswork/aaa/v1/role` → a dict keyed by role name) is a Tyk policy: `access_rights{<api_id>: {api_name, api_id, versions, allowed_urls [{url: <regex>, methods: [GET, POST, PUT, PATCH, DELETE]}], allowance_scope}}` plus the policy fields (`rate`, `per`, `quota_max`, `key_expires_in`, `active`, ...). The lab's built-in role, `admin`, grants every API with `url "/.*"` and all five methods (`rate 5000`, `versions ["Default"]`).
+- `GET /crosswork/aaa/v2/api` → `{<feature>: [{api_id, name}]}` (27 features) is what the UI's role editor (Administration > Users and Roles > Roles) builds its rows from; the `feature` column below is it. A **row in the editor is a display-name group**: one tick grants every api_id sharing the row's `name` (below).
 - `GET /crosswork/aaa/v1/taskAPIPermission/<role>` → `{<task id>: {apiIds: {<api_id>: ["R", "W", "D"]}}}`: the UI's **task** checkboxes are bundles of per-API R/W/D grants (section 5). `GET aaa/v1/task/<role>` lists the task groups (audit_logs, coe, crosswork_network_controller, nso_management, platform); `GET aaa/v1/roleAccess/<role>` → `{PolicyId, GuiAccess, ApiAccess, PolicyData}` — `ApiAccess false` means no API call at all.
 - A **user** (`GET aaa/v1/user/<name>`) carries `PolicyId` (= its role), `Status` and `DeviceAccessGroups [{Uuid, DomainName}]` (`ALL-ACCESS` on the lab). A device access group other than ALL-ACCESS restricts which **devices** the account sees, not which APIs it may call.
 - The CAS-issued session token is an HS512 JWT sent as `Authorization: Bearer`; its claims are readable without the key: `sub`/`username` (the login name), `policy_id` (the role), `deviceAccessGroups`, `exp`/`iat` (8 h), `iss`. cnc_check_permissions reads the identity from them.
-- The read-only mirror `/crosswork/aaaread/...` (api_id `aaa_cw_role_read`, "Know my role - Read only", same backend) answers the same GETs as `aaa/v1` (`role/<r>`, `roleAccess/<r>`, `user/<u>`, `userpermission`, `task/<r>`, `v1/api`, `v2/api` — all 200 as admin). It is the endpoint a non-admin account is expected to read its own role through.
+- The read-only mirror `/crosswork/aaaread/...` (api_id `aaa_cw_role_read`, "Know my role - Read only", same backend) answers the same GETs as `aaa/v1` (`role/<r>`, `roleAccess/<r>`, `user/<u>`, `userpermission`, `task/<r>`, `v1/api`, `v2/api`). It is a **baseline row of every role** — the AAA service adds it to every role it stores (below) — so every account can read its own role, and the mirror's catalogue listing, by platform design. cnc_check_permissions reads the account's role through it.
 - The three SSO ticket calls the server logs in with (`POST /crosswork/sso/v1/tickets`, `POST .../tickets/{TGT}`, `DELETE .../tickets/{TGT}`) are **not** gateway APIs: no role grant is involved in logging in, only in what the token may then call.
 
-**Verified live: how Crosswork stores a role** (2026-09-14, through an admin session: a test role `cnc-mcp-readonly` was created, rewritten in several shapes and read back each time). The AAA service does **not** store a submitted role verbatim — it normalises `access_rights` per API:
+**Verified live: the role editor, and how Crosswork stores a role** (2026-09-14 through an admin session: test roles stored in several shapes and read back; 2026-09-15: a role built in the editor with three ticks and read back through the API, the editor's own role model read from the UI bundle, and the two generated bodies as committed stored through the API and read back — section 6 says what the fixtures pin):
 
 - `POST /crosswork/aaa/v1/role` needs `Content-Type: application/json; charset=UTF-8` (plain `application/json` → 405); body `{"<name>": {<rbacRole>}}` → **201**. `PUT /crosswork/aaa/v1/role/<name>` with the inner object → **204**. `GET /crosswork/aaa/v1/role/<name>` → the stored object (**404** when absent).
-- A row submitted as `{url: "/.*", methods: ["GET"]}`, `{url: "/.*", methods: ["POST", "PUT", "PATCH"]}` or `{url: "/.*", methods: ["DELETE"]}` is stored verbatim. This is the shape the generated bodies use — the one the role editor's **Read / Write / Delete** ticks most plausibly emit (an inference, see *Not verified* below; this page calls it the UI shape and the letters R / W / D).
-- Every stored role gains 2 **baseline rows** the service adds on its own — `aaa_cwpassword` (POST `/(.*passwordHistoryCheck.*)$`; GET, PUT `/.*`), `aaa_selected_pref` (GET, PUT `/.*`) — the account's own password change and UI preferences. No cnc-mcp tool uses them; they are not in the bodies and appear when the role is read back.
-- A row with a GET entry (and no POST entry) additionally receives the platform's per-API **read templates**: extra POST entries naming the read-by-POST paths of that API — so a GET-only row permits those POSTs as well (what a Read tick grants, if it emits that entry). The 17 APIs with a template among the 43 rows the read tools use (every other one of these rows received GET only when stored; the 174 catalogued APIs outside these rows were never stored as GET-only rows, so their templates are unknown and any POST there is classed W):
-  - `aaa_cw_role_read`: POST `/.+/query$`
+- **What a tick submits.** Per ticked row the editor sends ONE `allowed_urls` entry `{url: "/.*", methods: <union>}` — **Read** adds `GET`, **Write** adds `POST, PUT, PATCH`, **Delete** adds `DELETE` (in that order) — with `versions []` and the editor's role fields (`rate 1000 / per 60 / quota_max -1 / quota_renewal_rate 60 / key_expires_in -1 / active true / hmac_enabled false`; `rate`/`per` is the gateway's per-key rate limit — 1000 requests per 60 s, the editor's default, where the built-in `admin` role carries 5000 — raise it through the API if an agent-driven server hits 429s, which ApiClient retries, slower). A role built in the editor with exactly three ticks — Read on *Alarm Settings*, Write on *Alarm Suppression Policies*, Delete on *Alarms and Events RESTCONF* — was read back as exactly that (`tests/fixtures/rbac/stored_ui_built_role.json`): the seven *Alarm Settings* api_ids `[GET] /.*`, `event-processing-service-suppressionpolicy-api` `[POST, PUT, PATCH] /.*`, the six *Alarms and Events RESTCONF* api_ids `[DELETE] /.*`, plus the three baseline rows. This page calls the ticks R / W / D; the generated bodies use exactly this shape.
+- **A row is a display-name group.** The editor shows one row per `name` and hides `aaa_cw_role_read`, `aaa_cwpassword`, `aaa_selected_pref`, `cwcrossclusterstate`; 15 of the editor's 102 rows cover more than one api_id (7 for *Alarm Settings*, 6 for *Alarms and Events RESTCONF*, 31 for *Alarms & Events*, ...), and one tick grants all of them. So **the UI cannot grant a single api_id of a group; the API can** — the generated bodies grant only the api_ids the tools use, and sections 2 and 3 list the sibling api_ids a UI tick grants as well. When the editor displays a stored role it reads only the FIRST `allowed_urls` entry of each api_id, and only when that entry's url is `"/.*"`; a group row shows the ticks of its first api_id in `aaa/v2/api` order (the editor's row order, not the alphabetical order of the tables here). On 6 rows neither generated body grants that first api_id while granting a sibling — *Users and Roles Management* (`get-WebSocket-Subscription`), *External Notification Subscription* (`external-kafka-subscription`), *RESTCONF Notification Subscription* (`nb-api-alarm-nt-5`), *Alarms & Events* (`alarm-rest-service-summary-rest-api`), *Alarms and Events RESTCONF* (`nb-api-alarm-1`), *Device Inventory* (`cw-inventory-job-dashboard-deprecated`) — so the editor shows those rows unticked while the grant is live (from the catalogue's v2 positions and the bundle's row model; not exercised live).
+- Every stored role gains 3 **baseline rows** the service adds on its own — `aaa_cw_role_read` (GET `/.*`; POST `/.+/query$`), `aaa_cwpassword` (GET, PUT `/.*`; POST `/(.*passwordHistoryCheck.*)$`), `aaa_selected_pref` (GET, PUT `/.*`) — the account's own role through the mirror, its password change and its UI preferences (verified 2026-09-15: the UI-built role, submitted with none of them, came back with all three; the two 2026-09-14 API-stored experiments, submitted with `aaa_cw_role_read` only, came back with the other two — `tests/fixtures/rbac/`). They are not in the bodies; they appear when a role is read back.
+- A row with a GET entry (and no POST entry) additionally receives the platform's per-API **read templates**: extra POST entries naming the read-by-POST paths of that API — so a Read tick permits those POSTs as well. The 16 APIs with a template among the 42 rows the read-only body carries (every other one of these rows received GET only when stored; the 172 catalogued APIs outside these rows and the baseline rows were not in the template capture (2026-09-14), so their templates are unknown and any POST there is classed W — except that the UI-built role stored `cw-fault-alarm-autoclear`, `cw-fault-alarm-autoclear-revert` as GET-only rows, template-free, `tests/fixtures/rbac/stored_ui_built_role.json`); the `aaa_cw_role_read` baseline row carries its own template (`/.+/query$`):
   - `collection_dg-manager`: POST `/.+/query$`
   - `cw-fault-alarms-api`: POST `/crosswork/alarms/v1/query`
   - `cw-fault-events-api`: POST `/crosswork/alarms/v1/event/query`
@@ -40,29 +40,64 @@ The server registers 245 tools (182 read-only, 63 write). Each sends a known set
   - `platform_cwplatform`: POST `/.+/(query|get|verify|list)$`
   - `proxy_cw-proxy`: POST `/.+/jsonrpc/(nsoLogin|new_trans|get_trans|query|show_config|get_trans_changes|logout|get_service_points|get_module_prefix_map)$`
   - `tsdn_cat-restconf-nbi`: POST `/.+/operations/cat-inventory-rpc:.*`
-- A GET entry with a **custom URL** is kept verbatim (and the read template is still added) — so anchoring the two AAA rows' GET pattern (section 2) works.
-- A **custom-URL POST entry is reinterpreted** where it was submitted as the row's only entry — on the 9 APIs that was tried on (`collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`, `cw-probe-mgr`, `cw-ztp-service`, `cwcollection`, `dg-manager-global-parameters-api`, `optima_analytics_api`, `optima_restconf`): its methods are stripped to `[]` and a service pattern permitting POST on every path whose last segment is not `delete` is added — a **wider** grant than submitted. In the same submission a custom POST entry next to a custom GET entry was kept verbatim (and no template added) on `device-config`, `inventory_cwinventory`, `platform_cwplatform`, `tsdn_cat-restconf-nbi`. Whether the API or the row shape decides was not isolated. Never submit exact-path POST entries; the bodies carry none (an earlier generation of this page did, and was wrong for this platform).
-- A row ticked Read **and** Write was stored as the two `/.*` entries only (no template — the Write entry already covers every POST).
+- A row ticked Read **and** Write is stored as its single `/.*` entry only (no template — the entry already covers every POST), **except on the APIs on which the service reserves a last segment `delete` for the Delete tick** (presumably the ones that delete through `POST .../delete` — no tool POSTs such a path, so the map does not show one): there a row whose single entry carries POST without DELETE — Write without Delete, the one entry the editor submits and the generated bodies carry — is **split**: POST moves to a second entry `{url: ".+(?:/[^/]{1,5}|/[^/]{7,}|/[^d][^/]{5}|/[^/][^e][^/]{4}|/[^/]{2}[^l][^/]{3}|/[^/]{3}[^e][^/]{2}|/[^/]{4}[^t][^/]|/[^/]{5}[^e])[/]?$", methods: [POST]}`, an unanchored search that matches every path whose LAST segment is not the six-character word `delete` (a last segment of 1-5 characters, of 7 or more, or of six characters differing from d-e-l-e-t-e in some position; a trailing slash allowed — `deletes` and `Delete` pass), and the remaining methods come back in **alphabetical** order: the operator body's `[GET, POST, PUT, PATCH] /.*` row read back as `[GET, PATCH, PUT] /.*` + `[POST] <the pattern>`. Verified 2026-09-15 on `cwcollection`, `optima_restconf`, `platform_cwplatform` (the operator body's Write rows there, `tests/fixtures/rbac/stored_generated_operator.json`); **inferred** for `collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`, `cw-probe-mgr`, `cw-ztp-service`, `dg-manager-global-parameters-api`, `optima_analytics_api` from the 2026-09-14 experiment in which a row whose only entry was a custom-url POST came back with its methods stripped to `[]` and this same pattern entry appended, on those seven (and on `cwcollection`, `optima_restconf`) — the same split, POST being the entry's only method; no union entry has been stored on them, so the split there is the model's extrapolation, not a read-back. Read and Write submitted as two entries beside each other (the 2026-09-14 experiment) were stored verbatim, and so were the operator body's 5 rows carrying DELETE and its 4 Write-only rows (`[POST, PUT, PATCH]`) — none of them on this list. In the same 2026-09-14 submission a custom GET entry beside a custom POST entry was stored verbatim on `platform_cwplatform` (and on three APIs off this list, `device-config`, `inventory_cwinventory`, `tsdn_cat-restconf-nbi`) — the split keys on the row having a single entry. **Consequence: Write without Delete on these APIs still permits every POST except a path ending in `/delete`.** For the Optimization Engine (`optima_restconf`) an operator role without Delete can still create policies, and the delete RPC the map records — `POST /crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete` (`cnc_delete_sr_policy`) — ends in the segment `cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete`, not `delete`, so it stays permitted too; no POST any tool sends on these 10 APIs ends in `/delete`.
 
-**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, `mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by users carrying the generated roles (read-only, 2026-09-15: 262 read calls answered, the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was refused, two writes and the `/v1/api` listings refused as predicted; operator, 2026-09-15: all 432 read and write steps of the smoke answered, every created object removed again, no 403 at all):
+> **Warning — never load a role body with a url other than `"/.*"`.** A role whose FIRST `allowed_urls` entry on some api_id has any other url **crashes the Roles page for everyone** (verified 2026-09-15: `TypeError: Cannot read properties of undefined (reading 'read')` in the editor's `setAccess` — it looks the url up among its `"/.*"` rows and finds nothing) and the whole page renders blank until the role is fixed through the API or deleted. The service's own appended templates are custom urls too, but they sit at index 1 or later, which the editor never reads. Independently of the crash the service does not store every custom-URL shape verbatim either (2026-09-14: a row whose only entry was a custom-URL POST came back with its methods stripped to `[]` and the not-delete pattern above appended — a wider grant than the url submitted — on the nine APIs it was tried on). The generated bodies carry `"/.*"` only.
+
+**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, `mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by users carrying the generated roles (read-only: 262 read calls answered, the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was refused, two writes refused as predicted; operator: all 432 read and write steps of the smoke answered, every created object removed again, no 403 at all; the smoke runs were on the previous generation of the bodies, which differed only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field, and their refusal predictions are identical; the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of the 182 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted):
 
 - Tyk registers the API definitions **longest listen path first** and each as a gorilla-mux path prefix, so a request goes to the API with the longest listen path that claims it; `{...}` in a listen path matches one segment. The map's router additionally requires the match to end at a segment boundary and accepts a missing trailing slash; no template in the map routes differently under either reading (`tests/test_rbac_map.py`). The query string is not part of the match.
 - Within the routed API, each `allowed_urls[].url` is run as an **unanchored regex search against the full request path** (`regexp.MatchString` on `r.URL.Path`; the listen path is not stripped first): `/nodes` permits `/crosswork/inventory/v1/nodes/query`, `^/v1/nodes/query$` permits nothing, and `/.+/query$` (an inventory read template) permits every `.../query` under the API. The method must be listed on a matching entry; an API with an empty `allowed_urls` has no path restriction.
-- A request the role does not permit is refused with a **403** whose body names which check failed (observed 2026-09-15): `{"error": "Access to this API has been disallowed"}` when the role has no entry for the API at all (`PUT /crosswork/alarms/v1/ack` under the read-only role), `{"error": "Access to this resource has been disallowed"}` when the API is granted but no `allowed_urls` entry covers the path and method (`POST /crosswork/inventory/v1/tags`, and the `/v1/api` listings excluded by the anchored AAA rows). Neither is an authentication failure: the server does not re-login on them. Two fail-open cases: an `allowed_urls` regex that does not compile is let through, and so is a role whose `access_rights` map is empty — cnc_check_permissions reports both as refusals (the role as it should be configured).
+- A request the role does not permit is refused with a **403** whose body names which check failed (observed 2026-09-15): `{"error": "Access to this API has been disallowed"}` when the role has no entry for the API at all (`PUT /crosswork/alarms/v1/ack` under the read-only role), `{"error": "Access to this resource has been disallowed"}` when the API is granted but no `allowed_urls` entry covers the path and method (`POST /crosswork/inventory/v1/tags`). Neither is an authentication failure: the server does not re-login on them. Two fail-open cases: an `allowed_urls` regex that does not compile is let through, and so is a role whose `access_rights` map is empty — cnc_check_permissions reports both as refusals (the role as it should be configured).
 
-**Not verified (assumed — say so when it bites):**
+**Not verified:**
 
-- The role editor's own wire shape. No UI-built role exists on the lab, so what ticking **Read / Write / Delete** submits was never read back; the generated bodies use the shape whose stored form was verified (`/.*` with `[GET]`, `[POST, PUT, PATCH]`, `[DELETE]`), which is the one a tick most plausibly emits. Should the editor emit something else (a Write template rather than `/.*`, say), the tick columns on this page describe the bodies, not the editor.
-- Whether `/crosswork/aaaread/` is readable by **every** role: verified for the admin role and for the generated read-only role (its user read its own role and roleAccess through the mirror, 2026-09-15); a role built without the `aaa_cw_role_read` row is untested. cnc_check_permissions falls back to `/crosswork/aaa/v1` and says which one answered — either grant suffices for it.
-- A row ticked Write **without** Read (the operator body has 4: `cw-fault-ack-api`, `cw-fault-clear-api`, `cw-fault-notes-api`, `nso-connector`) was not among the shapes read back through the admin session; it was exercised by a user on the operator body (2026-09-15: the alarm acknowledge / note / clear tools and the NSO connector calls answered), so the stored form works even though it was never inspected.
+- The editor's wire shape, the display-name groups, the stored form of single-tick, per-tick and union entries (the generated bodies read back), the baseline rows, the split of a Write-without-Delete row on `cwcollection`, `optima_restconf`, `platform_cwplatform` and the gateway's refusals are all observed. Read from the UI bundle but not exercised live: how the editor displays and re-saves an API-loaded role (the group rows above, section 6). Extrapolated, not read back: the same split on the 7 other POST-delete APIs (from a POST-only experiment), and what the service stores for a row carrying DELETE, or a Write-only row, on any of them (the bodies have none). What is still static is the map itself (section 6: a source-derived heuristic, no tool endpoint is called), a device access group is reported, not evaluated, and whether task bundles exist for roles other than admin (section 5) is unknown.
 
 ## 2. Least-privilege recipe: a read-only account
 
-The 182 read-only tools touch the 43 API rows below; the last column is the tick(s) their requests need on each row (R = every GET plus the POSTs the row's read template names, W = the other POSTs and every PUT/PATCH, D = DELETE). **`docs/rbac/cnc-mcp-readonly.role.json` (section 6) grants the Read tick on every row and nothing else** — 43 rows, R only, never W — the shape ticking Read on these rows in the role editor (Administration > Users and Roles > Roles: create a role, tick the rows under their feature, leave `ApiAccess` on) is taken to produce (inferred, section 1), except for the URL pattern of the two AAA rows (below). Assign it to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend).
+The 182 read-only tools touch 43 API rows; 42 of them go in the role, the other one — `aaa_cw_role_read` — is the baseline row every role has (cnc_check_permissions reads the role through it). **`docs/rbac/cnc-mcp-readonly.role.json` (section 6) grants the Read tick on every one of those 42 rows and nothing else** — R only, never W — in the shape the editor submits (section 1). Building the same account in the editor (Administration > Users and Roles > Roles: create a role, tick **Read** on the 30 editor rows of the first table under their feature, leave `ApiAccess` on) also grants the 74 sibling api_ids in its last column, because a row is a display-name group; the body grants only the api_ids the tools use (second table). Assign the role to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend).
 
-| feature | api_id | API name | ticks the read tools need |
+**By editor row** (tick Read on each):
+
+| feature | editor row | api_ids the read tools use | sibling api_ids the tick also grants |
 |---|---|---|---|
-| AAA | `aaa_cw_role_read` | Know my role - Read only | R |
+| AAA | Users and Roles Management | `aaa_cwaaa` | `get-WebSocket-Subscription`, `get-WebSocket-Subscription-700` |
+| Administrative Operations | External Notification Subscription | `external-notification-subscription` | `alarm-topics-filter`, `external-kafka-destination`, `external-kafka-destination-v2`, `external-kafka-subscription`, `kafka-destinations-to-cw-ui` |
+| Administrative Operations | Performance Monitoring Data Retention | `performance-dataretention-apis` | — |
+| Administrative Operations | RESTCONF Notification Subscription | `nb-api-alarm-nt-2-700`, `nb-api-alarm-nt-9-700`, `nb-api-subscription-api-700` | `nb-api-alarm-nt-2`, `nb-api-alarm-nt-3`, `nb-api-alarm-nt-3-700`, `nb-api-alarm-nt-4`, `nb-api-alarm-nt-4-700`, `nb-api-alarm-nt-5`, `nb-api-alarm-nt-5-700`, `nb-api-alarm-nt-6`, `nb-api-alarm-nt-6-700`, `nb-api-alarm-nt-9`, `nb-api-subscription-api` |
+| Alarms and Events | Alarm Settings | `cw-fault-alarm-manager-settings`, `cw-fault-alarm-recommended-action`, `cw-fault-alarm-settings`, `cw-fault-alarm-severity-settings`, `cw-fault-gnmi-settings` | `cw-fault-alarm-autoclear`, `cw-fault-alarm-autoclear-revert` |
+| Alarms and Events | Alarm Suppression Policies | `event-processing-service-suppressionpolicy-api` | — |
+| Alarms and Events | Alarms & Events | `cw-fault-alarms-api`, `cw-fault-events-api` | `alarm-processing-service`, `alarm-rest-service`, `alarm-rest-service-networkinventory-rest-api`, `alarm-rest-service-summary-rest-api`, `cw-fault-ack-alarm`, `cw-fault-ack-api`, `cw-fault-ack-api-v2`, `cw-fault-alarm-categories`, `cw-fault-alarm-custom-eventtype`, `cw-fault-alarm-custom-subeventtype`, `cw-fault-alarm-custom-syslog`, `cw-fault-alarm-custom-trap`, `cw-fault-alarm-eventtype`, `cw-fault-alarms-api-v2`, `cw-fault-clear-alarm`, `cw-fault-clear-api`, `cw-fault-clear-api-v2`, `cw-fault-create_events_api`, `cw-fault-create_events_api_v2`, `cw-fault-events-api-v2`, `cw-fault-get-alarms`, `cw-fault-get-events`, `cw-fault-manifest_api`, `cw-fault-manifest_api_v2`, `cw-fault-notes-alarm`, `cw-fault-notes-api`, `cw-fault-notes-api-v2`, `data-retention-service`, `event-processing-service` |
+| Alarms and Events | Alarms and Events RESTCONF | `nb-api-alarm-1-700` | `nb-api-alarm-1`, `nb-api-alarm-2`, `nb-api-alarm-3`, `nb-api-alarm-5`, `nb-api-alarm-5-700` |
+| CNC | CAT FP Deployment Manager APIs | `cat-fp-deployment-manager` | — |
+| CNC | CAT Inventory RESTCONF APIs | `tsdn_cat-restconf-nbi` | — |
+| Collection Infra | Collection APIs | `cwcollection` | — |
+| Collection Infra | Data Gateway Manager APIs | `collection_dg-manager` | — |
+| Crosswork Optimization Engine | OPTIMA Analytics | `optima_analytics_api` | — |
+| Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` | — |
+| Data Gateway Global Settings | Data Gateway Global Parameters API | `dg-manager-global-parameters-api` | — |
+| Device Configuration | Device Configuration | `device-config` | — |
+| Device Monitoring | Device Inventory | `cw-inventory-job-dashboard`, `ems-inventory` | `cw-inventory`, `cw-inventory-job-dashboard-deprecated`, `ems-inventory-deprecated`, `ems-inventory-diagnostics` |
+| Device Monitoring | Device Inventory RESTCONF | `nb-api-inv-chassis-700`, `nb-api-inv-equipment-700`, `nb-api-inv-module-700`, `nb-api-inv-node-700`, `nb-api-inv-tp-700` | `nb-api-inv-chassis`, `nb-api-inv-equipment`, `nb-api-inv-module`, `nb-api-inv-node`, `nb-api-inv-physicalconnector`, `nb-api-inv-physicalconnector-700`, `nb-api-inv-tp` |
+| Device Monitoring | Performance Monitoring Dashboards | `performance-rest-apis` | — |
+| Device Monitoring | Performance Monitoring Policies | `performance-policies-rest-apis` | — |
+| Inventory | Inventory APIs | `inventory_cwinventory` | — |
+| Platform | Grouping | `cw-grouping-service` | — |
+| Platform | Platform APIs | `platform_cwplatform` | — |
+| Probe Manager | Probe Manager APIs | `cw-probe-mgr` | — |
+| Proxy | Crosswork Proxy APIs | `proxy_cw-proxy` | — |
+| Software Image Management | SWIM | `swim-nbi` | `swim-collection`, `swim-jobrest`, `swim-nbi-new`, `swim-recommendation`, `swim-repository`, `swim-rest`, `swim-treetable` |
+| Topology RESTCONF | Topology RESTCONF | `topo_restconf` | — |
+| Zero Touch Provisioning | Config Service | `cw-config-service-deprecated` | `cw-config-service` |
+| Zero Touch Provisioning | Image Service | `cw-image-service-deprecated` | `cw-image-service` |
+| Zero Touch Provisioning | ZTP Service | `cw-ztp-service` | — |
+
+**By api_id** (what an API-loaded body grants; the last column is the tick(s) the read tools' requests need on the row — R = every GET plus the POSTs the row's read template names, W = the other POSTs and every PUT/PATCH, D = DELETE):
+
+| feature | api_id | API name (editor row) | ticks the read tools need |
+|---|---|---|---|
+| AAA | `aaa_cw_role_read` | Know my role - Read only | R (baseline row: every role has it) |
 | AAA | `aaa_cwaaa` | Users and Roles Management | R |
 | Administrative Operations | `external-notification-subscription` | External Notification Subscription | R |
 | Administrative Operations | `nb-api-alarm-nt-2-700` | RESTCONF Notification Subscription | R |
@@ -106,11 +141,11 @@ The 182 read-only tools touch the 43 API rows below; the last column is the tick
 | Zero Touch Provisioning | `cw-image-service-deprecated` | Image Service | R |
 | Zero Touch Provisioning | `cw-ztp-service` | ZTP Service | R |
 
-`aaa_cw_role_read` (`/crosswork/aaaread/`) is what cnc_check_permissions reads the account's own role through; `aaa_cwaaa` (`/crosswork/aaa/`) is needed by the RBAC read tools (cnc_list_roles, cnc_get_user, ...) and is cnc_check_permissions' fallback (either of the two rows satisfies that tool).
+`aaa_cwaaa` (`/crosswork/aaa/`, editor row *Users and Roles Management*) is what the RBAC read tools read users, roles and sessions through. Drop that row and the account can no longer read them: the gateway refuses these 10 tools — `cnc_get_password_policy`, `cnc_get_role_permissions`, `cnc_get_role_tasks`, `cnc_get_session_config`, `cnc_get_user`, `cnc_is_nso_configured`, `cnc_list_active_sessions`, `cnc_list_roles`, `cnc_list_secured_apis`, `cnc_list_users`. cnc_check_permissions keeps working without it: it reads the role through the `aaa_cw_role_read` baseline row and falls back to `aaa/v1` only when the mirror answers 403/404 (either row suffices for it).
 
 ### The 14 read tools a Read-only role cannot call
 
-Under the stored `cnc-mcp-readonly` role (its 43 R rows plus the read templates and baseline rows the service adds — 45 rows as read back) cnc_check_permissions permits 168 of the 182 read tools. The other 14 read through a POST Crosswork classes as a **write** — the path is outside the API's read template (or the API has none) — so the gateway would refuse it (403) under Read:
+Under the stored `cnc-mcp-readonly` role (its 42 R rows plus the read templates and baseline rows the service adds — 45 rows as read back) cnc_check_permissions permits 168 of the 182 read tools. The other 14 read through a POST Crosswork classes as a **write** — the path is outside the API's read template (or the API has none) — so the gateway would refuse it (403) under Read:
 
 - `cwcollection` — Read permits POST on `cwcollection` only where the path matches `/.+/query$`, `/.+/v1/jobs/events$`:
   - `cnc_list_sensor_templates`: `POST /crosswork/collection/v1/template`
@@ -133,126 +168,117 @@ Under the stored `cnc-mcp-readonly` role (its 43 R rows plus the read templates 
 
 Two ways to handle them:
 
-1. **Tick Write as well as Read** on the rows above — the account is then no longer read-only at the gateway, because Write is `/.*` for POST/PUT/PATCH on the whole API. A narrowed POST entry beside the GET entry was stored verbatim on `device-config` and `inventory_cwinventory` in the one shape tried (it then needs the read-template paths listed by hand, since a row with a POST entry receives none) and was reinterpreted into a wider grant where it was the row's only entry (section 1) — untested as a user, so not offered here:
-  - `cwcollection`: Write also permits every POST/PUT/PATCH the API serves (no cnc-mcp write tool uses it).
+1. **Tick Write as well as Read** on the rows above — the account is then no longer read-only at the gateway, because Write is `/.*` on the whole API for PUT/PATCH and — except on the POST-delete APIs of section 1 — for POST, and a narrower custom-URL entry is not an option (section 1's warning):
+  - `cwcollection`: Write also permits every POST/PUT/PATCH the API serves (no cnc-mcp write tool uses it) — POST under the not-delete pattern, every path except one ending in `/delete` (section 1).
   - `device-config`: Write also permits what its 3 write tools (`cnc_backup_device_config`, `cnc_create_config_template`, `cnc_deploy_config_template`) do there, and any other POST/PUT/PATCH the API serves.
   - `inventory_cwinventory`: Write also permits what its 18 write tools (`cnc_assign_tags`, `cnc_clear_device_location`, `cnc_create_credential_profile`, `cnc_create_device`, `cnc_create_provider`, `cnc_create_tag`, `cnc_enable_device_gnmi`, `cnc_lock_device`, `cnc_map_devices_to_data_gateway`, `cnc_nso_device_action`, `cnc_nso_sync_to_device`, `cnc_set_device_location`, `cnc_sync_inventory_with_nso`, `cnc_unassign_tags`, `cnc_unlock_device`, `cnc_update_credential_profile`, `cnc_update_device`, `cnc_update_provider`) do there, and any other POST/PUT/PATCH the API serves.
-  - `optima_restconf`: Write also permits what its 8 write tools (`cnc_create_sr_policy`, `cnc_create_sr_policy_e2e`, `cnc_delete_sr_policy`, `cnc_pause_lcm_recommendations`, `cnc_provision_l3vpn_e2e`, `cnc_set_sr_policy_path_notifications`, `cnc_start_oam_trace_route`, `cnc_update_sr_policy`) do there, and any other POST/PUT/PATCH the API serves.
+  - `optima_restconf`: Write also permits what its 8 write tools (`cnc_create_sr_policy`, `cnc_create_sr_policy_e2e`, `cnc_delete_sr_policy`, `cnc_pause_lcm_recommendations`, `cnc_provision_l3vpn_e2e`, `cnc_set_sr_policy_path_notifications`, `cnc_start_oam_trace_route`, `cnc_update_sr_policy`) do there, and any other POST/PUT/PATCH the API serves — POST under the not-delete pattern, every path except one ending in `/delete` (section 1).
 2. **Leave them refused** (they answer the gateway's 403 with a hint pointing at cnc_check_permissions) or, better, keep the agent from seeing them: `CNC_MCP_DISABLED_TOOLS=cnc_check_nso_device_sync,cnc_explain_sr_policy,cnc_get_config_backup_job,cnc_get_lcm_recommendation_preview,cnc_get_oam_settings,cnc_get_oam_trace_route,cnc_get_sr_policy_metrics,cnc_get_sr_policy_path_notification_state,cnc_investigate_device,cnc_list_config_backup_jobs,cnc_list_oam_trace_routes,cnc_list_sensor_templates,cnc_wait_for_config_backup_job,cnc_wait_for_oam_trace_route`. (`cnc_get_lcm_recommendation_preview` is in the list although one form of the call runs under Read, above — leave it out to keep that form.)
-
-**The two AAA rows.** Both APIs also serve the broader `GET .../v1/api` listing, which returns the gateway's full API definitions — administrative data; do not grant it to a non-administrator. A Read tick grants URL pattern `/.*`, and because the gateway evaluates a row's pattern as an unanchored search on the full path (section 1), `/.*` includes that listing. The generated bodies therefore give these two rows a GET entry anchored to exactly the paths the tools send (the service keeps a custom GET URL verbatim, section 1); where the editor lets you set a row's URL pattern, use the same:
-
-- `aaa_cw_role_read` (GET): `^/crosswork/aaaread/(v1/role/[^/]+|v1/roleAccess/[^/]+)$`
-- `aaa_cwaaa` (GET): `^/crosswork/aaa/(v1/activeSessions|v1/getSessionMgmtPermissions|v1/isNSOConfigured|v1/passwordPolicyConfig|v1/role|v1/role/[^/]+|v1/roleAccess/[^/]+|v1/sessionconfig|v1/user|v1/user/[^/]+|v1/userpermission|v1/userpermission/[^/]+|v1/usertask/[^/]+|v2/api)$`
-
-(The `aaa_cw_role_read` row still receives its read template, POST `/.+/query$`, when stored; no read tool sends a POST there.)
 
 ## 3. Write areas: what each adds
 
-Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the `tools/` module), the API rows and ticks a role needs **in addition to** the read-only body of section 2 — a row already ticked Read is listed only when the writes add Write or Delete on it. `docs/rbac/cnc-mcp-operator.role.json` is section 2 plus every area below, plus the Write ticks the 14 read tools of section 2 need (`cwcollection`, `device-config`, `inventory_cwinventory`, `optima_restconf`).
+Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the `tools/` module), the editor rows and ticks a role needs **in addition to** the read-only recipe of section 2 — a row already ticked Read is listed only when the writes add Write or Delete on it; the api_id column says which member(s) of the row the writes use, the last column which sibling api_ids the tick grants as well (the body grants the members only). `docs/rbac/cnc-mcp-operator.role.json` is section 2 plus every area below, plus the Write ticks the 14 read tools of section 2 need (`cwcollection`, `device-config`, `inventory_cwinventory`, `optima_restconf`).
 
 ### admin (3 write tools: `cnc_restart_microservice`, `cnc_set_login_banner`, `cnc_set_maintenance_mode`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Platform | `platform_cwplatform` | Platform APIs | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Platform | Platform APIs | `platform_cwplatform` W | — | W |
 
 ### composite (2 write tools: `cnc_create_sr_policy_e2e`, `cnc_provision_l3vpn_e2e`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Crosswork Optimization Engine | `optima_restconf` | Optimization Engine RESTCONF | W |
-| Proxy | `proxy_cw-proxy` | Crosswork Proxy APIs | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
+| Proxy | Crosswork Proxy APIs | `proxy_cw-proxy` W | — | W |
 
 ### credentials (3 write tools: `cnc_create_credential_profile`, `cnc_delete_credential_profile`, `cnc_update_credential_profile`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` WD | — | WD |
 
 ### data_gateway (1 write tool: `cnc_map_devices_to_data_gateway`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` W | — | W |
 
 ### device_config (7 write tools: `cnc_backup_device_config`, `cnc_create_config_template`, `cnc_delete_config_backup_job`, `cnc_delete_config_template`, `cnc_delete_device_backup`, `cnc_delete_template_deployment`, `cnc_deploy_config_template`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Device Configuration | `device-config` | Device Configuration | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Device Configuration | Device Configuration | `device-config` WD | — | WD |
 
 ### devices (4 write tools: `cnc_create_device`, `cnc_delete_device`, `cnc_enable_device_gnmi`, `cnc_update_device`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` WD | — | WD |
 
 ### ems_jobs (3 write tools: `cnc_resume_inventory_scheduler_job`, `cnc_run_inventory_scheduler_job`, `cnc_suspend_inventory_scheduler_job`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Device Monitoring | `cw-inventory-job-dashboard` | Device Inventory | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Device Monitoring | Device Inventory | `cw-inventory-job-dashboard` W | `cw-inventory`, `cw-inventory-job-dashboard-deprecated`, `ems-inventory`, `ems-inventory-deprecated`, `ems-inventory-diagnostics` | W |
 
 ### fault (5 write tools: `cnc_acknowledge_alarm`, `cnc_annotate_alarm`, `cnc_clear_alarm`, `cnc_create_alarm_suppression_policy`, `cnc_delete_alarm_suppression_policy`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Alarms and Events | `cw-fault-ack-api` | Alarms & Events | W |
-| Alarms and Events | `cw-fault-clear-api` | Alarms & Events | W |
-| Alarms and Events | `cw-fault-notes-api` | Alarms & Events | W |
-| Alarms and Events | `event-processing-service-suppressionpolicy-api` | Alarm Suppression Policies | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Alarms and Events | Alarm Suppression Policies | `event-processing-service-suppressionpolicy-api` WD | — | WD |
+| Alarms and Events | Alarms & Events | `cw-fault-ack-api` W, `cw-fault-clear-api` W, `cw-fault-notes-api` W | `alarm-processing-service`, `alarm-rest-service`, `alarm-rest-service-networkinventory-rest-api`, `alarm-rest-service-summary-rest-api`, `cw-fault-ack-alarm`, `cw-fault-ack-api-v2`, `cw-fault-alarm-categories`, `cw-fault-alarm-custom-eventtype`, `cw-fault-alarm-custom-subeventtype`, `cw-fault-alarm-custom-syslog`, `cw-fault-alarm-custom-trap`, `cw-fault-alarm-eventtype`, `cw-fault-alarms-api`, `cw-fault-alarms-api-v2`, `cw-fault-clear-alarm`, `cw-fault-clear-api-v2`, `cw-fault-create_events_api`, `cw-fault-create_events_api_v2`, `cw-fault-events-api`, `cw-fault-events-api-v2`, `cw-fault-get-alarms`, `cw-fault-get-events`, `cw-fault-manifest_api`, `cw-fault-manifest_api_v2`, `cw-fault-notes-alarm`, `cw-fault-notes-api-v2`, `data-retention-service`, `event-processing-service` | W |
 
 ### inventory_extras (8 write tools: `cnc_assign_tags`, `cnc_clear_device_location`, `cnc_create_tag`, `cnc_delete_tag`, `cnc_lock_device`, `cnc_set_device_location`, `cnc_unassign_tags`, `cnc_unlock_device`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` WD | — | WD |
 
 ### lcm_csm (1 write tool: `cnc_pause_lcm_recommendations`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Crosswork Optimization Engine | `optima_restconf` | Optimization Engine RESTCONF | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
 
 ### notifications (2 write tools: `cnc_create_webhook_subscription`, `cnc_delete_notification_subscription`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Administrative Operations | `nb-api-subscription-api-700` | RESTCONF Notification Subscription | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Administrative Operations | RESTCONF Notification Subscription | `nb-api-subscription-api-700` WD | `nb-api-alarm-nt-2`, `nb-api-alarm-nt-2-700`, `nb-api-alarm-nt-3`, `nb-api-alarm-nt-3-700`, `nb-api-alarm-nt-4`, `nb-api-alarm-nt-4-700`, `nb-api-alarm-nt-5`, `nb-api-alarm-nt-5-700`, `nb-api-alarm-nt-6`, `nb-api-alarm-nt-6-700`, `nb-api-alarm-nt-9`, `nb-api-alarm-nt-9-700`, `nb-api-subscription-api` | WD |
 
 ### nso (3 write tools: `cnc_nso_device_action`, `cnc_nso_sync_to_device`, `cnc_sync_inventory_with_nso`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` W | — | W |
 
 ### oam (2 write tools: `cnc_reactivate_probe`, `cnc_start_oam_trace_route`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Crosswork Optimization Engine | `optima_restconf` | Optimization Engine RESTCONF | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
 
 ### providers (3 write tools: `cnc_create_provider`, `cnc_delete_provider`, `cnc_update_provider`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Inventory | `inventory_cwinventory` | Inventory APIs | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Inventory | Inventory APIs | `inventory_cwinventory` WD | — | WD |
 
 ### service_provisioning (12 write tools: `cnc_create_l3vpn_service`, `cnc_create_odn_template`, `cnc_create_sid_list`, `cnc_create_sr_policy_service`, `cnc_delete_odn_template`, `cnc_delete_service`, `cnc_delete_sid_list`, `cnc_delete_sr_policy_service`, `cnc_delete_vpn_service`, `cnc_provision_service`, `cnc_resync_service_inventory`, `cnc_update_sr_policy_service`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| CNC | `nso-connector` | NSO Connector APIs | W |
-| Proxy | `proxy_cw-proxy` | Crosswork Proxy APIs | WD |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| CNC | NSO Connector APIs | `nso-connector` W | — | W |
+| Proxy | Crosswork Proxy APIs | `proxy_cw-proxy` WD | — | WD |
 
 ### sr_te_operations (4 write tools: `cnc_create_sr_policy`, `cnc_delete_sr_policy`, `cnc_set_sr_policy_path_notifications`, `cnc_update_sr_policy`)
 
-| feature | api_id | API name | ticks to add |
-|---|---|---|---|
-| Crosswork Optimization Engine | `optima_restconf` | Optimization Engine RESTCONF | W |
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
 
-`cnc-mcp-operator.role.json` carries 47 rows: 13 with Write, 5 with Delete, 4 Write-only (no read tool uses the API). The AAA rows of section 2 are unchanged (no write tool sends anything on them).
+`cnc-mcp-operator.role.json` carries 46 rows: 13 with Write, 5 with Delete, 4 Write-only (no read tool uses the API).
 
 ## 4. Per-tool requirements
 
@@ -510,7 +536,7 @@ Every request template the tools send resolved to a secured API.
 
 ## 5. Task checkboxes that bundle the same grants
 
-`GET /crosswork/aaa/v1/taskAPIPermission/admin` answered five task bundles (verified 2026-09-14). Ticking a task in the UI grants the listed api_id(s) with the listed R/W/D ticks — the same letters as the tables above (section 1 says what each letter's `/.*` entry is stored as; that a tick emits that entry is inferred, not observed), so treat a bundle as "which rows and ticks the UI sets for you".
+`GET /crosswork/aaa/v1/taskAPIPermission/admin` answered five task bundles (verified 2026-09-14). Ticking a task in the UI grants the listed api_id(s) with the listed R/W/D ticks — the same letters as the tables above (section 1 says what each letter adds to the row's `/.*` entry and how it is stored), so treat a bundle as "which rows and ticks the UI sets for you".
 
 | task (UI name) | group | grants | rows it covers here |
 |---|---|---|---|
@@ -529,22 +555,22 @@ Log the server in as the account (username/password in `.env`) and call `cnc_che
 - `All N registered tools are permitted by role '<role>'`, or
 - `K of N registered tools would be refused by the gateway (403) under role '<role>'`, followed by the **API rows to grant** (feature | api_id | API name | methods to add | tools affected) and, per refused tool, the missing METHOD path rows — the same rows as this page, filtered to what the role lacks. A missing GET is the Read tick; a missing POST is Read when the row's template names the path (section 1) and Write otherwise; PUT/PATCH is Write; DELETE is Delete.
 - Tools the packaged map does not know are listed under "not in the RBAC map" — regenerate with `make rbac`.
-- `Error: role '<role>' may not read its own role ...` when neither the mirror nor `aaa/v1` lets the account read its role: grant Read on `aaa_cw_role_read` first.
+- `Error: role '<role>' may not read its own role ...` when neither the mirror nor `aaa/v1` lets the account read its role — the service adds the `aaa_cw_role_read` row to every role it stores, so on this platform version check the role's `roleAccess` (`ApiAccess`) and the stored role through an admin session.
 
 Evaluated against the stored `cnc-mcp-readonly` role, it reports 14 of the 182 read tools refused (the list in section 2) and 1 write tool **permitted** — `cnc_reactivate_probe` (`POST /crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr`: the platform's read template for the API names that path, so **Read permits this write**). Against the stored `cnc-mcp-operator` role every tool is permitted.
 
 What this verification is and is not:
 
-- **Verified (2026-09-14, admin session, test role):** the shape the AAA service stores a submitted role in — `/.*` rows verbatim, the read templates added to a GET-only row, a lone custom POST entry reinterpreted, the two baseline rows, the POST/PUT/GET status codes and the `charset=UTF-8` content type (section 1). The counts above are computed from that stored shape with Tyk's matching rule; `tests/fixtures/rbac/` pins the model against the read-backs.
-- **Still assumed:** the gateway's refusal itself. No user carrying a restricted role has logged in yet, so no 403 by a role grant has been observed; the matching rule (unanchored search on the full path, method listed) is the Tyk v5.1.1 source. And that the role editor's Read / Write / Delete ticks emit the `/.*` entries the bodies carry (section 1).
+- **Verified (2026-09-14, admin session, test roles):** the shape the AAA service stores a submitted role in — `/.*` entries verbatim, the read templates added to a GET-only row, the baseline rows, the POST/PUT/GET status codes and the `charset=UTF-8` content type (section 1). The counts above are computed from that stored shape with Tyk's matching rule; `tests/fixtures/rbac/` pins the model against the read-backs.
+- **Verified (2026-09-15, users carrying the generated roles; a UI-built role; the bodies as committed read back):** the gateway's refusals — every predicted 403 observed, nothing unpredicted refused (section 1; the smoke runs were on the previous generation of the bodies, which differed only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field, and their refusal predictions are identical; the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of the 182 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted) — and the editor's tick → entry mapping the bodies use.
 - The check is **static**: the map is derived from the tool source by api_coverage.py's extraction heuristic; no tool endpoint is called. A request built from platform data folds to `{}`; a probe counts as a use.
-- A device access group other than ALL-ACCESS restricts devices, not APIs; it is reported, not evaluated. `/crosswork/aaaread/` is verified readable by the admin and the generated read-only roles. The two gateway fail-open cases (a regex that does not compile, an empty `access_rights` map) are reported as refusals.
+- A device access group other than ALL-ACCESS restricts devices, not APIs; it is reported, not evaluated. The two gateway fail-open cases (a regex that does not compile, an empty `access_rights` map) are reported as refusals.
 
 ### Ready-made role bodies
 
-`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape `POST /crosswork/aaa/v1/role` takes — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers — with `rate`/`per`/`quota_max`/`active`/`partitions`/`key_expires_in` copied from the lab's admin role, one `access_rights` entry per api_id, `versions ["Default"]` and `allowance_scope ""` like admin. Each row carries the entries a tick is taken to emit — `/.*` with `[GET]` for Read, `[POST, PUT, PATCH]` for Write, `[DELETE]` for Delete — which the service stores verbatim (section 1); the only custom URL is the anchored GET pattern on the two AAA rows. `cnc-mcp-readonly` is R only; `cnc-mcp-operator` adds Write and Delete where a tool needs them.
+`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape `POST /crosswork/aaa/v1/role` takes — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers. **The generated bodies are the shape the editor submits** (verified 2026-09-15 against the UI-built role's read-back, `tests/fixtures/rbac/stored_ui_built_role.json`) — the editor's role fields, `versions []`, one `access_rights` entry per api_id with a single `{url: "/.*", methods: [...]}` whose methods are the union of the row's ticks (`[GET]` for Read, `[POST, PUT, PATCH]` for Write, `[DELETE]` for Delete, in that order) — minus the empty `_id`/`id` the editor also sends; `limit`/`allowance_scope` are the read-back's fields (the service adds them itself), and `api_name` is the v1 catalogue's HTML-escaped form (`Alarms &amp; Events`, as the built-in `admin` role stores it) where the editor sends `aaa/v2/api`'s unescaped one. What the fixtures pin: both bodies as committed, stored and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json` — the model reproduces every stored row entry for entry: the read-only body's 42 Read rows with their templates; the operator body's union entries, `[GET, POST, PUT, PATCH]` on 4 rows and all five methods on 5, verbatim except the 3 split rows section 1 describes — `cwcollection`, `optima_restconf`, `platform_cwplatform` — where POST came back under the not-delete pattern; plus the three baseline rows on each), the UI-built role's single-tick entries (`[GET]`, `[POST, PUT, PATCH]`, `[DELETE]`) and the 2026-09-14 experiments' per-tick entries on these rows. The Roles page has not been opened on these bodies (their first entries are all `/.*`, the one shape the editor reads). Two differences from a UI-built role: a body grants single api_ids where a UI tick grants the whole display-name group (section 1), and so **an API-loaded role is managed through the API only** — the editor shows a group row from its first api_id in `aaa/v2/api` order (unticked on the 6 rows section 1 names, although the grant is live) and a Save rebuilds every group from the editor's model, the hidden members taking the ticks of the group's most-ticked member (read from the bundle, not exercised live). No baseline row is in a body (the service adds them). `cnc-mcp-readonly` is R only; `cnc-mcp-operator` adds Write and Delete where a tool needs them.
 
-Load one with an admin's SSO JWT (one curl per file; the content type must carry the charset), read it back to see the templates and baseline rows the service added, then verify with cnc_check_permissions as a user carrying the role:
+Load one with an admin's SSO JWT (one curl per file; the content type must carry the charset), read it back to see the templates, baseline rows and split rows the service added, then verify with cnc_check_permissions as a user carrying the role:
 
 ```bash
 CNC=https://<host>:30603
@@ -562,4 +588,4 @@ curl -sk "$CNC/crosswork/aaa/v1/role/cnc-mcp-readonly" -H "Authorization: Bearer
 curl -sk -X DELETE "$CNC/crosswork/sso/v1/tickets/$TGT" -H "Authorization: Bearer $JWT"
 ```
 
-No UI import for a role body is documented; the equivalent is ticking the rows of sections 2 and 3 in the role editor by hand (the bodies are the shape the editor is taken to emit, section 1), with the two AAA rows' URL patterns set as in section 2 where the editor allows it.
+No UI import for a role body is documented; the equivalent is ticking the editor rows of sections 2 and 3 by hand, which also grants the sibling api_ids those tables list.

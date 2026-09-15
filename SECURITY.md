@@ -55,11 +55,13 @@ Only the latest release is supported with fixes.
   adds, with ready-made role bodies in `docs/rbac/`; `cnc_check_permissions`
   reads the running account's role and reports which registered tools it
   would refuse, so a least-privilege role can be verified before an agent
-  hits the 403. The two AAA rows in those recipes are anchored to the paths
-  the tools send: the broader listing behind them returns administrative
-  data and must not be granted to a non-administrator. The role bodies have
-  not yet been loaded into a real Crosswork; the doc says which claims are
-  verified and which are read from the gateway's source.
+  hits the 403. The role bodies are the shape the Crosswork role editor
+  submits (verified 2026-09-15 against a role built in the UI and read back),
+  except that they grant single API ids where a UI tick grants a whole
+  display-name group — so manage such a role through the API, not the
+  editor; `docs/RBAC.md` says which claims are verified live, which are read
+  from the UI bundle or the gateway's source, and which follow from the
+  verified rules without a read-back.
 - The authentication flow is Crosswork's CAS SSO: the password is exchanged
   for a ticket-granting ticket, which is exchanged for a service-ticket JWT
   (about 8 hours) sent as `Authorization: Bearer`. The server re-authenticates

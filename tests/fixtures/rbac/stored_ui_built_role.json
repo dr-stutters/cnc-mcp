@@ -1,0 +1,229 @@
+{
+ "captured": "2026-09-15",
+ "how": "CNC 7.2.0 lab, role 'cnc-mcp-ui-test' created in the UI (Administration > Users and Roles > Roles > +) with exactly three ticks \u2014 Read on the 'Alarm Settings' row, Write on 'Alarm Suppression Policies', Delete on 'Alarms and Events RESTCONF' \u2014 saved (the UI sent POST /crosswork/aaa/v1/role, 201), then GET /crosswork/aaa/v1/role/cnc-mcp-ui-test (200) through the admin API session. 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back, plus the role's non-access fields the UI submitted. One tick grants every api_id that shares the row's display name (7 for Alarm Settings, 6 for Alarms and Events RESTCONF); the three AAA baseline rows were added by the service.",
+ "ticks": {
+  "Alarm Settings": "R",
+  "Alarm Suppression Policies": "W",
+  "Alarms and Events RESTCONF": "D"
+ },
+ "role_fields": {
+  "name": "cnc-mcp-ui-test",
+  "org_id": "1",
+  "rate": 1000,
+  "per": 60,
+  "quota_max": -1,
+  "quota_renewal_rate": 60,
+  "throttle_interval": 0,
+  "throttle_retry_limit": 0,
+  "hmac_enabled": false,
+  "enable_http_signature_validation": false,
+  "active": true,
+  "is_inactive": false,
+  "tags": [],
+  "key_expires_in": -1,
+  "partitions": {
+   "quota": false,
+   "rate_limit": false,
+   "acl": false,
+   "per_api": false
+  }
+ },
+ "stored": {
+  "aaa_cw_role_read": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/.+/query$"
+   }
+  ],
+  "aaa_cwpassword": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   },
+   {
+    "methods": [
+     "POST"
+    ],
+    "url": "/(.*passwordHistoryCheck.*)$"
+   }
+  ],
+  "aaa_selected_pref": [
+   {
+    "methods": [
+     "GET",
+     "PUT"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-autoclear": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-autoclear-revert": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-manager-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-recommended-action": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-severity-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-gnmi-settings": [
+   {
+    "methods": [
+     "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "event-processing-service-suppressionpolicy-api": [
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-1": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-1-700": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-2": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-3": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-5": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-5-700": [
+   {
+    "methods": [
+     "DELETE"
+    ],
+    "url": "/.*"
+   }
+  ]
+ },
+ "api_names": {
+  "aaa_cw_role_read": "Know my role - Read only",
+  "aaa_cwpassword": "Password Change",
+  "aaa_selected_pref": "User Selected Preferences",
+  "cw-fault-alarm-autoclear": "Alarm Settings",
+  "cw-fault-alarm-autoclear-revert": "Alarm Settings",
+  "cw-fault-alarm-manager-settings": "Alarm Settings",
+  "cw-fault-alarm-recommended-action": "Alarm Settings",
+  "cw-fault-alarm-settings": "Alarm Settings",
+  "cw-fault-alarm-severity-settings": "Alarm Settings",
+  "cw-fault-gnmi-settings": "Alarm Settings",
+  "event-processing-service-suppressionpolicy-api": "Alarm Suppression Policies",
+  "nb-api-alarm-1": "Alarms and Events RESTCONF",
+  "nb-api-alarm-1-700": "Alarms and Events RESTCONF",
+  "nb-api-alarm-2": "Alarms and Events RESTCONF",
+  "nb-api-alarm-3": "Alarms and Events RESTCONF",
+  "nb-api-alarm-5": "Alarms and Events RESTCONF",
+  "nb-api-alarm-5-700": "Alarms and Events RESTCONF"
+ },
+ "versions": {
+  "aaa_cw_role_read": [
+   "Default"
+  ],
+  "aaa_cwpassword": [
+   "Default"
+  ],
+  "aaa_selected_pref": [
+   "Default"
+  ],
+  "cw-fault-alarm-autoclear": [],
+  "cw-fault-alarm-autoclear-revert": [],
+  "cw-fault-alarm-manager-settings": [],
+  "cw-fault-alarm-recommended-action": [],
+  "cw-fault-alarm-settings": [],
+  "cw-fault-alarm-severity-settings": [],
+  "cw-fault-gnmi-settings": [],
+  "event-processing-service-suppressionpolicy-api": [],
+  "nb-api-alarm-1": [],
+  "nb-api-alarm-1-700": [],
+  "nb-api-alarm-2": [],
+  "nb-api-alarm-3": [],
+  "nb-api-alarm-5": [],
+  "nb-api-alarm-5-700": []
+ }
+}

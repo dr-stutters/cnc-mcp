@@ -362,10 +362,13 @@ under a role that grants only what its registered tools send.
 exact API rows a read-only account needs and what each write area adds,
 with ready-made role bodies in `docs/rbac/`. `cnc_check_permissions` reads
 the running account's role and reports which registered tools it would
-refuse and the rows to grant; a 403 from any tool points at it. The two AAA
-rows in the recipes are anchored to the paths the tools send, because the
-broader listing behind them returns administrative data and must not be
-granted to a non-administrator.
+refuse and the rows to grant; a 403 from any tool points at it. The role
+bodies are the shape the Crosswork role editor submits (verified against a
+role built in the UI and read back; minus the empty `_id`/`id` the editor
+also sends, and with the read-back's `limit`/`allowance_scope` row fields),
+except that they grant single API ids where a UI tick grants a whole
+display-name group — so manage such a role through the API, not the editor
+(`docs/RBAC.md` says what is verified and what is not).
 
 ## Configuration
 

@@ -83,33 +83,98 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
   this resource has been disallowed" = the path/method is not covered) and
   neither triggers a re-login. A user on the generated operator role then
   ran the full read + write smoke (432 steps, every created object removed
-  again) with no refusal.
+  again) with no refusal. The smoke runs were on the previous generation of
+  the bodies, which differed only in the two AAA rows — `aaa_cwaaa` a GET
+  pattern limited to the paths the tools send then, `/.*` now;
+  `aaa_cw_role_read` in the body then, left to the baseline row now —
+  `versions` and the `rate` field, and their refusal predictions are
+  identical; the bodies as committed were then stored and read back (below)
+  and give the same verdict for every tool.
 - The RBAC map, `docs/RBAC.md` and the `docs/rbac/*.role.json` bodies now
-  follow how Crosswork's AAA service actually stores a role (verified live
-  2026-09-14 by storing a test role through an admin session and reading it
-  back): a `/.*` row with `[GET]`, `[POST, PUT, PATCH]` or `[DELETE]` — the
-  shape the role editor's Read / Write / Delete ticks are taken to emit
-  (inferred; no UI-built role was read back) — is stored verbatim, a
-  GET-only row also receives the platform's per-API **read templates**
-  (extra POST entries for that API's read-by-POST paths, `/.+/query$` and
-  the like), every role gains two baseline rows, and a row whose only entry
-  was a custom-URL POST is reinterpreted into a wider grant on the nine APIs
-  it was tried on. The map carries the captured templates in a
-  `platform` block (`scripts/rbac_map.py --read-templates <capture>`; offline
-  runs reuse it), classifies every requirement as the R/W/D tick that permits
-  it (a POST is Read only where the API's template names it), and the bodies
-  are UI-shaped: the read-only body is the Read tick on 43 rows, the operator
-  body adds Write/Delete where a tool needs them; only the two AAA rows keep
-  an anchored GET pattern (kept verbatim by the service) so the `GET
-  .../v1/api` listing stays out. Evaluated as stored, the read-only role
-  permits 168 of the 182 read tools; the 14 that read through a POST outside
-  their API's template (NSO check-sync, config-backup jobs, sensor templates,
-  the OAM / SR-policy-metrics / SR-policy path-notification state /
-  LCM-preview RPCs; docs/RBAC.md section 2 lists them) are listed with the
-  two options (tick Write there, or `CNC_MCP_DISABLED_TOOLS`), and
-  `cnc_reactivate_probe` is noted as a write the Read tick permits. The
-  gateway's refusal itself is still assumed from the Tyk source (no
-  restricted user has logged in yet).
+  follow how Crosswork's role editor submits a role and how the AAA service
+  stores it, both verified live (2026-09-14: test roles stored through an
+  admin session and read back; 2026-09-15: a role built in the UI's role
+  editor read back through the API, the editor's own role model read from
+  the UI bundle, and the two generated bodies as committed PUT through an
+  admin session and read back). Per ticked
+  row the editor sends ONE `{url: "/.*", methods: <union>}` entry — Read
+  adds `GET`, Write adds `POST, PUT, PATCH`, Delete adds `DELETE` — with
+  `versions []` and its default role fields (`rate 1000`), and a row in the
+  editor is a **display-name group** (one tick grants every api_id sharing
+  the name; the UI cannot grant a single api_id of a group, the API can).
+  The service stores those entries verbatim, appends the platform's per-API
+  **read templates** (extra POST entries for that API's read-by-POST paths,
+  `/.+/query$` and the like) to a GET-only row, and adds three **baseline
+  rows** to every role — `aaa_cw_role_read` (the account's own role through
+  the read-only mirror, with its query template), `aaa_cwpassword`,
+  `aaa_selected_pref` — so the bodies never carry them. One more rule, seen
+  when the operator body was read back: on the APIs on which the service
+  reserves a last segment `delete` for the Delete tick (presumably the ones
+  that delete through `POST .../delete`; no tool POSTs such a path), a row
+  whose single entry carries POST without DELETE (Write without Delete —
+  the entry the editor submits) is **split**: POST moves to a second entry
+  under a pattern that permits every path except one whose last segment is
+  the word `delete`, and the entry keeps its other methods in alphabetical
+  order (`[GET, POST, PUT, PATCH]` → `[GET, PATCH, PUT] /.*` + `[POST]
+  <pattern>`). Verified on `cwcollection`, `optima_restconf` and
+  `platform_cwplatform`; inferred for the seven other APIs on which a
+  2026-09-14 POST-only experiment stored the same split — the custom-url
+  entry kept with its methods stripped to `[]`, the pattern entry appended
+  (`collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`,
+  `cw-probe-mgr`, `cw-ztp-service`, `dg-manager-global-parameters-api`,
+  `optima_analytics_api`); the generator stops when the map's list carries
+  an API in neither group. Read and Write submitted as two entries (and, in
+  the same 2026-09-14 submission, a custom GET beside a custom POST — the
+  split keys on the row having a single entry), and rows carrying DELETE,
+  were stored verbatim. Consequence: Write without
+  Delete on those APIs still permits every POST except a path ending in
+  `/delete` — for the Optimization Engine the delete RPC is
+  `...:sr-policy-delete`, one segment, so an operator role without Delete
+  can still create and delete SR policies there; the guide quotes the
+  pattern and says so. The bodies are the
+  shape the editor submits: one `/.*` entry per api_id with the union of
+  the row's ticks in the editor's order, the editor's role fields (`rate
+  1000`/`per 60` is the gateway's per-key rate limit, the editor's default),
+  no custom URL anywhere (a role whose first entry on some api_id has a url
+  other than `/.*` crashes the Roles page for everyone — `docs/RBAC.md`
+  section 1 carries the warning).
+  The editor displays a display-name group as its first api_id in
+  `aaa/v2/api` order and rebuilds the group on Save (read from the UI
+  bundle), so an API-loaded role is managed through the API — the guide
+  names the six rows the bodies leave visibly unticked. The map now records
+  each api_id's `position` in `aaa/v2/api` (regenerate once with
+  `--catalogue-dir` or live after upgrading), and `--read-templates`
+  refuses a capture in the previous format (baseline rows listed among the
+  read templates) instead of loading it silently. The read-only body is
+  the Read tick on 42 rows, the operator body adds Write/Delete where a
+  tool needs them (46 rows); the `aaa_cwaaa` row ("Users and Roles
+  Management") is what the RBAC read tools need and the guide says which 10
+  tools dropping it refuses.
+  The map carries the captured templates, baseline rows, POST-delete APIs
+  and the not-delete pattern in a `platform` block (`scripts/rbac_map.py
+  --read-templates <capture>`; offline runs reuse it), classifies every
+  requirement as the R/W/D tick that permits it (a POST is Read only where
+  the API's template names it), and `tests/fixtures/rbac/` pins the
+  stored-role model, entry for entry and in stored order, against the five
+  real read-backs (the two generated bodies as committed,
+  `stored_generated_readonly.json` / `stored_generated_operator.json`, the
+  UI-built role and the two API-stored experiments; the read-back of the
+  earlier custom-URL body was deleted with that shape). Evaluated on what
+  the service stored, `cnc-mcp-readonly` permits 168 of the 182 read tools
+  and `cnc-mcp-operator` all 245 — the same verdict as the model's, tool
+  for tool; the generator says so in the guide and warns when a read-back
+  no longer matches the committed body's stored form, row for row and in
+  stored order, or its verdict (a fixture of a previous body can keep the
+  verdict while its rows differ, as the previous generation's did; the
+  warning names the rows). The 14 read tools that read through
+  a POST outside their API's template (NSO check-sync, config-backup jobs,
+  sensor templates, the OAM / SR-policy-metrics / SR-policy
+  path-notification state / LCM-preview RPCs; docs/RBAC.md section 2 lists
+  them) are listed with the two options (tick Write there, or
+  `CNC_MCP_DISABLED_TOOLS`), and `cnc_reactivate_probe` is noted as a write
+  the Read tick permits. The guide's "Not verified" list now says exactly
+  what is read from the bundle or extrapolated rather than observed;
+  `cnc_check_permissions` says the same.
 - `cnc_get_lsp_utilization` / `cnc_get_lsp_delay` default `hours` is now 6
   (was 24): the largest window NPM answers with raw 5-minute samples, and
   the window `cnc_explain_sr_policy` reads, so a drill-in lands on the same

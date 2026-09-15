@@ -2142,9 +2142,10 @@ async def test_check_permissions_admin_shaped_role_permits_everything(make_setti
     assert f"**Verdict**: All {registered} registered tools are permitted by role 'admin'." in text
     assert "## Refused tools" not in text and "not in the RBAC map" not in text
     assert "This check is static" in text
-    # the stored shape is verified, the role editor's tick-to-entry mapping inferred
+    # the stored shape and the role editor's tick-to-entry mapping are both verified
     assert "so POST .../query reads run under Read" in text
-    assert "ticks emit that shape is inferred, not observed" in text
+    assert "ticks were verified 2026-09-15 to submit exactly that shape" in text
+    assert "inferred" not in text
     assert "unverified" not in text
     assert "not ALL-ACCESS" not in text
     # the token itself never appears in the answer

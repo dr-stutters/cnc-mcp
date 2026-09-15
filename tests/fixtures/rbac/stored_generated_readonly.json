@@ -1,13 +1,35 @@
 {
- "captured": "2026-09-14",
- "how": "CNC 7.2.0 lab, admin session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the inner object of docs/rbac/cnc-mcp-readonly.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). 'stored' keeps, per api_id, only the url and methods of every allowed_urls entry read back, in the order read back: the anchored GET pattern of the two AAA rows verbatim, the read templates on the rows that have one, the two baseline rows the service adds. Refresh whenever the read-only body changes (re-PUT it, read it back, sanitise).",
+ "captured": "2026-09-15",
+ "how": "CNC 7.2.0 lab, admin API session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the inner object of docs/rbac/cnc-mcp-readonly.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back; 'versions' and 'role_fields' the other fields the service stored. Refresh whenever the body changes (re-PUT, read back, sanitise).",
+ "role_fields": {
+  "name": "cnc-mcp-readonly",
+  "org_id": "1",
+  "rate": 1000,
+  "per": 60,
+  "quota_max": -1,
+  "quota_renewal_rate": 60,
+  "throttle_interval": 0,
+  "throttle_retry_limit": 0,
+  "hmac_enabled": false,
+  "enable_http_signature_validation": false,
+  "active": true,
+  "is_inactive": false,
+  "tags": [],
+  "key_expires_in": -1,
+  "partitions": {
+   "quota": false,
+   "rate_limit": false,
+   "acl": false,
+   "per_api": false
+  }
+ },
  "stored": {
   "aaa_cw_role_read": [
    {
     "methods": [
      "GET"
     ],
-    "url": "^/crosswork/aaaread/(v1/role/[^/]+|v1/roleAccess/[^/]+)$"
+    "url": "/.*"
    },
    {
     "methods": [
@@ -21,7 +43,7 @@
     "methods": [
      "GET"
     ],
-    "url": "^/crosswork/aaa/(v1/activeSessions|v1/getSessionMgmtPermissions|v1/isNSOConfigured|v1/passwordPolicyConfig|v1/role|v1/role/[^/]+|v1/roleAccess/[^/]+|v1/sessionconfig|v1/user|v1/user/[^/]+|v1/userpermission|v1/userpermission/[^/]+|v1/usertask/[^/]+|v2/api)$"
+    "url": "/.*"
    }
   ],
   "aaa_cwpassword": [
@@ -479,7 +501,104 @@
    }
   ]
  },
- "submitted": {
-  "body": "docs/rbac/cnc-mcp-readonly.role.json"
+ "versions": {
+  "aaa_cw_role_read": [
+   "Default"
+  ],
+  "aaa_cwaaa": [],
+  "aaa_cwpassword": [
+   "Default"
+  ],
+  "aaa_selected_pref": [
+   "Default"
+  ],
+  "cat-fp-deployment-manager": [],
+  "collection_dg-manager": [],
+  "cw-config-service-deprecated": [],
+  "cw-fault-alarm-manager-settings": [],
+  "cw-fault-alarm-recommended-action": [],
+  "cw-fault-alarm-settings": [],
+  "cw-fault-alarm-severity-settings": [],
+  "cw-fault-alarms-api": [],
+  "cw-fault-events-api": [],
+  "cw-fault-gnmi-settings": [],
+  "cw-grouping-service": [],
+  "cw-image-service-deprecated": [],
+  "cw-inventory-job-dashboard": [],
+  "cw-probe-mgr": [],
+  "cw-ztp-service": [],
+  "cwcollection": [],
+  "device-config": [],
+  "dg-manager-global-parameters-api": [],
+  "ems-inventory": [],
+  "event-processing-service-suppressionpolicy-api": [],
+  "external-notification-subscription": [],
+  "inventory_cwinventory": [],
+  "nb-api-alarm-1-700": [],
+  "nb-api-alarm-nt-2-700": [],
+  "nb-api-alarm-nt-9-700": [],
+  "nb-api-inv-chassis-700": [],
+  "nb-api-inv-equipment-700": [],
+  "nb-api-inv-module-700": [],
+  "nb-api-inv-node-700": [],
+  "nb-api-inv-tp-700": [],
+  "nb-api-subscription-api-700": [],
+  "optima_analytics_api": [],
+  "optima_restconf": [],
+  "performance-dataretention-apis": [],
+  "performance-policies-rest-apis": [],
+  "performance-rest-apis": [],
+  "platform_cwplatform": [],
+  "proxy_cw-proxy": [],
+  "swim-nbi": [],
+  "topo_restconf": [],
+  "tsdn_cat-restconf-nbi": []
+ },
+ "api_names": {
+  "aaa_cw_role_read": "Know my role - Read only",
+  "aaa_cwaaa": "Users and Roles Management",
+  "aaa_cwpassword": "Password Change",
+  "aaa_selected_pref": "User Selected Preferences",
+  "cat-fp-deployment-manager": "CAT FP Deployment Manager APIs",
+  "collection_dg-manager": "Data Gateway Manager APIs",
+  "cw-config-service-deprecated": "Config Service",
+  "cw-fault-alarm-manager-settings": "Alarm Settings",
+  "cw-fault-alarm-recommended-action": "Alarm Settings",
+  "cw-fault-alarm-settings": "Alarm Settings",
+  "cw-fault-alarm-severity-settings": "Alarm Settings",
+  "cw-fault-alarms-api": "Alarms &amp; Events",
+  "cw-fault-events-api": "Alarms &amp; Events",
+  "cw-fault-gnmi-settings": "Alarm Settings",
+  "cw-grouping-service": "Grouping",
+  "cw-image-service-deprecated": "Image Service",
+  "cw-inventory-job-dashboard": "Device Inventory",
+  "cw-probe-mgr": "Probe Manager APIs",
+  "cw-ztp-service": "ZTP Service",
+  "cwcollection": "Collection APIs",
+  "device-config": "Device Configuration",
+  "dg-manager-global-parameters-api": "Data Gateway Global Parameters API",
+  "ems-inventory": "Device Inventory",
+  "event-processing-service-suppressionpolicy-api": "Alarm Suppression Policies",
+  "external-notification-subscription": "External Notification Subscription",
+  "inventory_cwinventory": "Inventory APIs",
+  "nb-api-alarm-1-700": "Alarms and Events RESTCONF",
+  "nb-api-alarm-nt-2-700": "RESTCONF Notification Subscription",
+  "nb-api-alarm-nt-9-700": "RESTCONF Notification Subscription",
+  "nb-api-inv-chassis-700": "Device Inventory RESTCONF",
+  "nb-api-inv-equipment-700": "Device Inventory RESTCONF",
+  "nb-api-inv-module-700": "Device Inventory RESTCONF",
+  "nb-api-inv-node-700": "Device Inventory RESTCONF",
+  "nb-api-inv-tp-700": "Device Inventory RESTCONF",
+  "nb-api-subscription-api-700": "RESTCONF Notification Subscription",
+  "optima_analytics_api": "OPTIMA Analytics",
+  "optima_restconf": "Optimization Engine RESTCONF",
+  "performance-dataretention-apis": "Performance Monitoring Data Retention",
+  "performance-policies-rest-apis": "Performance Monitoring Policies",
+  "performance-rest-apis": "Performance Monitoring Dashboards",
+  "platform_cwplatform": "Platform APIs",
+  "proxy_cw-proxy": "Crosswork Proxy APIs",
+  "swim-nbi": "SWIM",
+  "topo_restconf": "Topology RESTCONF",
+  "tsdn_cat-restconf-nbi": "CAT Inventory RESTCONF APIs"
  }
 }
