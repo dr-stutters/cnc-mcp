@@ -51,7 +51,11 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
       ],
       "url": "/.*"
      }
@@ -78,12 +82,49 @@
     "limit": null,
     "versions": []
    },
+   "cw-fault-alarm-autoclear": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST",
+       "PUT",
+       "PATCH"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-autoclear",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": []
+   },
+   "cw-fault-alarm-autoclear-revert": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST",
+       "PUT",
+       "PATCH"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "cw-fault-alarm-autoclear-revert",
+    "api_name": "Alarm Settings",
+    "limit": null,
+    "versions": []
+   },
    "cw-fault-alarm-manager-settings": {
     "allowance_scope": "",
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH"
       ],
       "url": "/.*"
      }
@@ -98,7 +139,10 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH"
       ],
       "url": "/.*"
      }
@@ -128,7 +172,10 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH"
       ],
       "url": "/.*"
      }
@@ -190,7 +237,10 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH"
       ],
       "url": "/.*"
      }
@@ -222,7 +272,11 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
       ],
       "url": "/.*"
      }
@@ -285,7 +339,11 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
       ],
       "url": "/.*"
      }
@@ -386,7 +444,11 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
       ],
       "url": "/.*"
      }
@@ -441,6 +503,23 @@
      }
     ],
     "api_id": "nb-api-alarm-nt-2-700",
+    "api_name": "RESTCONF Notification Subscription",
+    "limit": null,
+    "versions": []
+   },
+   "nb-api-alarm-nt-3-700": {
+    "allowance_scope": "",
+    "allowed_urls": [
+     {
+      "methods": [
+       "POST",
+       "PUT",
+       "PATCH"
+      ],
+      "url": "/.*"
+     }
+    ],
+    "api_id": "nb-api-alarm-nt-3-700",
     "api_name": "RESTCONF Notification Subscription",
     "limit": null,
     "versions": []
@@ -609,7 +688,10 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH"
       ],
       "url": "/.*"
      }
@@ -624,7 +706,11 @@
     "allowed_urls": [
      {
       "methods": [
-       "GET"
+       "GET",
+       "POST",
+       "PUT",
+       "PATCH",
+       "DELETE"
       ],
       "url": "/.*"
      }

@@ -112,7 +112,61 @@ Facts added from the 2026-09-14 agent round (read live, read-only):
    ``gnmi/settings``, ``manager/settings``), the event-type catalogue
    (``severity-config`` and ``autoclear`` answer the SAME ``items[]``),
    ``recommended-action?eventType=<name>`` and the ``suppressionpolicy``
-   collection.
+   collection. **Settings writes (verified live 2026-09-15 on the 7.2 lab,
+   every change read back and reverted):**
+
+   - ``POST severity-config {"sourceType": "scc", "sourceValue": <severity>,
+     "eventTypes": [<name>, ...]}`` -> 200 ``{"status": "OK", "headers": {},
+     "body": "Severity configuration update success"}``; the catalogue shows
+     the new severity on the very next read. ``sourceValue`` must be one of
+     the LOWERCASE spellings critical / major / minor / warning / information
+     (``WARNING``, ``info`` and ``cleared`` are 400 ``Invalid sourceValue``);
+     the catalogue reads it back capitalised (``Information``). An unknown
+     name is 400 ``Invalid eventType`` and the whole call is rejected — a list
+     mixing a known and an unknown name changes NOTHING. The 400 bodies are
+     PLAIN TEXT under ``Content-Type: application/json`` (``Invalid eventType``
+     / ``Invalid sourceValue`` / ``Invalid eventTypes`` (empty list) /
+     ``Invalid sourceType``).
+   - ``POST autoclear {"sourceType": "aac", "sourceValue": "<minutes>",
+     "eventTypes": [...]}`` -> 200 ``{"status": "OK", ..., "body": "Alarm
+     autoclear update:success"}``; the ``revert`` key appears in BOTH
+     catalogue documents immediately. The platform's own rule (400 ``Invalid
+     sourceValue : Please enter valid integer value in the range of 5 to
+     599940. If value is less than or equal to 55, then it should be in
+     multiples of 5. If the value is greater than or equal to 60, then it
+     should be in multiples of 60.``) is enforced client-side too; the value
+     is a string of digits only (``" 30 "`` and ``10.5`` are rejected).
+   - ``POST autoclear/revert {"eventTypes": [...]}`` -> 200 ``{"status":
+     "OK", ..., "body": "Alarm autoclear deletion operation completed
+     successfully"}``. **It DELETES the interval, it does not restore a
+     default**: reverting ``ciscoPtpSlaveLost`` (shipped with ``revert
+     "1440"``) left it with NO revert at all (re-set to 1440 afterwards).
+     Reverting a type that has no interval is a 200 no-op; an empty or
+     missing list is 400 ``Invalid eventTypes``.
+   - ``POST manager/settings {"alarmManager/<device type>": bool}`` and
+     ``POST gnmi/settings {"<vendor>": bool}`` take a PARTIAL document: only
+     the keys sent change, the answer echoes those keys with their stored
+     values (``{"alarmManager/Cisco NCS 5001": true}``), ``{}`` is a 200
+     no-op, and a non-boolean value (``"yes"``) is silently stored as
+     ``false`` — so the tools send real booleans and verify the echo. Whether
+     an unknown key is created (and can be removed) was deliberately NOT
+     tried; the tools resolve the key against the current document first.
+   - ``POST recommended-action {"erroreventype", "explaination",
+     "recommendedaction"}`` -> 200 ``{"responseResult": "Data Saved
+     Successfully"}``; the GET shows the text immediately and empty strings
+     restore the platform default text. ``nextstepupdate`` flips 0 -> 1 on
+     the first save and stays 1 (it is a "custom text was ever saved" flag,
+     not a next step). Unknown or missing name: 400 ``{"responseResult":
+     "Invalid input : EventType does not exist : <x|null>"}``.
+   - ``PUT suppressionpolicy {policyname, description, action, deviceGroups,
+     criteria}`` (the collection path, NOT ``/<name>`` — that is 405) -> 200
+     ``{"Message": "Success", "status": "Success"}``; the list shows the new
+     values immediately. The FULL body is required: a body without ``action``
+     is 400 ``{"Message ": "Action type is null", "status": "Failed"}`` (the
+     key really carries a trailing space), a bad action 400 ``{"Message ":
+     "Invalid Action type"}``, and an unknown name 400 ``{"Message": "Failed
+     to update policy rule <name>"}``. The tool therefore reads the policy
+     first and merges the requested changes over it.
 3. **``/crosswork/alarm/restconf/data/v2/rtm:alarm``** — the EMF RESTCONF
    fault manager's alarms (``Accept: application/json``,
    ``.startIndex``/``.maxCount`` paging, ``nd-ref=<FDN>`` and
@@ -136,9 +190,20 @@ origin_app_id, event_type}``.
 NOT exposed (verified or deliberately left out): the RESTCONF ``PUT
 alarm:handle-alarm`` RPC (answers 400 ``"Invalid Input, payload must contain
 'type' attribute"`` for every JSON shape tried, so ack/clear on the RTM alarms
-is not offered); the ``alarm-manager`` / ``severity-config`` / ``autoclear``
-writes; custom syslog/trap event-type definitions; the notification
-destinations (``trap-dest`` / ``syslog-dest`` / ``rest-dest``).
+is not offered); the custom syslog/trap event-type definitions
+(``custom/syslog`` / ``custom/trap`` / ``custom/subeventtype``; scouted live
+2026-09-15: ``POST custom/syslog {mnemonic, mnemonicregex, regexDetails[],
+eventDetails[]}`` -> 200 ``{"status": "Success"}``, duplicate 400
+``{"message": "Invalid input : EventType already defined : <x>", "status":
+"Fail"}``, ``GET|PUT|DELETE custom/syslog/<eventType>`` (keyed by the EVENT
+TYPE, not the mnemonic; unknown -> 400 ``"Invalid request : Event Type does
+not exist : <x>"``), ``POST custom/eventtype {}`` -> ``{"eventTypes": [...],
+"totalCount"}`` or ``{"message": "No Data"}`` — but the GET echoes the event
+type name as ``description``, the PUT dropped the type from the
+``severity-config`` catalogue, and the nested regex/event/match-condition
+payload does not fit flat tool arguments, so they wait for their own design);
+the notification destinations (``trap-dest`` / ``syslog-dest`` /
+``rest-dest``).
 """
 
 from __future__ import annotations
@@ -180,6 +245,8 @@ SETTINGS_PATH = f"{ALARM_V1}/settings"
 GNMI_SETTINGS_PATH = f"{ALARM_V1}/gnmi/settings"
 MANAGER_SETTINGS_PATH = f"{ALARM_V1}/manager/settings"
 SEVERITY_CONFIG_PATH = f"{ALARM_V1}/severity-config"
+AUTOCLEAR_PATH = f"{ALARM_V1}/autoclear"
+AUTOCLEAR_REVERT_PATH = f"{ALARM_V1}/autoclear/revert"
 RECOMMENDED_ACTION_PATH = f"{ALARM_V1}/recommended-action"
 SUPPRESSION_POLICY_PATH = f"{ALARM_V1}/suppressionpolicy"
 # EMF RESTCONF fault manager.
@@ -237,9 +304,24 @@ RTM_ALARM_TYPES = ("device", "network", "system")
 RTM_DEFAULT_ALARM_TYPE = "device"
 SUPPRESSION_ACTIONS = ("suppressAlarm", "suppressEvent")
 MANAGER_KEY_PREFIX = "alarmManager/"
+# severity-config ``sourceValue`` spellings: LOWERCASE only (verified live 2026-09-15:
+# ``WARNING``, ``info`` and ``cleared`` are 400 ``Invalid sourceValue``); the catalogue
+# reads them back capitalised (``Information``).
+EVENT_SEVERITIES = ("critical", "major", "minor", "warning", "information")
+SEVERITY_SOURCE_TYPE = "scc"
+AUTOCLEAR_SOURCE_TYPE = "aac"
+# The platform's auto-clear interval rule (its own 400 text, verified live 2026-09-15):
+# 5..599940 minutes; <= 55 in multiples of 5; >= 60 in multiples of 60.
+AUTOCLEAR_MIN_MINUTES = 5
+AUTOCLEAR_MAX_MINUTES = 599940
+AUTOCLEAR_SMALL_STEP = 5
+AUTOCLEAR_SMALL_MAX = 55
+AUTOCLEAR_LARGE_STEP = 60
 # Markers inside the alarm/v1 400 bodies that mean "no such object" (verified live).
 _EVENT_TYPE_MISSING = "eventtype does not exist"
+_INVALID_EVENT_TYPE = "invalid eventtype"
 _POLICY_CREATE_FAILED = "failed to create policy rule"
+_POLICY_UPDATE_FAILED = "failed to update policy rule"
 _POLICY_DELETE_FAILED = "failed to delete alarm policy"
 
 # Events listed under an alarm in the get-alarm markdown (the JSON form has them all).
@@ -812,8 +894,13 @@ def recommendation_markdown(event_type: str, data: dict[str, Any]) -> str:
             lines.append(f"- Default recommended action: {data['defaultrecommendedaction']}")
     else:
         lines.append("- Source: platform defaults")
-    if data.get("nextstepupdate"):
-        lines.append(f"- Next step: {data['nextstepupdate']}")
+        if data.get("nextstepupdate"):
+            # Verified live 2026-09-15: nextstepupdate is a 0/1 "custom text was ever
+            # saved" flag that stays 1 after the text is cleared, not a next step.
+            lines.append(
+                "- Note: custom text was saved on this instance before and later cleared "
+                "(nextstepupdate=1); cnc_set_event_type_recommendation sets new text."
+            )
     return "\n".join(lines)
 
 
@@ -831,6 +918,111 @@ def policies_markdown(policies: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def autoclear_minutes_error(minutes: int) -> str | None:
+    """Why ``minutes`` is not a valid auto-clear interval, or None when it is.
+
+    Mirrors the platform's rule (its 400 text, verified live 2026-09-15) so the
+    tool refuses a bad value without a call and with a clearer message.
+    """
+    if minutes < AUTOCLEAR_MIN_MINUTES or minutes > AUTOCLEAR_MAX_MINUTES:
+        return (
+            f"auto-clear minutes must be between {AUTOCLEAR_MIN_MINUTES} and "
+            f"{AUTOCLEAR_MAX_MINUTES} (got {minutes})"
+        )
+    if minutes <= AUTOCLEAR_SMALL_MAX and minutes % AUTOCLEAR_SMALL_STEP:
+        return (
+            f"auto-clear minutes up to {AUTOCLEAR_SMALL_MAX} must be a multiple of "
+            f"{AUTOCLEAR_SMALL_STEP} (got {minutes})"
+        )
+    if minutes >= AUTOCLEAR_LARGE_STEP and minutes % AUTOCLEAR_LARGE_STEP:
+        return (
+            f"auto-clear minutes from {AUTOCLEAR_LARGE_STEP} up must be a multiple of "
+            f"{AUTOCLEAR_LARGE_STEP} (got {minutes})"
+        )
+    return None
+
+
+def autoclear_minutes(item: dict[str, Any]) -> int | None:
+    """The catalogue entry's ``revert`` (a string of minutes) as an int, or None."""
+    revert = item.get("revert")
+    if revert in (None, "", 0, "0"):
+        return None
+    try:
+        return int(str(revert))
+    except ValueError:
+        return None
+
+
+def event_type_state(item: dict[str, Any]) -> dict[str, Any]:
+    """The catalogue fields a settings write can change, for before/after reporting."""
+    return {
+        "name": item.get("name") or item.get("eventTypeName"),
+        "category": item.get("defaultCategory"),
+        "severity": item.get("severity"),
+        "autoclear_minutes": autoclear_minutes(item),
+    }
+
+
+def find_event_type(catalogue: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    """The catalogue entry named ``name``: exact match first, then case-insensitive.
+
+    The write is always built from the entry's own ``name`` so it targets the
+    platform's spelling (``severity-config`` rejects a misspelt name with 400
+    ``Invalid eventType``).
+    """
+    wanted = name.strip()
+    for item in catalogue:
+        if item.get("name") == wanted or item.get("eventTypeName") == wanted:
+            return item
+    folded = wanted.lower()
+    for item in catalogue:
+        if str(item.get("name", "")).lower() == folded:
+            return item
+        if str(item.get("eventTypeName", "")).lower() == folded:
+            return item
+    return None
+
+
+def find_policy(policies: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    """The suppression policy named ``name``: exact match first, then case-insensitive."""
+    wanted = name.strip()
+    for p in policies:
+        if p.get("policyname") == wanted:
+            return p
+    folded = wanted.lower()
+    for p in policies:
+        if str(p.get("policyname", "")).lower() == folded:
+            return p
+    return None
+
+
+def resolve_setting_key(document: dict[str, Any], wanted: str, prefix: str = "") -> str | None:
+    """The key of a ``{"<key>": bool}`` settings document that ``wanted`` names.
+
+    ``wanted`` may be given with or without ``prefix`` (``"Cisco NCS 5001"`` or
+    ``"alarmManager/Cisco NCS 5001"``); exact match first, then
+    case-insensitive. None when the document has no such key — the tools never
+    write a key the platform did not list, because whether an unknown key is
+    created (and can then be removed) is unverified.
+    """
+    candidates = [wanted.strip()]
+    if prefix and not wanted.strip().startswith(prefix):
+        candidates.append(prefix + wanted.strip())
+    for candidate in candidates:
+        if candidate in document:
+            return candidate
+    folded = [c.lower() for c in candidates]
+    for key in document:
+        if str(key).lower() in folded:
+            return str(key)
+    return None
+
+
+def flag_line(key: str, value: Any, prefix: str = "") -> str:
+    name = key[len(prefix) :] if prefix and key.startswith(prefix) else key
+    return f"{name}: {'on' if value else 'off'}"
+
+
 def _more_hint(envelope: dict[str, Any]) -> list[str]:
     if envelope.get("has_more"):
         return ["", f"More available: repeat with page={envelope['next_page']}."]
@@ -838,12 +1030,36 @@ def _more_hint(envelope: dict[str, Any]) -> list[str]:
 
 
 def _response_result(data: Any) -> str:
-    """The text of an alarm/v1 error body (``responseResult`` / ``Message``), lower-cased."""
+    """The text of an alarm/v1 error body (``responseResult`` / ``Message``), lower-cased.
+
+    Keys are matched with surrounding whitespace stripped: the ``PUT
+    suppressionpolicy`` 400 bodies spell theirs ``"Message "`` (verified live
+    2026-09-15).
+    """
     if isinstance(data, dict):
+        stripped = {str(k).strip(): v for k, v in data.items()}
         for key in ("responseResult", "Message", "message"):
-            if isinstance(data.get(key), str):
-                return data[key].lower()
+            if isinstance(stripped.get(key), str):
+                return stripped[key].lower()
     return str(data or "").lower()
+
+
+def platform_message(response: Any, data: Any) -> str:
+    """The platform's own words for a failed alarm/v1 write, original case.
+
+    JSON bodies give their ``responseResult`` / ``Message`` / ``message`` /
+    ``body`` text; the severity-config and autoclear 400s are PLAIN TEXT under
+    ``Content-Type: application/json`` (``Invalid eventType``), so the raw text
+    is the fallback.
+    """
+    if isinstance(data, dict):
+        stripped = {str(k).strip(): v for k, v in data.items()}
+        for key in ("responseResult", "Message", "message", "body"):
+            if isinstance(stripped.get(key), str) and stripped[key].strip():
+                return stripped[key].strip()
+        return str(data)[:300]
+    text = str(getattr(response, "text", "") or "").strip()
+    return text[:300] or f"HTTP {getattr(response, 'status_code', '?')} with an empty body"
 
 
 def _parse_json(response: Any) -> Any:
@@ -2275,5 +2491,969 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                     f"{data.get('Message') or data.get('message') or data}"
                 )
             return finalize(f"Suppression policy '{wanted}' deleted.\n\n{to_json(data)}", settings)
+        except Exception as e:
+            return format_error(e)
+
+    # --- settings writes (alarm/v1, verified live 2026-09-15) ----------------
+
+    async def fetch_catalogue() -> list[dict[str, Any]]:
+        """The whole event-type catalogue (``GET severity-config``; ``autoclear`` is the same)."""
+        data = await client.request_json("GET", SEVERITY_CONFIG_PATH)
+        check_alarm_v1(data, "Event type catalogue read")
+        items, _, _ = unwrap(data, "items")
+        return [i for i in items if isinstance(i, dict)]
+
+    async def resolve_event_type(name: str) -> dict[str, Any]:
+        """The catalogue entry for ``name`` or a PlatformError — nothing is written
+        for an unknown name (the platform would answer 400 ``Invalid eventType``
+        anyway, but the pre-flight read also gives the before-state)."""
+        item = find_event_type(await fetch_catalogue(), name)
+        if item is None:
+            raise PlatformError(
+                f"no event type '{name.strip()}' (find names with cnc_list_event_types)"
+            )
+        return item
+
+    async def catalogue_write(path: str, body: dict[str, Any], what: str) -> Any:
+        """POST a severity-config / autoclear body and turn the platform's answer
+        into a PlatformError when it is not a success.
+
+        Success is 200 ``{"status": "OK", "headers": {}, "body": "<text>"}``; the
+        400 bodies are PLAIN TEXT (``Invalid eventType`` / ``Invalid sourceValue
+        ...``) under a JSON content type. Safe to re-send (a repeat applies the
+        same setting), so the POST opts into the client's retry.
+        """
+        response = await client.request(
+            "POST", path, json_body=body, raise_on_error=False, retryable=True
+        )
+        data = _parse_json(response)
+        if not response.is_success:
+            message = platform_message(response, data)
+            if response.status_code == 400 and _INVALID_EVENT_TYPE in message.lower():
+                raise PlatformError(
+                    f"{what}: the platform rejected the event type name(s) "
+                    f"{body.get('eventTypes')} ({message}); nothing was changed. Use the exact "
+                    "names from cnc_list_event_types."
+                )
+            if response.status_code == 400:
+                raise PlatformError(f"{what} rejected: {message}. Nothing was changed.")
+            raise http_error(response)
+        check_alarm_v1(data, what)
+        if isinstance(data, dict) and str(data.get("status", "OK")).upper() not in (
+            "OK",
+            "SUCCESS",
+        ):
+            raise PlatformError(f"{what} failed: {platform_message(response, data)}")
+        return data
+
+    def require_applied(what: str, applied: bool, response: Any, shows: str) -> None:
+        """Raise when the platform accepted a catalogue write but the read-back does
+        not show the requested value.
+
+        The catalogue reflects a write on the very next read (verified live
+        2026-09-15), so a mismatch means the write was ignored, or a stale
+        answer; either way the agent must not be told its request was a no-op.
+        """
+        if not applied:
+            raise PlatformError(
+                f"{what}: the platform accepted the write ({str(response)[:300]}) but the "
+                f"catalogue still shows {shows}; re-read with cnc_list_event_types"
+            )
+
+    async def fetch_flags(path: str, what: str) -> dict[str, Any]:
+        data = await client.request_json("GET", path)
+        check_alarm_v1(data, what)
+        if not isinstance(data, dict):
+            raise PlatformError(f"{what}: unexpected response shape: {str(data)[:300]}")
+        return data
+
+    async def write_flag(
+        path: str, key: str, enabled: bool, what: str, reader: str
+    ) -> dict[str, Any]:
+        """POST a one-key partial document and verify the echoed stored value.
+
+        The platform stores a non-boolean as ``false`` without complaint
+        (verified live), so the value is always a real bool and the answer —
+        ``{"<key>": <stored value>}`` — must echo what was asked. An answer
+        without the key (``{}`` is what an EMPTY body gets, verified live) is
+        an error, not a success: nothing proves the flag was stored.
+        """
+        response = await client.request(
+            "POST", path, json_body={key: bool(enabled)}, raise_on_error=False, retryable=True
+        )
+        data = _parse_json(response)
+        if not response.is_success:
+            raise http_error(response)
+        check_alarm_v1(data, what)
+        if not isinstance(data, dict):
+            raise PlatformError(f"{what}: unexpected response shape: {str(data)[:300]}")
+        if key not in data:
+            raise PlatformError(
+                f"{what}: the platform did not echo {key!r} (answer {str(data)[:200]}); "
+                f"re-read with {reader}"
+            )
+        if bool(data[key]) is not bool(enabled):
+            raise PlatformError(
+                f"{what}: the platform stored {key!r} as {data[key]!r}, not {bool(enabled)!r}"
+            )
+        return data
+
+    def settings_flag_report(
+        heading: str, key: str, before: Any, after: Any, response: dict[str, Any], prefix: str
+    ) -> str:
+        name = key[len(prefix) :] if prefix and key.startswith(prefix) else key
+        changed = bool(before) is not bool(after)
+        lines = [
+            f"{heading} — {name}: {'on' if after else 'off'}"
+            + ("" if changed else " (already; nothing changed)"),
+            "",
+            to_json(
+                {
+                    "key": key,
+                    "before": bool(before),
+                    "after": bool(after),
+                    "changed": changed,
+                    "response": response,
+                }
+            ),
+        ]
+        return "\n".join(lines)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_set_event_type_severity",
+        title="Set Event Type Severity",
+        read_only=False,
+        destructive=False,
+        idempotent=True,
+    )
+    async def cnc_set_event_type_severity(
+        event_type: Annotated[
+            str,
+            Field(
+                description="Event type name exactly as listed by cnc_list_event_types "
+                "(e.g. 'BGP-5-ADJCHANGE_DOWN').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        severity: Annotated[
+            str,
+            Field(
+                description="New severity: 'critical', 'major', 'minor', 'warning' or "
+                "'information' (case-insensitive here; e.g. 'minor').",
+                min_length=1,
+                max_length=20,
+            ),
+        ],
+    ) -> str:
+        """Change the severity Crosswork assigns to every alarm raised from an
+        event type (the catalogue's ``severity``).
+
+        Write. Applies to alarms raised from now on for that event type on every
+        device; use it to promote a noisy-but-important syslog to Major or demote
+        a chatty one to Information. Not for silencing an event type (use a
+        suppression policy) and not a per-alarm change (cnc_clear_alarm /
+        cnc_acknowledge_alarm act on one alarm). Sends
+        POST /crosswork/alarm/v1/severity-config {"sourceType": "scc",
+        "sourceValue": "<severity, lowercase>", "eventTypes": ["<name>"]}.
+
+        Read-first / put-it-back recipe: the event type is resolved in the
+        catalogue BEFORE the write (unknown name -> error, nothing sent) and the
+        answer reports ``before.severity``; to undo, call this tool again with
+        ``severity = before.severity``. The change is visible on the very next
+        catalogue read (verified live 2026-09-15: Major -> Minor -> Major on
+        ROUTING-RIP-6-INFO_OOM, each read back within 0.2 s). Idempotent: the
+        same severity twice is a no-op. The platform only accepts the LOWERCASE
+        spellings and rejects 'cleared'/'info' (400 ``Invalid sourceValue``); the
+        tool normalises case and refuses other values without a call.
+
+        Args:
+            event_type: exact catalogue name (case-insensitive match; the write
+                uses the platform's spelling).
+            severity: critical | major | minor | warning | information.
+
+        Returns:
+            str: "Event type <name> severity: <before> -> <after>." followed by
+            JSON {"event_type": str, "before": {"name", "category", "severity",
+            "autoclear_minutes"}, "after": {...same...}, "changed": bool,
+            "response": {"status": "OK", "headers": {}, "body": "Severity
+            configuration update success"}}.
+            "Error: no event type '<x>' (find names with cnc_list_event_types)"
+            for an unknown name (nothing written); "Error: Unknown event severity
+            '<x>' ..." for a bad severity (nothing written); "Error: Set severity
+            of <name> rejected: <platform text>. Nothing was changed." on a 400;
+            "Error: Set severity of <name>: the platform accepted the write
+            (...) but the catalogue still shows severity <x>; re-read with
+            cnc_list_event_types" when the read-back does not show the requested
+            value ("already; nothing changed" is only said when the request
+            matched the before-state); other failures: "Error: <actionable
+            message>".
+        """
+        try:
+            wire = canonical(severity, EVENT_SEVERITIES, "event severity")
+            item = await resolve_event_type(event_type)
+            name = str(item.get("name") or item.get("eventTypeName"))
+            before = event_type_state(item)
+            body = {"sourceType": SEVERITY_SOURCE_TYPE, "sourceValue": wire, "eventTypes": [name]}
+            response = await catalogue_write(SEVERITY_CONFIG_PATH, body, f"Set severity of {name}")
+            after_item = find_event_type(await fetch_catalogue(), name) or item
+            after = event_type_state(after_item)
+            changed = before["severity"] != after["severity"]
+            # "already" means the REQUEST matched the before-state — never that the
+            # read-back merely equals it (which would hide an ignored write).
+            require_applied(
+                f"Set severity of {name}",
+                str(after["severity"]).lower() == wire,
+                response,
+                f"severity {after['severity']}",
+            )
+            headline = (
+                f"Event type {name} severity: {before['severity']} -> {after['severity']}."
+                if changed
+                else (
+                    f"Event type {name} severity is {after['severity']} (already; nothing changed)."
+                )
+            )
+            return finalize(
+                f"{headline}\n\n"
+                + to_json(
+                    {
+                        "event_type": name,
+                        "before": before,
+                        "after": after,
+                        "changed": changed,
+                        "response": response,
+                    }
+                ),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_set_event_type_autoclear",
+        title="Set Event Type Auto-Clear",
+        read_only=False,
+        destructive=False,
+        idempotent=True,
+    )
+    async def cnc_set_event_type_autoclear(
+        event_type: Annotated[
+            str,
+            Field(
+                description="Event type name exactly as listed by cnc_list_event_types "
+                "(e.g. 'SECURITY-LOGIN-4-AUTHEN_FAILED').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        minutes: Annotated[
+            int,
+            Field(
+                description="Auto-clear interval in minutes (e.g. 30 or 1440). The platform "
+                "accepts 5-599940; up to 55 it must be a multiple of 5, from 60 up a "
+                "multiple of 60.",
+                ge=AUTOCLEAR_MIN_MINUTES,
+                le=AUTOCLEAR_MAX_MINUTES,
+            ),
+        ],
+    ) -> str:
+        """Make alarms of an event type clear themselves after N minutes (the
+        catalogue's ``revert`` interval).
+
+        Write. Use it for event types that never send a matching "up"/clear
+        event (login failures, threshold crossings) so their alarms do not stay
+        open forever. To remove the interval again use
+        cnc_revert_event_type_autoclear. Sends POST /crosswork/alarm/v1/autoclear
+        {"sourceType": "aac", "sourceValue": "<minutes>", "eventTypes": ["<name>"]}.
+
+        Read-first: the event type is resolved in the catalogue BEFORE the write
+        (unknown name -> error, nothing sent) and the answer reports
+        ``before.autoclear_minutes`` (null = never), which is what to pass back
+        to restore it; when it was null, cnc_revert_event_type_autoclear puts it
+        back to never (it deletes the interval — there is no default to
+        restore). The new interval shows in the catalogue on the very next read
+        (verified live 2026-09-15). Idempotent: the same interval twice is a
+        no-op. The platform's rule (5-599940; <= 55 in multiples of 5; >= 60 in
+        multiples of 60) is checked here first so a bad value is refused without
+        a call.
+
+        Args:
+            event_type: exact catalogue name (case-insensitive match).
+            minutes: 5..599940 per the rule above.
+
+        Returns:
+            str: "Event type <name> auto-clear: <before|never> -> <N> min."
+            followed by JSON {"event_type": str, "before": {"name", "category",
+            "severity", "autoclear_minutes": int|null}, "after": {...},
+            "changed": bool, "response": {"status": "OK", "headers": {},
+            "body": "Alarm autoclear update:success"}}.
+            "Error: no event type '<x>' ..." for an unknown name (nothing
+            written); "Error: auto-clear minutes ... (got N)" for a value the
+            platform would refuse (nothing written); "Error: Set auto-clear of
+            <name> rejected: <platform text>. Nothing was changed." on a 400;
+            "Error: Set auto-clear of <name>: the platform accepted the write
+            (...) but the catalogue still shows auto-clear <x>; re-read with
+            cnc_list_event_types" when the read-back does not show the requested
+            interval ("already; nothing changed" is only said when the request
+            matched the before-state); other failures: "Error: <actionable
+            message>".
+        """
+        try:
+            problem = autoclear_minutes_error(minutes)
+            if problem:
+                raise PlatformError(problem)
+            item = await resolve_event_type(event_type)
+            name = str(item.get("name") or item.get("eventTypeName"))
+            before = event_type_state(item)
+            body = {
+                "sourceType": AUTOCLEAR_SOURCE_TYPE,
+                "sourceValue": str(minutes),
+                "eventTypes": [name],
+            }
+            response = await catalogue_write(AUTOCLEAR_PATH, body, f"Set auto-clear of {name}")
+            after_item = find_event_type(await fetch_catalogue(), name) or item
+            after = event_type_state(after_item)
+            changed = before["autoclear_minutes"] != after["autoclear_minutes"]
+            was = (
+                f"{before['autoclear_minutes']} min"
+                if before["autoclear_minutes"] is not None
+                else "never"
+            )
+            now = (
+                f"{after['autoclear_minutes']} min"
+                if after["autoclear_minutes"] is not None
+                else "never"
+            )
+            require_applied(
+                f"Set auto-clear of {name}",
+                after["autoclear_minutes"] == minutes,
+                response,
+                f"auto-clear {now}",
+            )
+            headline = (
+                f"Event type {name} auto-clear: {was} -> {now}."
+                if changed
+                else f"Event type {name} auto-clear is {now} (already; nothing changed)."
+            )
+            return finalize(
+                f"{headline}\n\n"
+                + to_json(
+                    {
+                        "event_type": name,
+                        "before": before,
+                        "after": after,
+                        "changed": changed,
+                        "response": response,
+                    }
+                ),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_revert_event_type_autoclear",
+        title="Revert Event Type Auto-Clear",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_revert_event_type_autoclear(
+        event_type: Annotated[
+            str,
+            Field(
+                description="Event type name exactly as listed by cnc_list_event_types "
+                "(e.g. 'SECURITY-LOGIN-4-AUTHEN_FAILED').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+    ) -> str:
+        """Remove an event type's auto-clear interval so its alarms stay open
+        until cleared by a matching event or an operator.
+
+        Write, destructive: despite the endpoint's name this DELETES the
+        interval — it does NOT restore a factory default. Verified live
+        2026-09-15: reverting ciscoPtpSlaveLost, which ships with a 1440-minute
+        interval, left it with no interval at all (re-set afterwards). So read
+        the answer's ``before.autoclear_minutes`` and, to restore, call
+        cnc_set_event_type_autoclear with that value. Sends
+        POST /crosswork/alarm/v1/autoclear/revert {"eventTypes": ["<name>"]}.
+
+        Read-first: the event type is resolved in the catalogue BEFORE the write
+        (unknown name -> error, nothing sent). Idempotent: reverting a type that
+        has no interval is a 200 no-op (reported as such). The change is visible
+        on the very next catalogue read.
+
+        Args:
+            event_type: exact catalogue name (case-insensitive match).
+
+        Returns:
+            str: "Event type <name> auto-clear: <N> min -> never." (or "... is
+            never (already; nothing changed).") followed by JSON {"event_type",
+            "before": {"name", "category", "severity", "autoclear_minutes"},
+            "after": {...}, "changed": bool, "response": {"status": "OK",
+            "headers": {}, "body": "Alarm autoclear deletion operation completed
+            successfully"}}.
+            "Error: no event type '<x>' ..." for an unknown name (nothing
+            written); "Error: Revert auto-clear of <name>: the platform accepted
+            the write (...) but the catalogue still shows auto-clear <N> min;
+            re-read with cnc_list_event_types" when the interval is still there
+            after the write ("already; nothing changed" is only said when there
+            was no interval to begin with); other failures: "Error: <actionable
+            message>".
+        """
+        try:
+            item = await resolve_event_type(event_type)
+            name = str(item.get("name") or item.get("eventTypeName"))
+            before = event_type_state(item)
+            response = await catalogue_write(
+                AUTOCLEAR_REVERT_PATH, {"eventTypes": [name]}, f"Revert auto-clear of {name}"
+            )
+            after_item = find_event_type(await fetch_catalogue(), name) or item
+            after = event_type_state(after_item)
+            changed = before["autoclear_minutes"] != after["autoclear_minutes"]
+            require_applied(
+                f"Revert auto-clear of {name}",
+                after["autoclear_minutes"] is None,
+                response,
+                f"auto-clear {after['autoclear_minutes']} min",
+            )
+            headline = (
+                f"Event type {name} auto-clear: {before['autoclear_minutes']} min -> never. "
+                f"Restore with cnc_set_event_type_autoclear(minutes="
+                f"{before['autoclear_minutes']})."
+                if changed
+                else f"Event type {name} auto-clear is never (already; nothing changed)."
+            )
+            return finalize(
+                f"{headline}\n\n"
+                + to_json(
+                    {
+                        "event_type": name,
+                        "before": before,
+                        "after": after,
+                        "changed": changed,
+                        "response": response,
+                    }
+                ),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_update_alarm_manager_settings",
+        title="Update Alarm Manager Settings",
+        read_only=False,
+        destructive=False,
+        idempotent=True,
+    )
+    async def cnc_update_alarm_manager_settings(
+        device_type: Annotated[
+            str,
+            Field(
+                description="Device type exactly as listed by cnc_get_alarm_manager_settings, "
+                "with or without the 'alarmManager/' prefix (e.g. 'Cisco NCS 5001').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        enabled: Annotated[
+            bool,
+            Field(
+                description="True to turn the alarm manager on for that device type, "
+                "False to turn it off."
+            ),
+        ],
+    ) -> str:
+        """Turn Crosswork's alarm manager on or off for one device type — whether
+        it raises device alarms for that platform family.
+
+        Write. Use it when a family's device alarms are unwanted (off) or missing
+        (on). Only device types the platform already lists can be changed: the
+        current document is read first and the name resolved against it
+        (unknown -> error, nothing sent), because whether an unknown key would be
+        created — and could then be removed — is unverified. Sends
+        POST /crosswork/alarm/v1/manager/settings {"alarmManager/<type>": bool}, a
+        PARTIAL document: only that key changes (verified live 2026-09-15 on
+        'Cisco NCS 5001': flipped on and back off, the other 98 keys untouched,
+        each read back immediately). The platform echoes {"<key>": <stored>} and
+        stores a non-boolean as false without complaint, so the tool sends a real
+        boolean and checks the echo. Idempotent.
+
+        Args:
+            device_type: the key with or without 'alarmManager/' (case-insensitive).
+            enabled: desired state.
+
+        Returns:
+            str: "Alarm manager — <type>: on|off" (with "(already; nothing
+            changed)" when it was) followed by JSON {"key": "alarmManager/<type>",
+            "before": bool, "after": bool, "changed": bool,
+            "response": {"alarmManager/<type>": bool}}.
+            "Error: no alarm-manager device type '<x>' (list them with
+            cnc_get_alarm_manager_settings)" for an unknown type (nothing
+            written); "Error: Alarm manager update for <key>: the platform did
+            not echo '<key>' ..." / "... stored '<key>' as False, not True"
+            when the answer does not prove the flag was stored (re-read with
+            cnc_get_alarm_manager_settings); other failures: "Error:
+            <actionable message>".
+        """
+        try:
+            current = await fetch_flags(MANAGER_SETTINGS_PATH, "Alarm manager settings read")
+            key = resolve_setting_key(current, device_type, MANAGER_KEY_PREFIX)
+            if key is None:
+                raise PlatformError(
+                    f"no alarm-manager device type '{device_type.strip()}' (list them with "
+                    "cnc_get_alarm_manager_settings)"
+                )
+            before = current.get(key)
+            response = await write_flag(
+                MANAGER_SETTINGS_PATH,
+                key,
+                enabled,
+                f"Alarm manager update for {key}",
+                "cnc_get_alarm_manager_settings",
+            )
+            after = response[key]
+            return finalize(
+                settings_flag_report(
+                    "Alarm manager", key, before, after, response, MANAGER_KEY_PREFIX
+                ),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_update_gnmi_alarm_settings",
+        title="Update gNMI Alarm Settings",
+        read_only=False,
+        destructive=False,
+        idempotent=True,
+    )
+    async def cnc_update_gnmi_alarm_settings(
+        enabled: Annotated[
+            bool,
+            Field(description="True to collect alarms over gNMI for the vendor, False to stop."),
+        ],
+        vendor: Annotated[
+            str,
+            Field(
+                description="Vendor key as listed by cnc_get_alarm_settings (gNMI section); "
+                "the only one on Crosswork 7.2 is 'Cisco Systems' (default).",
+                min_length=1,
+                max_length=100,
+            ),
+        ] = "Cisco Systems",
+    ) -> str:
+        """Turn gNMI-based alarm collection on or off for a vendor.
+
+        Write. Use it when devices are onboarded with gNMI (cnc_enable_device_gnmi)
+        and alarms should come over gNMI telemetry instead of syslog/SNMP traps
+        — or to stop that. Only vendors the platform already lists can be
+        changed: the current document is read first (unknown vendor -> error,
+        nothing sent). Sends POST /crosswork/alarm/v1/gnmi/settings {"<vendor>":
+        bool}, a PARTIAL document that answers {"<vendor>": <stored>} (verified
+        live 2026-09-15: 'Cisco Systems' false -> true -> false, each read back
+        immediately; a non-boolean is stored as false, so the tool sends a real
+        boolean and checks the echo). Idempotent. Whether existing gNMI-capable
+        devices need re-collection after the flip is unverified.
+
+        Args:
+            enabled: desired state.
+            vendor: 'Cisco Systems' unless the platform lists others.
+
+        Returns:
+            str: "gNMI alarm collection — <vendor>: on|off" (with "(already;
+            nothing changed)" when it was) followed by JSON {"key": "<vendor>",
+            "before": bool, "after": bool, "changed": bool,
+            "response": {"<vendor>": bool}}.
+            "Error: no gNMI alarm vendor '<x>' (cnc_get_alarm_settings lists
+            them)" for an unknown vendor (nothing written); "Error: gNMI alarm
+            settings update for <vendor>: the platform did not echo '<vendor>'
+            ..." / "... stored '<vendor>' as False, not True" when the answer
+            does not prove the flag was stored (re-read with
+            cnc_get_alarm_settings); other failures: "Error: <actionable
+            message>".
+        """
+        try:
+            current = await fetch_flags(GNMI_SETTINGS_PATH, "gNMI alarm settings read")
+            key = resolve_setting_key(current, vendor)
+            if key is None:
+                raise PlatformError(
+                    f"no gNMI alarm vendor '{vendor.strip()}' (cnc_get_alarm_settings lists them)"
+                )
+            before = current.get(key)
+            response = await write_flag(
+                GNMI_SETTINGS_PATH,
+                key,
+                enabled,
+                f"gNMI alarm settings update for {key}",
+                "cnc_get_alarm_settings",
+            )
+            after = response[key]
+            return finalize(
+                settings_flag_report("gNMI alarm collection", key, before, after, response, ""),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_set_event_type_recommendation",
+        title="Set Event Type Recommendation",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+        redact=("explanation", "recommended_action"),
+    )
+    async def cnc_set_event_type_recommendation(
+        event_type: Annotated[
+            str,
+            Field(
+                description="Event type name exactly as listed by cnc_list_event_types "
+                "(e.g. 'BGP-5-ADJCHANGE_DOWN').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        explanation: Annotated[
+            str,
+            Field(
+                description="Custom explanation shown for the event type (e.g. 'A BGP "
+                "session to a customer CE dropped'); empty (default) restores the "
+                "platform's default explanation.",
+                max_length=4000,
+            ),
+        ] = "",
+        recommended_action: Annotated[
+            str,
+            Field(
+                description="Custom recommended action (e.g. 'Open a P2 ticket with the "
+                "NOC and check the CE'); empty (default) restores the platform's "
+                "default action.",
+                max_length=4000,
+            ),
+        ] = "",
+    ) -> str:
+        """Set (or clear) the custom explanation and recommended action shown for
+        an event type — the text cnc_get_event_type_recommendation returns and
+        operators see in the alarm UI.
+
+        Write, destructive: it OVERWRITES both custom texts at once (the platform
+        has no per-field update), so pass both — an omitted/empty field clears
+        that text back to the platform default. Read-first: the current texts are
+        read and reported as ``before`` (restore by passing them back). Sends
+        POST /crosswork/alarm/v1/recommended-action {"erroreventype": "<name>",
+        "explaination": ..., "recommendedaction": ...} (the platform's own
+        spelling) -> 200 {"responseResult": "Data Saved Successfully"}; the GET
+        shows the new text immediately (verified live 2026-09-15: set, read
+        back, cleared with empty strings, read back as defaults). The endpoint
+        answers 200 for error documents too ({"responseResult": "Invalid input
+        ..."}), so the tool trusts only the read-back: after the write the texts
+        are read again and must equal what was sent (whitespace-trimmed), else
+        the tool is an error. ``nextstepupdate`` becomes 1 after the first save
+        and stays 1 — a "custom text was ever saved" flag, not a next step.
+        Idempotent. The texts are withheld from the dry-run echo (they are
+        free-form runbook text).
+
+        Args:
+            event_type: exact catalogue name (find it with cnc_list_event_types).
+            explanation / recommended_action: the custom texts; empty clears.
+
+        Returns:
+            str: "Recommendation for <name> saved." (or "... cleared to the platform
+            defaults.") followed by JSON {"event_type": str,
+            "before": {"explanation": str, "recommended_action": str},
+            "after": {"explanation": str, "recommended_action": str},
+            "defaults": {"explanation": str, "recommended_action": str},
+            "response": {"responseResult": "Data Saved Successfully"}}. The
+            headline follows the REQUEST (both texts empty -> "cleared"), the
+            JSON the read-back.
+            "Error: no event type '<x>' (find names with cnc_list_event_types)"
+            when the platform answers 400 "EventType does not exist" (nothing
+            saved); "Error: Set recommendation for <name>: the platform answered
+            <its text> but the read-back shows {...}; re-read with
+            cnc_get_event_type_recommendation" when a 200 answer did not store
+            the texts (an error document such as "Invalid input ...", or an
+            ignored write); other failures: "Error: <actionable message>".
+        """
+        try:
+            name = event_type.strip()
+
+            async def read_texts() -> dict[str, Any]:
+                response = await client.request(
+                    "GET", RECOMMENDED_ACTION_PATH, params={"eventType": name}, raise_on_error=False
+                )
+                body = _parse_json(response)
+                if response.status_code == 400 and _EVENT_TYPE_MISSING in _response_result(body):
+                    raise PlatformError(
+                        f"no event type '{name}' (find names with cnc_list_event_types)"
+                    )
+                if not response.is_success:
+                    raise http_error(response)
+                check_alarm_v1(body, "Recommended action read")
+                return body if isinstance(body, dict) else {}
+
+            current = await read_texts()
+            before = {
+                "explanation": current.get("explaination") or "",
+                "recommended_action": current.get("recommendedaction") or "",
+            }
+            body = {
+                "erroreventype": name,
+                "explaination": explanation.strip(),
+                "recommendedaction": recommended_action.strip(),
+            }
+            response = await client.request(
+                "POST",
+                RECOMMENDED_ACTION_PATH,
+                json_body=body,
+                raise_on_error=False,
+                retryable=True,
+            )
+            data = _parse_json(response)
+            if response.status_code == 400 and _EVENT_TYPE_MISSING in _response_result(data):
+                raise PlatformError(
+                    f"no event type '{name}' (find names with cnc_list_event_types)"
+                )
+            if not response.is_success:
+                raise http_error(response)
+            check_alarm_v1(data, f"Set recommendation for {name}")
+            if isinstance(data, dict) and str(data.get("status", "Success")).lower() not in (
+                "success",
+                "ok",
+            ):
+                raise PlatformError(
+                    f"Set recommendation for {name} failed: {platform_message(response, data)}"
+                )
+            latest = await read_texts()
+            after = {
+                "explanation": latest.get("explaination") or "",
+                "recommended_action": latest.get("recommendedaction") or "",
+            }
+            # The only proof of success is the read-back: the endpoint answers 200
+            # for error documents too ({"responseResult": "Invalid input ..."}), and
+            # a silently ignored write would otherwise be reported as done.
+            wanted = {
+                "explanation": body["explaination"],
+                "recommended_action": body["recommendedaction"],
+            }
+            if after != wanted:
+                raise PlatformError(
+                    f"Set recommendation for {name}: the platform answered "
+                    f"{platform_message(response, data)} but the read-back shows "
+                    f"{str(after)[:300]}; re-read with cnc_get_event_type_recommendation"
+                )
+            cleared = not (wanted["explanation"] or wanted["recommended_action"])
+            headline = (
+                f"Recommendation for {name} cleared to the platform defaults."
+                if cleared
+                else f"Recommendation for {name} saved."
+            )
+            return finalize(
+                f"{headline}\n\n"
+                + to_json(
+                    {
+                        "event_type": name,
+                        "before": before,
+                        "after": after,
+                        "defaults": {
+                            "explanation": latest.get("defaultexplaination") or "",
+                            "recommended_action": latest.get("defaultrecommendedaction") or "",
+                        },
+                        "response": data,
+                    }
+                ),
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_update_alarm_suppression_policy",
+        title="Update Alarm Suppression Policy",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_update_alarm_suppression_policy(
+        name: Annotated[
+            str,
+            Field(
+                description="Policy name as listed by cnc_list_alarm_suppression_policies "
+                "(e.g. 'suppress-bgp-flaps'). Names cannot be changed.",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        description: Annotated[
+            str | None,
+            Field(
+                description="New free-text description (e.g. 'Maintenance window extended'); "
+                "omit to keep the current one.",
+                max_length=1000,
+            ),
+        ] = None,
+        criteria: Annotated[
+            str | None,
+            Field(
+                description="New event-type criteria, e.g. 'eventType in [BGP-5-ADJCHANGE_DOWN,"
+                "BGP-5-ADJCHANGE_UP]' (names from cnc_list_event_types); omit to keep.",
+                max_length=2000,
+            ),
+        ] = None,
+        action: Annotated[
+            str | None,
+            Field(
+                description="New action: 'suppressAlarm' (drop the alarm) or 'suppressEvent' "
+                "(drop the event too); omit to keep."
+            ),
+        ] = None,
+        device_groups: Annotated[
+            str | None,
+            Field(
+                description="New comma-separated device-group UUIDs (e.g. 'uuid-1,uuid-2'); "
+                "'' (empty string) scopes the policy to ALL devices; omit to keep.",
+                max_length=4000,
+            ),
+        ] = None,
+    ) -> str:
+        """Change an existing alarm suppression policy's description, criteria,
+        action or device-group scope (its name is fixed; delete and recreate to
+        rename).
+
+        Write, destructive: the platform's PUT replaces the whole rule, so the
+        tool reads the policy first and merges only the fields given over the
+        current values (an omitted field is kept; nothing is sent when no field
+        is given or the policy does not exist). Sends
+        PUT /crosswork/alarm/v1/suppressionpolicy {"policyname", "description",
+        "action", "deviceGroups": [...], "criteria"} — the collection path (a
+        PUT on /<name> is 405) with the FULL body (a partial body is 400
+        {"Message ": "Action type is null"}) -> 200 {"Message": "Success",
+        "status": "Success"}; the list shows the new values immediately
+        (verified live 2026-09-15: description, action and criteria changed on a
+        phase-d policy and read back). An unknown name is 400 {"Message":
+        "Failed to update policy rule <name>"}. Idempotent.
+
+        Args:
+            name: existing policy name (case-insensitive match).
+            description / criteria / action / device_groups: the new values;
+                omit any to keep it. device_groups='' means all devices.
+
+        Returns:
+            str: "Suppression policy '<name>' updated (<fields>)." followed by JSON
+            {"before": {<policy as listed>}, "policy": {<body sent>},
+             "changed": [field, ...], "response": {"Message": "Success",
+             "status": "Success"}}.
+            "Error: no suppression policy '<x>' (list with
+            cnc_list_alarm_suppression_policies)" when it does not exist (nothing
+            sent); "Error: nothing to update ..." when no field is given; "Error:
+            Update suppression policy '<x>' rejected: <platform text>" on a 400;
+            other failures: "Error: <actionable message>".
+        """
+        try:
+            wire_action = canonical(action, SUPPRESSION_ACTIONS, "suppression action")
+            if (
+                description is None
+                and criteria is None
+                and action is None
+                and device_groups is None
+            ):
+                raise PlatformError(
+                    "nothing to update: give at least one of description, criteria, action, "
+                    "device_groups"
+                )
+            data = await client.request_json("GET", SUPPRESSION_POLICY_PATH)
+            check_alarm_v1(data, "Suppression policy read")
+            policies, _, _ = unwrap(data, "data")
+            current = find_policy([p for p in policies if isinstance(p, dict)], name)
+            if current is None:
+                raise PlatformError(
+                    f"no suppression policy '{name.strip()}' (list with "
+                    "cnc_list_alarm_suppression_policies)"
+                )
+            groups_before = (
+                [str(g) for g in current.get("deviceGroups")]
+                if isinstance(current.get("deviceGroups"), list)
+                else []
+            )
+            body = {
+                "policyname": str(current.get("policyname")),
+                "description": (
+                    description.strip()
+                    if description is not None
+                    else str(current.get("description") or "")
+                ),
+                "action": wire_action or str(current.get("action") or SUPPRESSION_ACTIONS[0]),
+                "deviceGroups": (
+                    [g.strip() for g in device_groups.split(",") if g.strip()]
+                    if device_groups is not None
+                    else groups_before
+                ),
+                "criteria": criteria.strip()
+                if criteria is not None
+                else str(current.get("criteria") or ""),
+            }
+            changed = [
+                field
+                for field, key, old in (
+                    ("description", "description", str(current.get("description") or "")),
+                    ("action", "action", str(current.get("action") or "")),
+                    ("device_groups", "deviceGroups", groups_before),
+                    ("criteria", "criteria", str(current.get("criteria") or "")),
+                )
+                if body[key] != old
+            ]
+            response = await client.request(
+                "PUT", SUPPRESSION_POLICY_PATH, json_body=body, raise_on_error=False
+            )
+            result = _parse_json(response)
+            if not response.is_success:
+                message = platform_message(response, result)
+                if response.status_code == 400 and _POLICY_UPDATE_FAILED in message.lower():
+                    raise PlatformError(
+                        f"no suppression policy '{body['policyname']}' — the platform refused "
+                        f"the update ({message}); list with cnc_list_alarm_suppression_policies "
+                        "and verify the criteria syntax."
+                    )
+                if response.status_code == 400:
+                    raise PlatformError(
+                        f"Update suppression policy '{body['policyname']}' rejected: {message}"
+                    )
+                raise http_error(response)
+            check_alarm_v1(result, f"Update suppression policy '{body['policyname']}'")
+            if (
+                isinstance(result, dict)
+                and str(result.get("status", "Success")).lower() != "success"
+            ):
+                raise PlatformError(
+                    f"Update suppression policy '{body['policyname']}' failed: "
+                    f"{platform_message(response, result)}"
+                )
+            what = ", ".join(changed) if changed else "no field differed; re-sent as is"
+            return finalize(
+                f"Suppression policy '{body['policyname']}' updated ({what}).\n\n"
+                + to_json(
+                    {"before": current, "policy": body, "changed": changed, "response": result}
+                ),
+                settings,
+            )
         except Exception as e:
             return format_error(e)

@@ -2,7 +2,7 @@
 
 > **Generated** by `scripts/rbac_map.py` from the tool source, the gateway's secured-API catalogue (CNC 7.2.0, 217 APIs in 27 features, catalogue verified live 2026-09-14) and the platform's read templates and baseline rows (captured 2026-09-14 and 2026-09-15) — do not edit by hand. Regenerate with `make rbac` (offline, from the catalogue and templates embedded in `src/cnc_mcp/data/rbac_map.json`) or `make rbac-fetch` (re-read the catalogue from a live instance; `--read-templates <capture>` loads a fresh template capture); `make rbac-check` fails when the committed files are stale.
 
-The server registers 245 tools (182 read-only, 63 write). Each sends a known set of HTTP requests; each request is routed by the gateway to one secured API, and a role must grant that API (with the method) or the gateway refuses the call (403). This page lists exactly which API rows a role needs and which of the role editor's **Read / Write / Delete** ticks on each — first for a read-only account, then per write area, then per tool.
+The server registers 282 tools (184 read-only, 98 write). Each sends a known set of HTTP requests; each request is routed by the gateway to one secured API, and a role must grant that API (with the method) or the gateway refuses the call (403). This page lists exactly which API rows a role needs and which of the role editor's **Read / Write / Delete** ticks on each — first for a read-only account, then per write area, then per tool.
 
 ## 1. How Crosswork RBAC works
 
@@ -40,11 +40,11 @@ The server registers 245 tools (182 read-only, 63 write). Each sends a known set
   - `platform_cwplatform`: POST `/.+/(query|get|verify|list)$`
   - `proxy_cw-proxy`: POST `/.+/jsonrpc/(nsoLogin|new_trans|get_trans|query|show_config|get_trans_changes|logout|get_service_points|get_module_prefix_map)$`
   - `tsdn_cat-restconf-nbi`: POST `/.+/operations/cat-inventory-rpc:.*`
-- A row ticked Read **and** Write is stored as its single `/.*` entry only (no template — the entry already covers every POST), **except on the APIs on which the service reserves a last segment `delete` for the Delete tick** (presumably the ones that delete through `POST .../delete` — no tool POSTs such a path, so the map does not show one): there a row whose single entry carries POST without DELETE — Write without Delete, the one entry the editor submits and the generated bodies carry — is **split**: POST moves to a second entry `{url: ".+(?:/[^/]{1,5}|/[^/]{7,}|/[^d][^/]{5}|/[^/][^e][^/]{4}|/[^/]{2}[^l][^/]{3}|/[^/]{3}[^e][^/]{2}|/[^/]{4}[^t][^/]|/[^/]{5}[^e])[/]?$", methods: [POST]}`, an unanchored search that matches every path whose LAST segment is not the six-character word `delete` (a last segment of 1-5 characters, of 7 or more, or of six characters differing from d-e-l-e-t-e in some position; a trailing slash allowed — `deletes` and `Delete` pass), and the remaining methods come back in **alphabetical** order: the operator body's `[GET, POST, PUT, PATCH] /.*` row read back as `[GET, PATCH, PUT] /.*` + `[POST] <the pattern>`. Verified 2026-09-15 on `cwcollection`, `optima_restconf`, `platform_cwplatform` (the operator body's Write rows there, `tests/fixtures/rbac/stored_generated_operator.json`); **inferred** for `collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`, `cw-probe-mgr`, `cw-ztp-service`, `dg-manager-global-parameters-api`, `optima_analytics_api` from the 2026-09-14 experiment in which a row whose only entry was a custom-url POST came back with its methods stripped to `[]` and this same pattern entry appended, on those seven (and on `cwcollection`, `optima_restconf`) — the same split, POST being the entry's only method; no union entry has been stored on them, so the split there is the model's extrapolation, not a read-back. Read and Write submitted as two entries beside each other (the 2026-09-14 experiment) were stored verbatim, and so were the operator body's 5 rows carrying DELETE and its 4 Write-only rows (`[POST, PUT, PATCH]`) — none of them on this list. In the same 2026-09-14 submission a custom GET entry beside a custom POST entry was stored verbatim on `platform_cwplatform` (and on three APIs off this list, `device-config`, `inventory_cwinventory`, `tsdn_cat-restconf-nbi`) — the split keys on the row having a single entry. **Consequence: Write without Delete on these APIs still permits every POST except a path ending in `/delete`.** For the Optimization Engine (`optima_restconf`) an operator role without Delete can still create policies, and the delete RPC the map records — `POST /crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete` (`cnc_delete_sr_policy`) — ends in the segment `cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete`, not `delete`, so it stays permitted too; no POST any tool sends on these 10 APIs ends in `/delete`.
+- A row ticked Read **and** Write is stored as its single `/.*` entry only (no template — the entry already covers every POST), **except on the APIs on which the service reserves a last segment `delete` for the Delete tick** (presumably the ones that delete through `POST .../delete` — no tool POSTs such a path, so the map does not show one): there a row whose single entry carries POST without DELETE — Write without Delete, the one entry the editor submits and the generated bodies carry — is **split**: POST moves to a second entry `{url: ".+(?:/[^/]{1,5}|/[^/]{7,}|/[^d][^/]{5}|/[^/][^e][^/]{4}|/[^/]{2}[^l][^/]{3}|/[^/]{3}[^e][^/]{2}|/[^/]{4}[^t][^/]|/[^/]{5}[^e])[/]?$", methods: [POST]}`, an unanchored search that matches every path whose LAST segment is not the six-character word `delete` (a last segment of 1-5 characters, of 7 or more, or of six characters differing from d-e-l-e-t-e in some position; a trailing slash allowed — `deletes` and `Delete` pass), and the remaining methods come back in **alphabetical** order: the operator body's `[GET, POST, PUT, PATCH] /.*` row read back as `[GET, PATCH, PUT] /.*` + `[POST] <the pattern>`. Verified 2026-09-15 on `cwcollection`, `optima_restconf`, `platform_cwplatform` (the operator body's Write rows there, `tests/fixtures/rbac/stored_generated_operator.json`); **inferred** for `collection_dg-manager`, `cw-fault-alarms-api`, `cw-fault-events-api`, `cw-probe-mgr`, `cw-ztp-service`, `dg-manager-global-parameters-api`, `optima_analytics_api` from the 2026-09-14 experiment in which a row whose only entry was a custom-url POST came back with its methods stripped to `[]` and this same pattern entry appended, on those seven (and on `cwcollection`, `optima_restconf`) — the same split, POST being the entry's only method; no union entry has been stored on them, so the split there is the model's extrapolation, not a read-back. Read and Write submitted as two entries beside each other (the 2026-09-14 experiment) were stored verbatim, and so were the operator body's 10 rows carrying DELETE and its 7 Write-only rows (`[POST, PUT, PATCH]`) — including `cw-ztp-service` on this list: a single entry carrying DELETE is stored verbatim, the split applies only to Write without Delete (read back 2026-09-15). In the same 2026-09-14 submission a custom GET entry beside a custom POST entry was stored verbatim on `platform_cwplatform` (and on three APIs off this list, `device-config`, `inventory_cwinventory`, `tsdn_cat-restconf-nbi`) — the split keys on the row having a single entry. **Consequence: Write without Delete on these APIs still permits every POST except a path ending in `/delete`.** For the Optimization Engine (`optima_restconf`) an operator role without Delete can still create policies, and the delete RPC the map records — `POST /crosswork/nbi/optimization/v3/restconf/operations/cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete` (`cnc_delete_sr_policy`) — ends in the segment `cisco-crosswork-optimization-engine-sr-policy-operations:sr-policy-delete`, not `delete`, so it stays permitted too; no POST any tool sends on these 10 APIs ends in `/delete`.
 
 > **Warning — never load a role body with a url other than `"/.*"`.** A role whose FIRST `allowed_urls` entry on some api_id has any other url **crashes the Roles page for everyone** (verified 2026-09-15: `TypeError: Cannot read properties of undefined (reading 'read')` in the editor's `setAccess` — it looks the url up among its `"/.*"` rows and finds nothing) and the whole page renders blank until the role is fixed through the API or deleted. The service's own appended templates are custom urls too, but they sit at index 1 or later, which the editor never reads. Independently of the crash the service does not store every custom-URL shape verbatim either (2026-09-14: a row whose only entry was a custom-URL POST came back with its methods stripped to `[]` and the not-delete pattern above appended — a wider grant than the url submitted — on the nine APIs it was tried on). The generated bodies carry `"/.*"` only.
 
-**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, `mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by users carrying the generated roles (read-only: 262 read calls answered, the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was refused, two writes refused as predicted; operator: all 432 read and write steps of the smoke answered, every created object removed again, no 403 at all; the smoke runs were on the previous generation of the bodies, which differed only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field, and their refusal predictions are identical; the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of the 182 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted):
+**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, `mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by users carrying the generated roles (read-only: 262 read calls answered, the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was refused, two writes refused as predicted; operator: all 432 read and write steps of the smoke answered, every created object removed again, no 403 at all; the smoke runs were on the previous generation of the bodies — those of the 245 tools registered on 2026-09-15 (182 read) — which differed from the generated bodies of those tools only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field; the bodies as committed now also carry what the 37 tools added since (2 read, 35 write) need — rows and ticks that smoke did not exercise — and the refusal predictions for the tools of that day are identical (the same 14 read tools refused under `cnc-mcp-readonly`, `cnc_reactivate_probe` permitted, every tool permitted under `cnc-mcp-operator`); the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 170 of the 184 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 282 of 282 permitted):
 
 - Tyk registers the API definitions **longest listen path first** and each as a gorilla-mux path prefix, so a request goes to the API with the longest listen path that claims it; `{...}` in a listen path matches one segment. The map's router additionally requires the match to end at a segment boundary and accepts a missing trailing slash; no template in the map routes differently under either reading (`tests/test_rbac_map.py`). The query string is not part of the match.
 - Within the routed API, each `allowed_urls[].url` is run as an **unanchored regex search against the full request path** (`regexp.MatchString` on `r.URL.Path`; the listen path is not stripped first): `/nodes` permits `/crosswork/inventory/v1/nodes/query`, `^/v1/nodes/query$` permits nothing, and `/.+/query$` (an inventory read template) permits every `.../query` under the API. The method must be listed on a matching entry; an API with an empty `allowed_urls` has no path restriction.
@@ -52,11 +52,11 @@ The server registers 245 tools (182 read-only, 63 write). Each sends a known set
 
 **Not verified:**
 
-- The editor's wire shape, the display-name groups, the stored form of single-tick, per-tick and union entries (the generated bodies read back), the baseline rows, the split of a Write-without-Delete row on `cwcollection`, `optima_restconf`, `platform_cwplatform` and the gateway's refusals are all observed. Read from the UI bundle but not exercised live: how the editor displays and re-saves an API-loaded role (the group rows above, section 6). Extrapolated, not read back: the same split on the 7 other POST-delete APIs (from a POST-only experiment), and what the service stores for a row carrying DELETE, or a Write-only row, on any of them (the bodies have none). What is still static is the map itself (section 6: a source-derived heuristic, no tool endpoint is called), a device access group is reported, not evaluated, and whether task bundles exist for roles other than admin (section 5) is unknown.
+- The editor's wire shape, the display-name groups, the stored form of single-tick, per-tick and union entries (the generated bodies read back), the baseline rows, the split of a Write-without-Delete row on `cwcollection`, `optima_restconf`, `platform_cwplatform` and the gateway's refusals are all observed. Read from the UI bundle but not exercised live: how the editor displays and re-saves an API-loaded role (the group rows above, section 6). Extrapolated, not read back: the same split on the 7 other POST-delete APIs (from a POST-only experiment), and what the service stores for a Write-only row on any of them, or a row carrying DELETE on one other than `cw-ztp-service` (the bodies have none). What is still static is the map itself (section 6: a source-derived heuristic, no tool endpoint is called), a device access group is reported, not evaluated, and whether task bundles exist for roles other than admin (section 5) is unknown.
 
 ## 2. Least-privilege recipe: a read-only account
 
-The 182 read-only tools touch 43 API rows; 42 of them go in the role, the other one — `aaa_cw_role_read` — is the baseline row every role has (cnc_check_permissions reads the role through it). **`docs/rbac/cnc-mcp-readonly.role.json` (section 6) grants the Read tick on every one of those 42 rows and nothing else** — R only, never W — in the shape the editor submits (section 1). Building the same account in the editor (Administration > Users and Roles > Roles: create a role, tick **Read** on the 30 editor rows of the first table under their feature, leave `ApiAccess` on) also grants the 74 sibling api_ids in its last column, because a row is a display-name group; the body grants only the api_ids the tools use (second table). Assign the role to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend).
+The 184 read-only tools touch 43 API rows; 42 of them go in the role, the other one — `aaa_cw_role_read` — is the baseline row every role has (cnc_check_permissions reads the role through it). **`docs/rbac/cnc-mcp-readonly.role.json` (section 6) grants the Read tick on every one of those 42 rows and nothing else** — R only, never W — in the shape the editor submits (section 1). Building the same account in the editor (Administration > Users and Roles > Roles: create a role, tick **Read** on the 30 editor rows of the first table under their feature, leave `ApiAccess` on) also grants the 74 sibling api_ids in its last column, because a row is a display-name group; the body grants only the api_ids the tools use (second table). Assign the role to a dedicated service account with device access group `ALL-ACCESS` (or the device scope you intend).
 
 **By editor row** (tick Read on each):
 
@@ -143,9 +143,11 @@ The 182 read-only tools touch 43 API rows; 42 of them go in the role, the other 
 
 `aaa_cwaaa` (`/crosswork/aaa/`, editor row *Users and Roles Management*) is what the RBAC read tools read users, roles and sessions through. Drop that row and the account can no longer read them: the gateway refuses these 10 tools — `cnc_get_password_policy`, `cnc_get_role_permissions`, `cnc_get_role_tasks`, `cnc_get_session_config`, `cnc_get_user`, `cnc_is_nso_configured`, `cnc_list_active_sessions`, `cnc_list_roles`, `cnc_list_secured_apis`, `cnc_list_users`. cnc_check_permissions keeps working without it: it reads the role through the `aaa_cw_role_read` baseline row and falls back to `aaa/v1` only when the mirror answers 403/404 (either row suffices for it).
 
+Read on these rows also permits what the write tools read before they write: 5 GET request templates no read tool sends — `GET /crosswork/configsvc/v1/configs/files/{}` and `GET /crosswork/configsvc/v1/configs/{}` on `cw-config-service-deprecated`; `GET /crosswork/performance/v1/policies/inventory-devices` on `performance-policies-rest-apis`; `GET /crosswork/proxy/nso/restconf/data/{}-plan={}` and `GET /crosswork/proxy/nso/restconf/data/{}/{}-plan={}` on `proxy_cw-proxy` — sent by 16 write tools, and the 1 POST a read template names — `POST /crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr` (`cnc_reactivate_probe`). `cnc_reactivate_probe` is the one write tool whose every request the role permits (section 6); every other write tool also sends a request it refuses.
+
 ### The 14 read tools a Read-only role cannot call
 
-Under the stored `cnc-mcp-readonly` role (its 42 R rows plus the read templates and baseline rows the service adds — 45 rows as read back) cnc_check_permissions permits 168 of the 182 read tools. The other 14 read through a POST Crosswork classes as a **write** — the path is outside the API's read template (or the API has none) — so the gateway would refuse it (403) under Read:
+Under the stored `cnc-mcp-readonly` role (its 42 R rows plus the read templates and baseline rows the service adds — 45 rows as read back) cnc_check_permissions permits 170 of the 184 read tools. The other 14 read through a POST Crosswork classes as a **write** — the path is outside the API's read template (or the API has none) — so the gateway would refuse it (403) under Read:
 
 - `cwcollection` — Read permits POST on `cwcollection` only where the path matches `/.+/query$`, `/.+/v1/jobs/events$`:
   - `cnc_list_sensor_templates`: `POST /crosswork/collection/v1/template`
@@ -222,12 +224,19 @@ Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the
 |---|---|---|---|---|
 | Device Monitoring | Device Inventory | `cw-inventory-job-dashboard` W | `cw-inventory`, `cw-inventory-job-dashboard-deprecated`, `ems-inventory`, `ems-inventory-deprecated`, `ems-inventory-diagnostics` | W |
 
-### fault (5 write tools: `cnc_acknowledge_alarm`, `cnc_annotate_alarm`, `cnc_clear_alarm`, `cnc_create_alarm_suppression_policy`, `cnc_delete_alarm_suppression_policy`)
+### fault (12 write tools: `cnc_acknowledge_alarm`, `cnc_annotate_alarm`, `cnc_clear_alarm`, `cnc_create_alarm_suppression_policy`, `cnc_delete_alarm_suppression_policy`, `cnc_revert_event_type_autoclear`, `cnc_set_event_type_autoclear`, `cnc_set_event_type_recommendation`, `cnc_set_event_type_severity`, `cnc_update_alarm_manager_settings`, `cnc_update_alarm_suppression_policy`, `cnc_update_gnmi_alarm_settings`)
 
 | feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
 |---|---|---|---|---|
+| Alarms and Events | Alarm Settings | `cw-fault-alarm-autoclear` W, `cw-fault-alarm-autoclear-revert` W, `cw-fault-alarm-manager-settings` W, `cw-fault-alarm-recommended-action` W, `cw-fault-alarm-severity-settings` W, `cw-fault-gnmi-settings` W | `cw-fault-alarm-settings` | W |
 | Alarms and Events | Alarm Suppression Policies | `event-processing-service-suppressionpolicy-api` WD | — | WD |
 | Alarms and Events | Alarms & Events | `cw-fault-ack-api` W, `cw-fault-clear-api` W, `cw-fault-notes-api` W | `alarm-processing-service`, `alarm-rest-service`, `alarm-rest-service-networkinventory-rest-api`, `alarm-rest-service-summary-rest-api`, `cw-fault-ack-alarm`, `cw-fault-ack-api-v2`, `cw-fault-alarm-categories`, `cw-fault-alarm-custom-eventtype`, `cw-fault-alarm-custom-subeventtype`, `cw-fault-alarm-custom-syslog`, `cw-fault-alarm-custom-trap`, `cw-fault-alarm-eventtype`, `cw-fault-alarms-api`, `cw-fault-alarms-api-v2`, `cw-fault-clear-alarm`, `cw-fault-clear-api-v2`, `cw-fault-create_events_api`, `cw-fault-create_events_api_v2`, `cw-fault-events-api`, `cw-fault-events-api-v2`, `cw-fault-get-alarms`, `cw-fault-get-events`, `cw-fault-manifest_api`, `cw-fault-manifest_api_v2`, `cw-fault-notes-alarm`, `cw-fault-notes-api-v2`, `data-retention-service`, `event-processing-service` | W |
+
+### grouping (5 write tools: `cnc_create_device_group`, `cnc_delete_device_group`, `cnc_move_group_members`, `cnc_set_device_group_members`, `cnc_update_device_group`)
+
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Platform | Grouping | `cw-grouping-service` WD | — | WD |
 
 ### inventory_extras (8 write tools: `cnc_assign_tags`, `cnc_clear_device_location`, `cnc_create_tag`, `cnc_delete_tag`, `cnc_lock_device`, `cnc_set_device_location`, `cnc_unassign_tags`, `cnc_unlock_device`)
 
@@ -241,11 +250,12 @@ Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the
 |---|---|---|---|---|
 | Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
 
-### notifications (2 write tools: `cnc_create_webhook_subscription`, `cnc_delete_notification_subscription`)
+### notifications (5 write tools: `cnc_clear_notification_subscriptions_by_topic`, `cnc_create_external_subscription`, `cnc_create_webhook_subscription`, `cnc_delete_external_subscription`, `cnc_delete_notification_subscription`)
 
 | feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
 |---|---|---|---|---|
-| Administrative Operations | RESTCONF Notification Subscription | `nb-api-subscription-api-700` WD | `nb-api-alarm-nt-2`, `nb-api-alarm-nt-2-700`, `nb-api-alarm-nt-3`, `nb-api-alarm-nt-3-700`, `nb-api-alarm-nt-4`, `nb-api-alarm-nt-4-700`, `nb-api-alarm-nt-5`, `nb-api-alarm-nt-5-700`, `nb-api-alarm-nt-6`, `nb-api-alarm-nt-6-700`, `nb-api-alarm-nt-9`, `nb-api-alarm-nt-9-700`, `nb-api-subscription-api` | WD |
+| Administrative Operations | External Notification Subscription | `external-notification-subscription` WD | `alarm-topics-filter`, `external-kafka-destination`, `external-kafka-destination-v2`, `external-kafka-subscription`, `kafka-destinations-to-cw-ui` | WD |
+| Administrative Operations | RESTCONF Notification Subscription | `nb-api-alarm-nt-3-700` W, `nb-api-subscription-api-700` WD | `nb-api-alarm-nt-2`, `nb-api-alarm-nt-2-700`, `nb-api-alarm-nt-3`, `nb-api-alarm-nt-4`, `nb-api-alarm-nt-4-700`, `nb-api-alarm-nt-5`, `nb-api-alarm-nt-5-700`, `nb-api-alarm-nt-6`, `nb-api-alarm-nt-6-700`, `nb-api-alarm-nt-9`, `nb-api-alarm-nt-9-700`, `nb-api-subscription-api` | WD |
 
 ### nso (3 write tools: `cnc_nso_device_action`, `cnc_nso_sync_to_device`, `cnc_sync_inventory_with_nso`)
 
@@ -258,6 +268,13 @@ Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the
 | feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
 |---|---|---|---|---|
 | Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
+
+### performance (7 write tools: `cnc_activate_performance_policy`, `cnc_create_performance_policy`, `cnc_deactivate_performance_policy`, `cnc_delete_performance_policy`, `cnc_reset_performance_retention`, `cnc_update_performance_policy`, `cnc_update_performance_retention`)
+
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Administrative Operations | Performance Monitoring Data Retention | `performance-dataretention-apis` W | — | W |
+| Device Monitoring | Performance Monitoring Policies | `performance-policies-rest-apis` WD | — | WD |
 
 ### providers (3 write tools: `cnc_create_provider`, `cnc_delete_provider`, `cnc_update_provider`)
 
@@ -278,7 +295,14 @@ Write tools are registered only with `CNC_MCP_ENABLE_WRITES=true`. Per area (the
 |---|---|---|---|---|
 | Crosswork Optimization Engine | Optimization Engine RESTCONF | `optima_restconf` W | — | W |
 
-`cnc-mcp-operator.role.json` carries 46 rows: 13 with Write, 5 with Delete, 4 Write-only (no read tool uses the API).
+### swim_ztp (13 write tools: `cnc_add_ztp_serial_numbers`, `cnc_create_ztp_device`, `cnc_create_ztp_profile`, `cnc_create_ztp_static_route`, `cnc_delete_ztp_config_file`, `cnc_delete_ztp_device`, `cnc_delete_ztp_profile`, `cnc_delete_ztp_serial_numbers`, `cnc_delete_ztp_static_route`, `cnc_update_ztp_config_file`, `cnc_update_ztp_device`, `cnc_update_ztp_profile`, `cnc_upload_ztp_config_file`)
+
+| feature | editor row | api_ids the writes use | sibling api_ids the tick also grants | ticks to add |
+|---|---|---|---|---|
+| Zero Touch Provisioning | Config Service | `cw-config-service-deprecated` WD | `cw-config-service` | WD |
+| Zero Touch Provisioning | ZTP Service | `cw-ztp-service` WD | — | WD |
+
+`cnc-mcp-operator.role.json` carries 49 rows: 26 with Write, 10 with Delete, 7 Write-only (no read tool uses the API).
 
 ## 4. Per-tool requirements
 
@@ -287,6 +311,8 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | tool | area | kind | api_id: ticks |
 |---|---|---|---|
 | `cnc_acknowledge_alarm` | fault | write | `cw-fault-ack-api`: W, `cw-fault-alarms-api`: R |
+| `cnc_activate_performance_policy` | performance | write | `performance-policies-rest-apis`: RW |
+| `cnc_add_ztp_serial_numbers` | swim_ztp | write | `cw-ztp-service`: W |
 | `cnc_alarm_triage` | composite | read playbook (4 siblings) | `cw-fault-alarms-api`: R, `nb-api-alarm-1-700`: R, `platform_cwplatform`: R |
 | `cnc_annotate_alarm` | fault | write | `cw-fault-alarms-api`: R, `cw-fault-notes-api`: W |
 | `cnc_assign_tags` | inventory_extras | write | `inventory_cwinventory`: RW |
@@ -297,12 +323,16 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_check_permissions` | admin | read | `aaa_cw_role_read`: R *or* `aaa_cwaaa`: R |
 | `cnc_clear_alarm` | fault | write | `cw-fault-alarms-api`: R, `cw-fault-clear-api`: W |
 | `cnc_clear_device_location` | inventory_extras | write | `inventory_cwinventory`: RW |
+| `cnc_clear_notification_subscriptions_by_topic` | notifications | write | `nb-api-alarm-nt-2-700`: R, `nb-api-alarm-nt-3-700`: W |
 | `cnc_create_alarm_suppression_policy` | fault | write | `event-processing-service-suppressionpolicy-api`: W |
 | `cnc_create_config_template` | device_config | write | `device-config`: W |
 | `cnc_create_credential_profile` | credentials | write | `inventory_cwinventory`: RW |
 | `cnc_create_device` | devices | write | `inventory_cwinventory`: W |
+| `cnc_create_device_group` | grouping | write | `cw-grouping-service`: RWD |
+| `cnc_create_external_subscription` | notifications | write | `collection_dg-manager`: R, `external-notification-subscription`: W |
 | `cnc_create_l3vpn_service` | service_provisioning | write | `proxy_cw-proxy`: RW |
 | `cnc_create_odn_template` | service_provisioning | write | `proxy_cw-proxy`: RW |
+| `cnc_create_performance_policy` | performance | write | `performance-policies-rest-apis`: RW |
 | `cnc_create_provider` | providers | write | `inventory_cwinventory`: W |
 | `cnc_create_sid_list` | service_provisioning | write | `proxy_cw-proxy`: RW |
 | `cnc_create_sr_policy` | sr_te_operations | write | `optima_restconf`: W, `topo_restconf`: R |
@@ -310,14 +340,21 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_create_sr_policy_service` | service_provisioning | write | `proxy_cw-proxy`: RW |
 | `cnc_create_tag` | inventory_extras | write | `inventory_cwinventory`: W |
 | `cnc_create_webhook_subscription` | notifications | write | `nb-api-subscription-api-700`: W |
+| `cnc_create_ztp_device` | swim_ztp | write | `cw-ztp-service`: RW |
+| `cnc_create_ztp_profile` | swim_ztp | write | `cw-ztp-service`: RW |
+| `cnc_create_ztp_static_route` | swim_ztp | write | `cw-ztp-service`: RW |
+| `cnc_deactivate_performance_policy` | performance | write | `performance-policies-rest-apis`: W |
 | `cnc_delete_alarm_suppression_policy` | fault | write | `event-processing-service-suppressionpolicy-api`: D |
 | `cnc_delete_config_backup_job` | device_config | write | `device-config`: D |
 | `cnc_delete_config_template` | device_config | write | `device-config`: D |
 | `cnc_delete_credential_profile` | credentials | write | `inventory_cwinventory`: D |
 | `cnc_delete_device` | devices | write | `inventory_cwinventory`: D |
 | `cnc_delete_device_backup` | device_config | write | `device-config`: D, `inventory_cwinventory`: R |
+| `cnc_delete_device_group` | grouping | write | `cw-grouping-service`: RD |
+| `cnc_delete_external_subscription` | notifications | write | `external-notification-subscription`: D |
 | `cnc_delete_notification_subscription` | notifications | write | `nb-api-subscription-api-700`: D |
 | `cnc_delete_odn_template` | service_provisioning | write | `proxy_cw-proxy`: RD |
+| `cnc_delete_performance_policy` | performance | write | `performance-policies-rest-apis`: D |
 | `cnc_delete_provider` | providers | write | `inventory_cwinventory`: D |
 | `cnc_delete_service` | service_provisioning | write | `proxy_cw-proxy`: RD |
 | `cnc_delete_sid_list` | service_provisioning | write | `proxy_cw-proxy`: RD |
@@ -326,6 +363,11 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_delete_tag` | inventory_extras | write | `inventory_cwinventory`: D |
 | `cnc_delete_template_deployment` | device_config | write | `device-config`: D |
 | `cnc_delete_vpn_service` | service_provisioning | write | `proxy_cw-proxy`: RD |
+| `cnc_delete_ztp_config_file` | swim_ztp | write | `cw-config-service-deprecated`: RD, `cw-ztp-service`: R |
+| `cnc_delete_ztp_device` | swim_ztp | write | `cw-ztp-service`: RD |
+| `cnc_delete_ztp_profile` | swim_ztp | write | `cw-ztp-service`: RD |
+| `cnc_delete_ztp_serial_numbers` | swim_ztp | write | `cw-ztp-service`: RD |
+| `cnc_delete_ztp_static_route` | swim_ztp | write | `cw-ztp-service`: RD |
 | `cnc_deploy_config_template` | device_config | write | `device-config`: RW, `inventory_cwinventory`: R |
 | `cnc_dryrun_sr_policy` | sr_te_operations | read | `optima_restconf`: R, `topo_restconf`: R |
 | `cnc_enable_device_gnmi` | devices | write | `inventory_cwinventory`: RW |
@@ -451,7 +493,9 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_list_export_collection_jobs` | collection | read | `cwcollection`: R |
 | `cnc_list_function_packs` | services | read | `cat-fp-deployment-manager`: R |
 | `cnc_list_group_devices` | grouping | read | `cw-grouping-service`: R |
+| `cnc_list_group_ports` | grouping | read | `cw-grouping-service`: R |
 | `cnc_list_group_rule_conditions` | grouping | read | `cw-grouping-service`: R |
+| `cnc_list_group_rules` | grouping | read | `cw-grouping-service`: R |
 | `cnc_list_inventory_jobs` | platform | read | `inventory_cwinventory`: R |
 | `cnc_list_inventory_scheduler_jobs` | ems_jobs | read | `cw-inventory-job-dashboard`: R |
 | `cnc_list_kafka_subscriptions` | notifications | read | `external-notification-subscription`: R |
@@ -495,6 +539,7 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_list_ztp_static_routes` | swim_ztp | read | `cw-ztp-service`: R |
 | `cnc_lock_device` | inventory_extras | write | `inventory_cwinventory`: RW |
 | `cnc_map_devices_to_data_gateway` | data_gateway | write | `collection_dg-manager`: R, `inventory_cwinventory`: W |
+| `cnc_move_group_members` | grouping | write | `cw-grouping-service`: RW |
 | `cnc_network_health_report` | composite | read playbook (12 siblings) | `collection_dg-manager`: R, `cw-fault-alarms-api`: R, `cwcollection`: R, `ems-inventory`: R, `inventory_cwinventory`: R, `nb-api-alarm-1-700`: R, `platform_cwplatform`: R, `topo_restconf`: R |
 | `cnc_nso_device_action` | nso | write | `inventory_cwinventory`: RW |
 | `cnc_nso_sync_to_device` | nso | write | `inventory_cwinventory`: RW |
@@ -503,12 +548,18 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_provision_l3vpn_e2e` | composite | write playbook (6 siblings) | `inventory_cwinventory`: R, `optima_restconf`: W, `proxy_cw-proxy`: RW, `tsdn_cat-restconf-nbi`: R |
 | `cnc_provision_service` | service_provisioning | write | `proxy_cw-proxy`: RW |
 | `cnc_reactivate_probe` | oam | write | `cw-probe-mgr`: R |
+| `cnc_reset_performance_retention` | performance | write | `performance-dataretention-apis`: RW |
 | `cnc_restart_microservice` | admin | write | `platform_cwplatform`: W |
 | `cnc_resume_inventory_scheduler_job` | ems_jobs | write | `cw-inventory-job-dashboard`: RW |
 | `cnc_resync_service_inventory` | service_provisioning | write | `nso-connector`: W |
+| `cnc_revert_event_type_autoclear` | fault | write | `cw-fault-alarm-autoclear-revert`: W, `cw-fault-alarm-severity-settings`: R |
 | `cnc_run_inventory_scheduler_job` | ems_jobs | write | `cw-inventory-job-dashboard`: RW |
 | `cnc_search_alarms` | fault | read | `cw-fault-alarms-api`: R |
+| `cnc_set_device_group_members` | grouping | write | `cw-grouping-service`: RW |
 | `cnc_set_device_location` | inventory_extras | write | `inventory_cwinventory`: RW |
+| `cnc_set_event_type_autoclear` | fault | write | `cw-fault-alarm-autoclear`: W, `cw-fault-alarm-severity-settings`: R |
+| `cnc_set_event_type_recommendation` | fault | write | `cw-fault-alarm-recommended-action`: RW |
+| `cnc_set_event_type_severity` | fault | write | `cw-fault-alarm-severity-settings`: RW |
 | `cnc_set_login_banner` | admin | write | `platform_cwplatform`: RW |
 | `cnc_set_maintenance_mode` | admin | write | `platform_cwplatform`: RW |
 | `cnc_set_sr_policy_path_notifications` | sr_te_operations | write | `optima_restconf`: W |
@@ -517,11 +568,21 @@ Every registered tool with the api_id(s) it needs and the ticks per api_id (R = 
 | `cnc_sync_inventory_with_nso` | nso | write | `inventory_cwinventory`: W |
 | `cnc_unassign_tags` | inventory_extras | write | `inventory_cwinventory`: RW |
 | `cnc_unlock_device` | inventory_extras | write | `inventory_cwinventory`: RW |
+| `cnc_update_alarm_manager_settings` | fault | write | `cw-fault-alarm-manager-settings`: RW |
+| `cnc_update_alarm_suppression_policy` | fault | write | `event-processing-service-suppressionpolicy-api`: RW |
 | `cnc_update_credential_profile` | credentials | write | `inventory_cwinventory`: RW |
 | `cnc_update_device` | devices | write | `inventory_cwinventory`: W |
+| `cnc_update_device_group` | grouping | write | `cw-grouping-service`: RWD |
+| `cnc_update_gnmi_alarm_settings` | fault | write | `cw-fault-gnmi-settings`: RW |
+| `cnc_update_performance_policy` | performance | write | `performance-policies-rest-apis`: RW |
+| `cnc_update_performance_retention` | performance | write | `performance-dataretention-apis`: RW |
 | `cnc_update_provider` | providers | write | `inventory_cwinventory`: W |
 | `cnc_update_sr_policy` | sr_te_operations | write | `optima_restconf`: W, `topo_restconf`: R |
 | `cnc_update_sr_policy_service` | service_provisioning | write | `proxy_cw-proxy`: RW |
+| `cnc_update_ztp_config_file` | swim_ztp | write | `cw-config-service-deprecated`: RW |
+| `cnc_update_ztp_device` | swim_ztp | write | `cw-ztp-service`: RW |
+| `cnc_update_ztp_profile` | swim_ztp | write | `cw-ztp-service`: RW |
+| `cnc_upload_ztp_config_file` | swim_ztp | write | `cw-config-service-deprecated`: W |
 | `cnc_wait_for_config_backup_job` | device_config | read (needs W, section 2) | `device-config`: W |
 | `cnc_wait_for_device_nso_state` | nso | read | `inventory_cwinventory`: R |
 | `cnc_wait_for_device_reachable` | devices | read | `inventory_cwinventory`: R |
@@ -540,7 +601,7 @@ Every request template the tools send resolved to a secured API.
 
 | task (UI name) | group | grants | rows it covers here |
 |---|---|---|---|
-| Device Access Group Management (`id_dag_management`) | Platform | `cw-grouping-service` RWD | `cw-grouping-service` (reads need R) |
+| Device Access Group Management (`id_dag_management`) | Platform | `cw-grouping-service` RWD | `cw-grouping-service` (reads need R; writes add WD) |
 | Export Audit Logs (`id_export_audit_logs_access`) | Audit Logs | `cw-fault-events-api` RW | `cw-fault-events-api` (reads need R) |
 | Function Pack Deployment (`id_nso_fp_deployment_management`) | NSO Management | `nso-fp-dep-mngr` RWD | no cnc-mcp tool uses these rows |
 | Provisioning (`id_provisioning`) | Crosswork Network Controller | `inventory_cwinventory` RW | `inventory_cwinventory` (reads need RW; writes add D) |
@@ -557,18 +618,18 @@ Log the server in as the account (username/password in `.env`) and call `cnc_che
 - Tools the packaged map does not know are listed under "not in the RBAC map" — regenerate with `make rbac`.
 - `Error: role '<role>' may not read its own role ...` when neither the mirror nor `aaa/v1` lets the account read its role — the service adds the `aaa_cw_role_read` row to every role it stores, so on this platform version check the role's `roleAccess` (`ApiAccess`) and the stored role through an admin session.
 
-Evaluated against the stored `cnc-mcp-readonly` role, it reports 14 of the 182 read tools refused (the list in section 2) and 1 write tool **permitted** — `cnc_reactivate_probe` (`POST /crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr`: the platform's read template for the API names that path, so **Read permits this write**). Against the stored `cnc-mcp-operator` role every tool is permitted.
+Evaluated against the stored `cnc-mcp-readonly` role, it reports 14 of the 184 read tools refused (the list in section 2) and 1 write tool **permitted** — `cnc_reactivate_probe` (`POST /crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr`: the platform's read template for the API names that path, so **Read permits this write**). Against the stored `cnc-mcp-operator` role every tool is permitted.
 
 What this verification is and is not:
 
 - **Verified (2026-09-14, admin session, test roles):** the shape the AAA service stores a submitted role in — `/.*` entries verbatim, the read templates added to a GET-only row, the baseline rows, the POST/PUT/GET status codes and the `charset=UTF-8` content type (section 1). The counts above are computed from that stored shape with Tyk's matching rule; `tests/fixtures/rbac/` pins the model against the read-backs.
-- **Verified (2026-09-15, users carrying the generated roles; a UI-built role; the bodies as committed read back):** the gateway's refusals — every predicted 403 observed, nothing unpredicted refused (section 1; the smoke runs were on the previous generation of the bodies, which differed only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field, and their refusal predictions are identical; the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of the 182 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted) — and the editor's tick → entry mapping the bodies use.
+- **Verified (2026-09-15, users carrying the generated roles; a UI-built role; the bodies as committed read back):** the gateway's refusals — every predicted 403 observed, nothing unpredicted refused (section 1; the smoke runs were on the previous generation of the bodies — those of the 245 tools registered on 2026-09-15 (182 read) — which differed from the generated bodies of those tools only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline row now — `versions` and the `rate` field; the bodies as committed now also carry what the 37 tools added since (2 read, 35 write) need — rows and ticks that smoke did not exercise — and the refusal predictions for the tools of that day are identical (the same 14 read tools refused under `cnc-mcp-readonly`, `cnc_reactivate_probe` permitted, every tool permitted under `cnc-mcp-operator`); the bodies as committed were stored through the API and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 170 of the 184 read tools permitted, 14 refused, 1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: 282 of 282 permitted) — and the editor's tick → entry mapping the bodies use.
 - The check is **static**: the map is derived from the tool source by api_coverage.py's extraction heuristic; no tool endpoint is called. A request built from platform data folds to `{}`; a probe counts as a use.
 - A device access group other than ALL-ACCESS restricts devices, not APIs; it is reported, not evaluated. The two gateway fail-open cases (a regex that does not compile, an empty `access_rights` map) are reported as refusals.
 
 ### Ready-made role bodies
 
-`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape `POST /crosswork/aaa/v1/role` takes — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers. **The generated bodies are the shape the editor submits** (verified 2026-09-15 against the UI-built role's read-back, `tests/fixtures/rbac/stored_ui_built_role.json`) — the editor's role fields, `versions []`, one `access_rights` entry per api_id with a single `{url: "/.*", methods: [...]}` whose methods are the union of the row's ticks (`[GET]` for Read, `[POST, PUT, PATCH]` for Write, `[DELETE]` for Delete, in that order) — minus the empty `_id`/`id` the editor also sends; `limit`/`allowance_scope` are the read-back's fields (the service adds them itself), and `api_name` is the v1 catalogue's HTML-escaped form (`Alarms &amp; Events`, as the built-in `admin` role stores it) where the editor sends `aaa/v2/api`'s unescaped one. What the fixtures pin: both bodies as committed, stored and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json` — the model reproduces every stored row entry for entry: the read-only body's 42 Read rows with their templates; the operator body's union entries, `[GET, POST, PUT, PATCH]` on 4 rows and all five methods on 5, verbatim except the 3 split rows section 1 describes — `cwcollection`, `optima_restconf`, `platform_cwplatform` — where POST came back under the not-delete pattern; plus the three baseline rows on each), the UI-built role's single-tick entries (`[GET]`, `[POST, PUT, PATCH]`, `[DELETE]`) and the 2026-09-14 experiments' per-tick entries on these rows. The Roles page has not been opened on these bodies (their first entries are all `/.*`, the one shape the editor reads). Two differences from a UI-built role: a body grants single api_ids where a UI tick grants the whole display-name group (section 1), and so **an API-loaded role is managed through the API only** — the editor shows a group row from its first api_id in `aaa/v2/api` order (unticked on the 6 rows section 1 names, although the grant is live) and a Save rebuilds every group from the editor's model, the hidden members taking the ticks of the group's most-ticked member (read from the bundle, not exercised live). No baseline row is in a body (the service adds them). `cnc-mcp-readonly` is R only; `cnc-mcp-operator` adds Write and Delete where a tool needs them.
+`docs/rbac/cnc-mcp-readonly.role.json` (section 2) and `docs/rbac/cnc-mcp-operator.role.json` (sections 2 + 3) are generated with this page, in the shape `POST /crosswork/aaa/v1/role` takes — `{"<role name>": {<rbacRole>}}`, the shape `GET /crosswork/aaa/v1/role` answers. **The generated bodies are the shape the editor submits** (verified 2026-09-15 against the UI-built role's read-back, `tests/fixtures/rbac/stored_ui_built_role.json`) — the editor's role fields, `versions []`, one `access_rights` entry per api_id with a single `{url: "/.*", methods: [...]}` whose methods are the union of the row's ticks (`[GET]` for Read, `[POST, PUT, PATCH]` for Write, `[DELETE]` for Delete, in that order) — minus the empty `_id`/`id` the editor also sends; `limit`/`allowance_scope` are the read-back's fields (the service adds them itself), and `api_name` is the v1 catalogue's HTML-escaped form (`Alarms &amp; Events`, as the built-in `admin` role stores it) where the editor sends `aaa/v2/api`'s unescaped one. What the fixtures pin: both bodies as committed, stored and read back (2026-09-15: `tests/fixtures/rbac/stored_generated_readonly.json`, `tests/fixtures/rbac/stored_generated_operator.json` — the model reproduces every stored row entry for entry: the read-only body's 42 Read rows with their templates; the operator body's union entries, `[GET, POST, PUT, PATCH]` on 9 rows and all five methods on 10, verbatim except the 3 split rows section 1 describes — `cwcollection`, `optima_restconf`, `platform_cwplatform` — where POST came back under the not-delete pattern; plus the three baseline rows on each), the UI-built role's single-tick entries (`[GET]`, `[POST, PUT, PATCH]`, `[DELETE]`) and the 2026-09-14 experiments' per-tick entries on these rows. The Roles page has not been opened on these bodies (their first entries are all `/.*`, the one shape the editor reads). Two differences from a UI-built role: a body grants single api_ids where a UI tick grants the whole display-name group (section 1), and so **an API-loaded role is managed through the API only** — the editor shows a group row from its first api_id in `aaa/v2/api` order (unticked on the 6 rows section 1 names, although the grant is live) and a Save rebuilds every group from the editor's model, the hidden members taking the ticks of the group's most-ticked member (read from the bundle, not exercised live). No baseline row is in a body (the service adds them). `cnc-mcp-readonly` is R only; `cnc-mcp-operator` adds Write and Delete where a tool needs them.
 
 Load one with an admin's SSO JWT (one curl per file; the content type must carry the charset), read it back to see the templates, baseline rows and split rows the service added, then verify with cnc_check_permissions as a user carrying the role:
 

@@ -15,13 +15,16 @@ enabled, onboard devices, manage credential profiles and providers, map
 devices to gateways, drive NSO sync and connect actions, provision SR-TE
 policies through the SR-PCE, provision ODN templates, SR-TE policies and
 L3VPNs through NSO's T-SDN function packs (dry-run first), subscribe webhooks
-to alarm/inventory events, inspect collection jobs, device groups, the
-LCM / Circuit-Style managers, performance-monitoring dashboards and NPM
-analytics, run OAM trace routes and read SWIM / ZTP state — all
-through typed, documented tools with the platform's own error reasons surfaced
-verbatim.
+and external Kafka/gRPC feeds to alarm/inventory events, inspect collection
+jobs, manage device groups and their membership, the LCM / Circuit-Style
+managers, create and activate performance-monitoring policies and read the
+dashboards and NPM analytics, tune alarm settings (event-type severity,
+auto-clear, alarm-manager switches), run OAM trace routes, read SWIM state
+and manage the ZTP catalogue (config files, profiles, serial numbers, static
+routes, devices) — all through typed, documented tools with the platform's
+own error reasons surfaced verbatim.
 
-**245 tools** (182 read, 63 write) over 24 API areas plus six MCP prompts. Every tool was built from
+**282 tools** (184 read, 98 write) over 24 API areas plus six MCP prompts. Every tool was built from
 behaviour verified against a live CNC 7.2 instance, not from the documentation
 alone — see [How it was verified](#how-it-was-verified).
 
@@ -138,7 +141,7 @@ denylist and the dry-run mode that sit on top of that switch.
 git clone https://github.com/dr-stutters/cnc-mcp && cd cnc-mcp
 make install                      # uv sync
 cp .env.example .env              # set CNC_MCP_BASE_URL, USERNAME, PASSWORD
-make test && make lint            # 2,000+ tests, all HTTP mocked — no CNC needed
+make test && make lint            # 2,700+ tests, all HTTP mocked — no CNC needed
 make run                          # start the server on stdio
 make inspect                      # MCP Inspector against it
 make cli ARGS="list"              # scripts/mcp_cli.py: list | schema | call | prompts | prompt
@@ -194,7 +197,7 @@ Read tools — registered in every mode:
 | **Platform admin & RBAC** | `cnc_get_platform_version` · `cnc_get_cluster_health` · `cnc_list_cluster_nodes` · `cnc_get_cluster_node` · `cnc_list_microservices` · `cnc_list_application_status` · `cnc_list_app_manager_jobs` · `cnc_list_app_manager_events` · `cnc_get_maintenance_status` · `cnc_list_certificates` · `cnc_check_certificate_expiry` · `cnc_get_login_banner` · `cnc_get_session_config` · `cnc_list_active_sessions` · `cnc_get_user` · `cnc_list_roles` · `cnc_get_role_tasks` · `cnc_get_role_permissions` · `cnc_get_password_policy` · `cnc_list_secured_apis` · `cnc_check_permissions` |
 | **Notifications** | `cnc_list_notification_streams` · `cnc_list_notification_subscriptions` · `cnc_get_notification_subscription` · `cnc_list_kafka_subscriptions` |
 | **Collection service** | `cnc_get_collection_job_count` · `cnc_get_collection_job_summary` · `cnc_get_collection_job_state` · `cnc_list_export_collection_jobs` · `cnc_list_sensor_templates` · `cnc_get_collection_health` |
-| **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` |
+| **Device groups** | `cnc_list_group_rule_conditions` · `cnc_list_root_groups` · `cnc_get_group_hierarchy` · `cnc_get_group_details` · `cnc_list_group_devices` · `cnc_list_group_rules` · `cnc_list_group_ports` |
 | **LCM & Circuit-Style** (Optimization Engine) | `cnc_list_lcm_domains` · `cnc_get_lcm_config` · `cnc_list_lcm_managed_interfaces` · `cnc_get_lcm_recommendation` · `cnc_get_lcm_recommendation_preview` · `cnc_list_csm_bandwidth_pools` · `cnc_list_cs_policy_paths` · `cnc_list_cs_policies_on_nodes` · `cnc_list_cs_policies_on_interface` |
 | **Services** (CAT inventory, T-SDN) | `cnc_list_service_types` · `cnc_get_service_counts` · `cnc_list_services` · `cnc_get_service` · `cnc_get_service_plan` · `cnc_wait_for_service_plan` · `cnc_list_vpn_services` · `cnc_get_vpn_service` · `cnc_get_vpn_service_health` · `cnc_get_vpn_underlay_transport` · `cnc_list_sub_services` · `cnc_find_services_on_transport` · `cnc_list_function_packs` |
 | **Performance monitoring** (PM policies, dashboards, NPM) | `cnc_list_performance_policies` · `cnc_get_performance_policy` · `cnc_get_performance_policy_history` · `cnc_list_performance_policy_devices` · `cnc_list_performance_policy_templates` · `cnc_get_performance_retention` · `cnc_get_performance_health_settings` · `cnc_get_performance_statistics` · `cnc_get_performance_top_n` · `cnc_list_performance_top_n_columns` · `cnc_get_performance_summary` · `cnc_get_lsp_utilization` · `cnc_get_lsp_delay` · `cnc_get_interface_delay` |
@@ -217,12 +220,15 @@ Write tools — registered only with `CNC_MCP_ENABLE_WRITES=true` (and, with
 | **SR-TE operations** | `cnc_create_sr_policy` · `cnc_update_sr_policy` · `cnc_delete_sr_policy` · `cnc_set_sr_policy_path_notifications` |
 | **Platform admin** | `cnc_set_login_banner` · `cnc_set_maintenance_mode` · `cnc_restart_microservice` |
 | **Inventory extras** | `cnc_create_tag` · `cnc_delete_tag` · `cnc_assign_tags` · `cnc_unassign_tags` · `cnc_set_device_location` · `cnc_clear_device_location` · `cnc_lock_device` · `cnc_unlock_device` |
-| **Fault** | `cnc_acknowledge_alarm` · `cnc_annotate_alarm` · `cnc_clear_alarm` · `cnc_create_alarm_suppression_policy` · `cnc_delete_alarm_suppression_policy` |
+| **Fault** | `cnc_acknowledge_alarm` · `cnc_annotate_alarm` · `cnc_clear_alarm` · `cnc_create_alarm_suppression_policy` · `cnc_update_alarm_suppression_policy` · `cnc_delete_alarm_suppression_policy` · `cnc_set_event_type_severity` · `cnc_set_event_type_autoclear` · `cnc_revert_event_type_autoclear` · `cnc_set_event_type_recommendation` · `cnc_update_alarm_manager_settings` · `cnc_update_gnmi_alarm_settings` |
 | **Device configuration** | `cnc_backup_device_config` · `cnc_delete_config_backup_job` · `cnc_delete_device_backup` · `cnc_create_config_template` · `cnc_delete_config_template` · `cnc_deploy_config_template` · `cnc_delete_template_deployment` |
-| **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` |
+| **Notifications** | `cnc_create_webhook_subscription` · `cnc_delete_notification_subscription` · `cnc_create_external_subscription` (Kafka / gRPC) · `cnc_delete_external_subscription` · `cnc_clear_notification_subscriptions_by_topic` |
+| **Device groups** | `cnc_create_device_group` · `cnc_update_device_group` · `cnc_delete_device_group` · `cnc_set_device_group_members` · `cnc_move_group_members` |
 | **LCM** | `cnc_pause_lcm_recommendations` |
 | **Service provisioning** (NSO proxy, T-SDN CFPs) | `cnc_create_odn_template` · `cnc_delete_odn_template` · `cnc_create_sr_policy_service` · `cnc_update_sr_policy_service` · `cnc_delete_sr_policy_service` · `cnc_create_sid_list` · `cnc_delete_sid_list` · `cnc_create_l3vpn_service` · `cnc_delete_vpn_service` · `cnc_provision_service` · `cnc_delete_service` · `cnc_resync_service_inventory` |
+| **Performance monitoring** (PM policies, retention) | `cnc_create_performance_policy` · `cnc_update_performance_policy` · `cnc_activate_performance_policy` · `cnc_deactivate_performance_policy` · `cnc_delete_performance_policy` · `cnc_update_performance_retention` · `cnc_reset_performance_retention` |
 | **OAM & probes** | `cnc_start_oam_trace_route` · `cnc_reactivate_probe` |
+| **SWIM & ZTP** (the ZTP catalogue) | `cnc_upload_ztp_config_file` · `cnc_update_ztp_config_file` · `cnc_delete_ztp_config_file` · `cnc_create_ztp_profile` · `cnc_update_ztp_profile` · `cnc_delete_ztp_profile` · `cnc_add_ztp_serial_numbers` · `cnc_delete_ztp_serial_numbers` · `cnc_create_ztp_static_route` · `cnc_delete_ztp_static_route` · `cnc_create_ztp_device` · `cnc_update_ztp_device` · `cnc_delete_ztp_device` |
 | **EMS inventory scheduler** | `cnc_run_inventory_scheduler_job` · `cnc_suspend_inventory_scheduler_job` · `cnc_resume_inventory_scheduler_job` |
 | **Playbooks** | `cnc_provision_l3vpn_e2e` (dry-run → commit → plan → CAT status → OAM trace) · `cnc_create_sr_policy_e2e` (dry-run → create → wait UP → routes) — both take `dry_run=true` to stop after the preview |
 
@@ -260,7 +266,14 @@ Conventions the server also tells agents about at connect time:
   reason, never as a silent success.
 - **Ordering**: credential profile → provider → device. A device's
   `te_router_id` must match its router-id in the SR-PCE topology for the two
-  to correlate.
+  to correlate. ZTP: config file → profile → serial numbers → device, torn
+  down in reverse (an in-use serial cannot be deleted).
+- **Network-impacting writes are named as such**: activating a PM policy
+  starts SNMP/telemetry collection on its devices within seconds; a device
+  group is populated by moving devices out of the leaf that holds them
+  (`Unassigned Devices` for a device never placed), because the platform's
+  "set members" call removes; reverting an event type's auto-clear deletes
+  the interval rather than restoring a default.
 
 ## How it works
 
@@ -311,15 +324,16 @@ sees, not merely refused. (Dry-run mode is the exception by design — the
 write tools stay visible, but harmless.)
 
 1. **Writes are off by default.** `CNC_MCP_ENABLE_WRITES=true` registers the
-   63 write tools; without it the server is read-only, and the connect-time
+   98 write tools; without it the server is read-only, and the connect-time
    instructions say so.
 2. **`CNC_MCP_WRITE_AREAS`** — a comma-separated allowlist of the areas whose
    write tools are registered when writes are on (empty, the default, means
    every area). An area is a module in `src/cnc_mcp/tools/`; the ones with
    write tools are `devices`, `credentials`, `providers`, `sr_te_operations`,
    `data_gateway`, `nso`, `admin`, `inventory_extras`, `fault`,
-   `device_config`, `notifications`, `lcm_csm`, `service_provisioning`,
-   `oam`, `ems_jobs` and `composite`. Read tools are never affected. The
+   `device_config`, `notifications`, `grouping`, `lcm_csm`,
+   `service_provisioning`, `performance`, `oam`, `swim_ztp`, `ems_jobs` and
+   `composite`. Read tools are never affected. The
    write playbooks in `composite` need the sibling that commits for them:
    `cnc_provision_l3vpn_e2e` needs `service_provisioning` (and `oam` for
    its optional trace step), `cnc_create_sr_policy_e2e` needs
@@ -340,7 +354,7 @@ write tools stay visible, but harmless.)
 An unknown area or tool name is a configuration error at startup, with a
 "did you mean" hint, never a silent no-op; an allowlisted area whose tools
 are all read-only is logged as a warning. The startup log summarises the
-result (`Registered 187 of 245 tools (182 read, 5 write); writes on for
+result (`Registered 196 of 282 tools (184 read, 12 write); writes on for
 areas fault; disabled tools: none; dry-run off`), the connect-time
 instructions tell the agent which mode it is in, and `cnc_check_permissions`
 repeats it next to the account's role.
@@ -449,11 +463,14 @@ The published CNC 7.2 API has 948 operations across 103 OpenAPI documents;
 this server covers the inventory (incl. tags, locks, locations), the EMF
 inventory, topology, TE state, SR-TE operations, fault management, device
 configuration (backups, templates, deployments), platform administration and
-RBAC, Data Gateway, NSO, notifications (webhook / Kafka subscriptions), the
-collection service, device grouping, the LCM / Circuit-Style managers, the
-CAT service inventory and T-SDN service provisioning through the NSO proxy,
-performance monitoring and NPM analytics, OAM trace routes and Service
-Health probes, SWIM / ZTP reads and the EMS inventory scheduler.
+RBAC, Data Gateway, NSO, notifications (webhook and external Kafka / gRPC
+subscriptions), the collection service, device grouping (user groups,
+membership and rules), the LCM / Circuit-Style managers, the CAT service
+inventory and T-SDN service provisioning through the NSO proxy, performance
+monitoring (policy lifecycle, retention, dashboards) and NPM analytics, OAM
+trace routes and Service Health probes, SWIM reads, the ZTP catalogue (config
+files, profiles, serial numbers, static routes, devices) and the EMS
+inventory scheduler.
 [docs/COVERAGE.md](docs/COVERAGE.md) is the full picture: every documented
 operation, whether a tool sends it, and if not why (it is generated by
 `scripts/api_coverage.py` from the OpenAPI set, so its numbers are computed,
@@ -461,7 +478,7 @@ not claimed). Planned modules, in the order they become exercisable on a lab:
 
 | Module | Scope |
 |---|---|
-| writes not yet exposed | performance policy create/activate, collection job create, SWIM collect/distribute/activate, ZTP writes, LCM/CSM configuration — unverified bodies with real network impact |
+| writes not yet exposed | collection job create, SWIM collect/distribute/activate, ZTP image upload / ownership vouchers / device status patch, config restore, LCM/CSM configuration and RSVP-TE / P2MP policy operations — unverified bodies with real network impact |
 | not on this build | change automation, health insights, path analytics, service health (unrouted on a single-VM 7.2 deployment — a 404 from the home application; the error text names the missing application) |
 
 ## Project layout

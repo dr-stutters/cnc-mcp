@@ -321,16 +321,26 @@ def build(settings: Settings) -> MCPServer:
 # --- registration ------------------------------------------------------------
 
 
-async def test_every_tool_is_a_read(make_settings):
+READ_TOOLS = ALL_TOOLS | {"cnc_list_group_rules", "cnc_list_group_ports"}
+WRITE_TOOLS = {
+    "cnc_create_device_group",
+    "cnc_update_device_group",
+    "cnc_delete_device_group",
+    "cnc_set_device_group_members",
+    "cnc_move_group_members",
+}
+
+
+async def test_reads_are_reads_and_writes_are_gated(make_settings):
     tools = {t.name: t for t in await build(make_settings(enable_writes=False)).list_tools()}
-    assert set(tools) == ALL_TOOLS
+    assert set(tools) == READ_TOOLS
     for name, tool in tools.items():
         assert tool.annotations.read_only_hint is True, name
         assert tool.annotations.idempotent_hint is True, name
         assert tool.annotations.destructive_hint is False, name
-    # Nothing new appears when writes are enabled: no write tools exist in this module.
+    # The write tools (tests/test_tools_grouping_writes.py) appear only with writes enabled.
     names = {t.name for t in await build(make_settings(enable_writes=True)).list_tools()}
-    assert names == ALL_TOOLS
+    assert names == READ_TOOLS | WRITE_TOOLS
 
 
 async def test_group_hierarchy_schema_states_the_inverted_platform_defaults(settings):

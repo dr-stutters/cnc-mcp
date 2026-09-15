@@ -11,6 +11,83 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
 
 ### Added
 
+- **Device group writes** (`tools/grouping.py`): `cnc_create_device_group`,
+  `cnc_update_device_group`, `cnc_delete_device_group`,
+  `cnc_set_device_group_members`, `cnc_move_group_members`, plus the reads
+  `cnc_list_group_rules` and `cnc_list_group_ports` — 37 tools in Phase D
+  overall (2 read, 35 write), each verified live with create → read back →
+  update → delete sequences that left the lab as found. User groups live
+  under the `LocationDevices` classifier (tree `Location` > `All Locations`
+  > `Unassigned Devices`), `DeviceAccess` (RBAC access groups) or
+  `UserDefinedPorts`; the parent uuid is resolved by default. Membership is
+  built by MOVING devices from the leaf that holds them (the platform's
+  `PUT members` REMOVES members, so `cnc_set_device_group_members` computes
+  the moves itself). A dynamic device-group rule is stored but never
+  evaluated on 7.2.0 (port-group rules do evaluate), and a rule with more
+  than one condition breaks `GET port/{uuid}` — the tools allow one. Every
+  refusal is HTTP 200 `{"status": "Error", "error": CODE}` and is reported
+  as an error; platform-managed groups are refused with nothing sent.
+- **Performance policy and retention writes** (`tools/performance.py`):
+  `cnc_create_performance_policy`, `cnc_update_performance_policy`,
+  `cnc_activate_performance_policy`, `cnc_deactivate_performance_policy`,
+  `cnc_delete_performance_policy`, `cnc_update_performance_retention`,
+  `cnc_reset_performance_retention`. Policy ids are sequential integers,
+  comma-joined in the path for activate / deactivate / delete, and an
+  unknown id is a 200 `NOT_FOUND` row (turned into an error). `POST` creates
+  the policy INACTIVE unless `activate=true`; `PUT` needs the full body and
+  its `active` field IS the activation state, so the update tool
+  read-merges and carries the current flag. Activation is network-impacting
+  (it starts SNMP / telemetry collection on the devices; PE1 showed `ACTIVE`
+  within ~5 s). `PUT dataretention` keys must match `GET dataretention/all`
+  exactly — a wrong key answers `200 false` and changes nothing, so the tool
+  resolves the key first.
+- **ZTP catalogue writes** (`tools/swim_ztp.py`): `cnc_upload_ztp_config_file`,
+  `cnc_update_ztp_config_file`, `cnc_delete_ztp_config_file`,
+  `cnc_create_ztp_profile`, `cnc_update_ztp_profile`, `cnc_delete_ztp_profile`,
+  `cnc_add_ztp_serial_numbers`, `cnc_delete_ztp_serial_numbers`,
+  `cnc_create_ztp_static_route`, `cnc_delete_ztp_static_route`,
+  `cnc_create_ztp_device`, `cnc_update_ztp_device`, `cnc_delete_ztp_device`.
+  ZTP writes answer HTTP 200 with the verdict in the body's `code` (201 /
+  200 / 204 / 400 / 404 / 422 / 424), which the tools read. A Day0-config
+  `.txt` needs `!! IOS XR` in its first three lines; Pre- / Post-config
+  scripts need a `#!` first line, a non-classic version and a secure
+  profile. The order is upload config → profile → serial numbers → device
+  (one pre-registered serial, status `Unprovisioned`), torn down in
+  reverse; static routes are asynchronous (`add-` / `delete-inprogress` →
+  `success`, ~3–5 s, the tools wait); an in-use serial cannot be deleted;
+  deleting a config a profile or device still references flips their
+  `isConfigInvalid` (guarded, `force` to override). `ApiClient.request()`
+  gained `files=` (a `multipart/form-data` body) for the upload.
+- **External subscription writes** (`tools/notifications.py`):
+  `cnc_create_external_subscription`, `cnc_delete_external_subscription`,
+  `cnc_clear_notification_subscriptions_by_topic`. An external Kafka / gRPC
+  subscription needs a Data Destination created with `DISPATCH_SOURCE`
+  `application` (the system `datagateway` destinations are refused; no tool
+  creates one), matched by exact case-sensitive name; the topic name is the
+  platform-wide key and the delete key. Parameter validation is HTTP 400
+  "Following param(s) are invalid : ..." while application refusals ride in
+  HTTP 200 `{"result": ...}` — both reported as errors. Clear-by-topic
+  sweeps EVERY user's webhook subscriptions and WebSocket sessions of one
+  topic (`alarm` | `inventory`); the tool refuses other topics and sends
+  nothing when the topic has none.
+- **Alarm settings writes** (`tools/fault.py`): `cnc_set_event_type_severity`,
+  `cnc_set_event_type_autoclear`, `cnc_revert_event_type_autoclear`,
+  `cnc_update_alarm_manager_settings`, `cnc_update_gnmi_alarm_settings`,
+  `cnc_set_event_type_recommendation`, `cnc_update_alarm_suppression_policy`.
+  Severity values are lowercase on the wire (`critical` | `major` | `minor`
+  | `warning` | `information`); auto-clear minutes are 5..599940, in
+  multiples of 5 below 60 and of 60 above (enforced client-side too);
+  revert DELETES the interval (no default is restored); the manager / gNMI
+  settings take partial documents and echo the stored value, which the
+  tools verify; saving a recommended action flips the platform's permanent
+  "custom text ever saved" flag; `PUT suppressionpolicy` needs the full
+  body, so the tool merges the change over a fresh GET.
+- The live smoke plan grew to 588 steps (from 432): a Phase D write chain
+  per module — device groups and rules, a PM policy and retention, the ZTP
+  objects, external subscriptions (refusal diagnosis and clear-by-topic),
+  alarm settings — each creating `phase-d-*` objects and removing them.
+  The build is now 282 tools (184 read, 98 write) over 24 API areas plus
+  the playbooks, with 2717 mocked tests.
 - **Playbook tools** (`tools/composite.py`): `cnc_investigate_device`,
   `cnc_network_health_report`, `cnc_explain_sr_policy`, `cnc_alarm_triage`,
   `cnc_explain_service` (reads) and `cnc_provision_l3vpn_e2e`,

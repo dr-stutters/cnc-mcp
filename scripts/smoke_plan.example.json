@@ -1,5 +1,5 @@
 {
-  "_comment": "Live smoke plan for the cnc-lab instance (5 XRd devices, SR-PCE provider cml-pce, credential profile cml-xrd). Read phase is side-effect free. Write phase creates smoke-* objects and removes them again (create -> verify -> delete), leaving the platform as found. Data Gateway steps target the embedded gateway: mapping 'remove' really unmaps but the embedded pool re-maps within ~2 s, and 'add' immediately after a remove succeeds (verified), so the write phase leaves mappings as found. NSO steps act on P2 only (check-sync, sync-from) and prove the zero-match and wildcard guards; sync-to and the inventory-wide sync are not run.",
+  "_comment": "Live smoke plan for the cnc-lab instance (5 XRd devices, SR-PCE provider cml-pce, credential profile cml-xrd). Read phase is side-effect free. Write phase creates smoke-* objects and removes them again (create -> verify -> delete), leaving the platform as found. Data Gateway steps target the embedded gateway: mapping 'remove' really unmaps but the embedded pool re-maps within ~2 s, and 'add' immediately after a remove succeeds (verified), so the write phase leaves mappings as found. NSO steps act on P2 only (check-sync, sync-from) and prove the zero-match and wildcard guards; sync-to and the inventory-wide sync are not run. Phase D (2026-09-15) appended the tier-1 write chains: device groups/rules, PM policy + retention, ZTP objects, external subscriptions (refusal diagnosis + clear-by-topic; the Kafka create chain needs an application-dispatch destination the lab lacks), alarm settings \u2014 each creates phase-d-* objects and removes them.",
   "steps": [
     {
       "tool": "cnc_list_devices",
@@ -3129,6 +3129,1550 @@
         "color": 320
       },
       "phase": "write"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_root_groups",
+      "args": {
+        "classifiers": "LocationDevices",
+        "response_format": "json"
+      },
+      "capture": {
+        "loc_root": "uuids.0"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_group_hierarchy",
+      "args": {
+        "group_uuids": "$loc_root",
+        "response_format": "json"
+      },
+      "capture": {
+        "unassigned_uuid": "items.0.children.0.children.0.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_root_groups",
+      "args": {
+        "classifiers": "PortType",
+        "response_format": "json"
+      },
+      "capture": {
+        "port_type_root": "uuids.0"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_group_hierarchy",
+      "args": {
+        "group_uuids": "$port_type_root",
+        "response_format": "json"
+      },
+      "capture": {
+        "port_type_group": "items.0.children.0.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$port_type_group"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device_group",
+      "args": {
+        "group_uuid": "$port_type_group",
+        "description": "phase-d must be refused"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_device_group_members",
+      "args": {
+        "group_uuid": "$port_type_group",
+        "devices": "PE1"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_move_group_members",
+      "args": {
+        "source_group_uuid": "$unassigned_uuid",
+        "target_group_uuid": "$port_type_group",
+        "devices": "PE1"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_rules",
+      "args": {
+        "group_uuid": "$port_type_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device_group",
+      "args": {
+        "name": "phase-d-static",
+        "description": "phase-d smoke static group"
+      },
+      "capture": {
+        "static_group": "group.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_group_details",
+      "args": {
+        "group_uuid": "$static_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_rules",
+      "args": {
+        "group_uuid": "$static_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device_group",
+      "args": {
+        "name": "phase-d-static"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_device_group_members",
+      "args": {
+        "group_uuid": "$static_group",
+        "devices": "PE1,PE2"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_devices",
+      "args": {
+        "group_uuid": "$static_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device_group",
+      "args": {
+        "group_uuid": "$static_group",
+        "description": "phase-d smoke UPDATED"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_device_group_members",
+      "args": {
+        "group_uuid": "$static_group",
+        "devices": "PE1"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_device_group_members",
+      "args": {
+        "group_uuid": "$static_group",
+        "devices": "PE2",
+        "mode": "remove"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device_group",
+      "args": {
+        "name": "phase-d-dynamic",
+        "rule_conditions": "[{\"attribute\": \"hostname\", \"operator\": \"SO_StartWith\", \"value\": \"PE\"}]"
+      },
+      "capture": {
+        "dynamic_group": "group.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_rules",
+      "args": {
+        "classifier": "LocationDevices"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_devices",
+      "args": {
+        "group_uuid": "$dynamic_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device_group",
+      "args": {
+        "group_uuid": "$dynamic_group",
+        "rule_active": false
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device_group",
+      "args": {
+        "group_uuid": "$dynamic_group",
+        "rule_conditions": "[]"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device_group",
+      "args": {
+        "name": "phase-d-ports",
+        "classifier": "UserDefinedPorts",
+        "rule_conditions": "[{\"attribute\": \"name\", \"operator\": \"SO_Contains\", \"value\": \"Loopback\"}]"
+      },
+      "capture": {
+        "port_group": "group.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_device_group",
+      "args": {
+        "name": "phase-d-access",
+        "classifier": "DeviceAccess"
+      },
+      "capture": {
+        "access_group": "group.uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_device_group_members",
+      "args": {
+        "group_uuid": "$access_group",
+        "devices": "PE1",
+        "mode": "add"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_ports",
+      "args": {
+        "group_uuid": "$port_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_device_group",
+      "args": {
+        "group_uuid": "$port_group",
+        "rule_conditions": "[{\"attribute\": \"name\", \"operator\": \"SO_Contains\", \"value\": \"Loopback\"}, {\"attribute\": \"speed\", \"operator\": \"NO_Equals\", \"value\": \"0\"}]"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_move_group_members",
+      "args": {
+        "source_group_uuid": "$static_group",
+        "target_group_uuid": "$unassigned_uuid",
+        "devices": "PE1"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_move_group_members",
+      "args": {
+        "source_group_uuid": "$static_group",
+        "target_group_uuid": "$unassigned_uuid",
+        "devices": "PE1"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$unassigned_uuid"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$access_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$port_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$dynamic_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$static_group"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_device_group",
+      "args": {
+        "group_uuid": "$static_group"
+      },
+      "expect_error": true,
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_devices",
+      "args": {
+        "group_uuid": "$unassigned_uuid"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_group_rules",
+      "args": {
+        "classifier": "LocationDevices"
+      },
+      "_phase_d": "grouping"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_performance_policy",
+      "args": {
+        "name": "phase-d-pm",
+        "template": "INTERFACE",
+        "schemas_interval": "CEPMINTERFACE=3600",
+        "devices": "PE1",
+        "description": "phase-d smoke: PE1 only, hourly"
+      },
+      "capture": {
+        "pm_policy_id": "policy.id",
+        "pm_policy_ids": "policy_ids"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_performance_policy",
+      "args": {
+        "name": "phase-d-pm",
+        "template": "INTERFACE",
+        "schemas_interval": "CEPMINTERFACE=3600",
+        "devices": "PE1"
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_performance_policy",
+      "args": {
+        "name": "phase-d-pm-bad-cadence",
+        "template": "INTERFACE",
+        "schemas_interval": "CEPMINTERFACE=123",
+        "devices": "PE1"
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id",
+        "description": "phase-d smoke UPDATED",
+        "schemas_interval": "CEPMINTERFACE=1800"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id",
+        "description": "phase-d smoke UPDATED",
+        "schemas_interval": "CEPMINTERFACE=1800"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id",
+        "name": "Default interface health"
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_activate_performance_policy",
+      "args": {
+        "policy_ids": "$pm_policy_ids",
+        "wait_seconds": 30
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_performance_policy_devices",
+      "args": {
+        "policy_id": "$pm_policy_id",
+        "host_name": "PE1"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_performance_policy_history",
+      "args": {
+        "policy_id": "$pm_policy_id"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_activate_performance_policy",
+      "args": {
+        "policy_ids": "$pm_policy_ids,999999",
+        "wait_seconds": 0
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_deactivate_performance_policy",
+      "args": {
+        "policy_ids": "$pm_policy_ids"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_deactivate_performance_policy",
+      "args": {
+        "policy_ids": "$pm_policy_ids"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_performance_policy",
+      "args": {
+        "policy_id": "$pm_policy_id"
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_performance_retention",
+      "args": {
+        "response_format": "json"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_retention",
+      "args": {
+        "table": "CEPM_INTERFACE",
+        "weekly_hours": 9072
+      },
+      "capture": {
+        "pm_weekly_before": "before.weeklyDataRetentionPeriod"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_retention",
+      "args": {
+        "table": "CEPM_INTERFACE",
+        "weekly_hours": "$pm_weekly_before"
+      },
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_retention",
+      "args": {
+        "table": "BOGUS",
+        "weekly_hours": 9072
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_performance_retention",
+      "args": {
+        "table": "CEPM_INTERFACE"
+      },
+      "expect_error": true,
+      "_phase_d": "performance"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-cfg",
+        "platform": "IOS XR",
+        "version": "7.0.2",
+        "device_family": "CISCO NCS540",
+        "content": "!! IOS XR\nhostname phase-d-ztp\n"
+      },
+      "capture": {
+        "ztp_conf_id": "config.confId"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-pre",
+        "platform": "IOS XR",
+        "version": "7.3.1",
+        "device_family": "CISCO NCS540",
+        "config_type": "Pre-config",
+        "file_name": "phase-d-ztp-pre.py",
+        "content": "#!/usr/bin/env python3\nprint('phase-d pre-config')\n"
+      },
+      "capture": {
+        "ztp_pre_id": "config.confId"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-cfg-731",
+        "platform": "IOS XR",
+        "version": "7.3.1",
+        "device_family": "CISCO NCS540",
+        "content": "!! IOS XR\nhostname phase-d-ztp-731\n"
+      },
+      "capture": {
+        "ztp_conf731_id": "config.confId"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-pre-classic",
+        "platform": "IOS XR",
+        "version": "7.0.2",
+        "device_family": "CISCO NCS540",
+        "config_type": "Pre-config",
+        "file_name": "phase-d-ztp-pre.py",
+        "content": "#!/usr/bin/env python3\nprint('phase-d pre-config')\n"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-pre-noshebang",
+        "platform": "IOS XR",
+        "version": "7.3.1",
+        "device_family": "CISCO NCS540",
+        "config_type": "Pre-config",
+        "file_name": "phase-d-ztp-pre.py",
+        "content": "print('no shebang')\n"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-cfg",
+        "platform": "IOS XR",
+        "version": "7.0.2",
+        "device_family": "CISCO NCS540",
+        "content": "!! IOS XR\nhostname phase-d-ztp\n"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_upload_ztp_config_file",
+      "args": {
+        "name": "phase-d-ztp-cfg-nobanner",
+        "platform": "IOS XR",
+        "version": "7.0.2",
+        "device_family": "CISCO NCS540",
+        "content": "hostname phase-d-ztp\n"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_config_files",
+      "args": {
+        "platform": "IOS XR",
+        "response_format": "json"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf_id",
+        "version": "7.0.3",
+        "content": "!! IOS XR\nhostname phase-d-ztp-2\n"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf_id",
+        "version": "7.0.2"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_config_file",
+      "args": {
+        "config_id": "00000000-0000-0000-0000-000000000000",
+        "version": "7.0.2"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_profile",
+      "args": {
+        "name": "phase-d-ztp-profile",
+        "config_id": "$ztp_conf_id",
+        "platform": "IOS XR",
+        "device_family": "CISCO NCS540",
+        "version": "7.0.2",
+        "description": "phase D smoke"
+      },
+      "capture": {
+        "ztp_profile_id": "profile.profileId"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_profile",
+      "args": {
+        "name": "phase-d-ztp-sztp",
+        "config_id": "$ztp_conf731_id",
+        "platform": "IOS XR",
+        "device_family": "CISCO NCS540",
+        "version": "7.3.1",
+        "pre_config_id": "$ztp_pre_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_profile",
+      "args": {
+        "name": "phase-d-ztp-sztp",
+        "config_id": "$ztp_conf731_id",
+        "platform": "IOS XR",
+        "device_family": "CISCO NCS540",
+        "version": "7.3.1",
+        "pre_config_id": "$ztp_pre_id",
+        "secure_ztp": true
+      },
+      "capture": {
+        "ztp_sztp_profile_id": "profile.profileId"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_pre_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_profile",
+      "args": {
+        "name": "phase-d-ztp-profile",
+        "config_id": "$ztp_conf_id",
+        "platform": "IOS XR",
+        "device_family": "CISCO NCS540",
+        "version": "7.0.2"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_profile",
+      "args": {
+        "profile_id": "$ztp_profile_id",
+        "description": "phase D smoke, updated"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_profile",
+      "args": {
+        "profile_id": "00000000-0000-0000-0000-000000000000",
+        "description": "must be refused before the call"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_profiles",
+      "args": {
+        "os_platform": "IOS XR",
+        "response_format": "json"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_add_ztp_serial_numbers",
+      "args": {
+        "serial_numbers": "PHASED0001, PHASED0002"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_add_ztp_serial_numbers",
+      "args": {
+        "serial_numbers": "PHASED0001"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node",
+        "serial_number": "PHASED0003",
+        "credential_profile": "cml-xrd",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-profile"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node",
+        "serial_number": "PHASED0001",
+        "credential_profile": "cml-xrd",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-profile"
+      },
+      "capture": {
+        "ztp_device_uuid": "device.uuid"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node-b",
+        "serial_number": "PHASED0002",
+        "credential_profile": "cml-xrd",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-sztp"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node-b",
+        "serial_number": "PHASED0002",
+        "credential_profile": "cml-xrd",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-sztp",
+        "secure_ztp": true
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node-b",
+        "serial_number": "PHASED0004",
+        "credential_profile": "phase-d-no-such-profile",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-profile",
+        "register_serial": true
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_device",
+      "args": {
+        "host_name": "phase-d-ztp-node",
+        "serial_number": "PHASED0001",
+        "credential_profile": "cml-xrd",
+        "platform": "IOS XR",
+        "profile_name": "phase-d-ztp-profile"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_devices",
+      "args": {
+        "host_name": "phase-d-ztp-node",
+        "response_format": "json"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_serial_numbers",
+      "args": {
+        "in_use": "true",
+        "response_format": "json"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_serial_numbers",
+      "args": {
+        "serial_numbers": "PHASED0002,PHASED0001"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_profile",
+      "args": {
+        "profile_id": "$ztp_profile_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid",
+        "host_name": "  "
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid",
+        "host_name": "phase-d-ztp-node-renamed",
+        "serial_number": "PHASED0002"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid",
+        "profile_name": "",
+        "config_id": "$ztp_conf_id",
+        "version": "7.0.2",
+        "device_family": "CISCO NCS540"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid",
+        "version": "9.9.9"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_ztp_device",
+      "args": {
+        "uuid": "00000000-0000-0000-0000-000000000000",
+        "host_name": "nope"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_device",
+      "args": {
+        "uuid": "$ztp_device_uuid"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_serial_numbers",
+      "args": {
+        "serial_numbers": "PHASED0001,PHASED0002,PHASED0004,PHASED0009"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_serial_numbers",
+      "args": {
+        "serial_numbers": "PHASED0001"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_profile",
+      "args": {
+        "profile_id": "$ztp_profile_id"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_profile",
+      "args": {
+        "profile_id": "$ztp_profile_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_profile",
+      "args": {
+        "profile_id": "$ztp_sztp_profile_id"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_pre_id"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_pre_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf731_id"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf_id"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_config_file",
+      "args": {
+        "config_id": "$ztp_conf_id"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_static_route",
+      "args": {
+        "subnet": "192.0.2.0",
+        "prefix_length": 24
+      },
+      "capture": {
+        "ztp_route_uuid": "route.uuid"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_static_route",
+      "args": {
+        "subnet": "192.0.2.0",
+        "prefix_length": 24
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_ztp_static_route",
+      "args": {
+        "subnet": "192.0.2.1",
+        "prefix_length": 24
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_static_routes",
+      "args": {
+        "response_format": "json"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_static_route",
+      "args": {
+        "uuid": "$ztp_route_uuid"
+      },
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_ztp_static_route",
+      "args": {
+        "uuid": "$ztp_route_uuid"
+      },
+      "expect_error": true,
+      "_phase_d": "ztp"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_ztp_static_routes",
+      "args": {},
+      "_phase_d": "ztp"
+    },
+    {
+      "tool": "cnc_list_kafka_subscriptions",
+      "args": {
+        "response_format": "json"
+      },
+      "phase": "write",
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_notification_subscriptions",
+      "args": {
+        "all_users": true,
+        "response_format": "json"
+      },
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_external_subscription",
+      "args": {
+        "destination_name": "CW_KAFKA_DESTINATION",
+        "destination_type": "Kafka",
+        "topic_name": "phase-d-audit",
+        "data_type": "System_Audit"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_external_subscription",
+      "args": {
+        "destination_name": "phase-d-no-such-destination",
+        "destination_type": "Kafka",
+        "topic_name": "phase-d-audit",
+        "data_type": "System_Audit"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_external_subscription",
+      "args": {
+        "destination_name": "CW_KAFKA_DESTINATION",
+        "destination_type": "gRPC",
+        "topic_name": "phase-d-audit",
+        "data_type": "Alarm"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_external_subscription",
+      "args": {
+        "topic_name": "phase-d-audit"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_kafka_subscriptions",
+      "args": {},
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_clear_notification_subscriptions_by_topic",
+      "args": {
+        "topic": "nope"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_webhook_subscription",
+      "args": {
+        "client_url": "http://192.0.2.17:80/phase-d-hook",
+        "topic": "inventory",
+        "format": "json"
+      },
+      "capture": {
+        "phase_d_hook_id": "ietf-restconf:notification.subscription-id"
+      },
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_notification_subscription",
+      "args": {
+        "subscription_id": "$phase_d_hook_id"
+      },
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_clear_notification_subscriptions_by_topic",
+      "args": {
+        "topic": "inventory"
+      },
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_notification_subscription",
+      "args": {
+        "subscription_id": "$phase_d_hook_id"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_clear_notification_subscriptions_by_topic",
+      "args": {
+        "topic": "inventory"
+      },
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_notification_subscription",
+      "args": {
+        "subscription_id": "$phase_d_hook_id"
+      },
+      "expect_error": true,
+      "_phase_d": "notifications"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_severity",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "severity": "minor"
+      },
+      "capture": {
+        "rip_oom_severity": "before.severity"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_event_types",
+      "args": {
+        "name": "ROUTING-RIP-6-INFO_OOM",
+        "severity": "Minor",
+        "response_format": "json"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_severity",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "severity": "$rip_oom_severity"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_severity",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "severity": "major"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_severity",
+      "args": {
+        "event_type": "phase-d-no-such-event",
+        "severity": "minor"
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_autoclear",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "minutes": 30
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_autoclear",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "minutes": 61
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_revert_event_type_autoclear",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_revert_event_type_autoclear",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_manager_settings",
+      "args": {
+        "device_type": "Cisco NCS 5001",
+        "enabled": true
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_alarm_manager_settings",
+      "args": {
+        "enabled_only": true
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_manager_settings",
+      "args": {
+        "device_type": "Cisco NCS 5001",
+        "enabled": false
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_manager_settings",
+      "args": {
+        "device_type": "Cisco NCS 5001",
+        "enabled": false
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_manager_settings",
+      "args": {
+        "device_type": "Phase D Router",
+        "enabled": true
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_gnmi_alarm_settings",
+      "args": {
+        "enabled": true
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_gnmi_alarm_settings",
+      "args": {
+        "enabled": false
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_gnmi_alarm_settings",
+      "args": {
+        "enabled": false
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_gnmi_alarm_settings",
+      "args": {
+        "enabled": true,
+        "vendor": "Phase D Vendor"
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_recommendation",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM",
+        "explanation": "phase-d explanation",
+        "recommended_action": "phase-d action"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_get_event_type_recommendation",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_recommendation",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_recommendation",
+      "args": {
+        "event_type": "ROUTING-RIP-6-INFO_OOM"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_set_event_type_recommendation",
+      "args": {
+        "event_type": "phase-d-no-such-event",
+        "explanation": "x"
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_create_alarm_suppression_policy",
+      "args": {
+        "name": "phase-d-policy",
+        "criteria": "eventType in [BGP-5-ADJCHANGE_DOWN]",
+        "description": "phase-d create"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_suppression_policy",
+      "args": {
+        "name": "phase-d-policy",
+        "description": "phase-d updated",
+        "action": "suppressEvent",
+        "criteria": "eventType in [BGP-5-ADJCHANGE_DOWN,BGP-5-ADJCHANGE_UP]"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_list_alarm_suppression_policies",
+      "args": {
+        "response_format": "json"
+      },
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_update_alarm_suppression_policy",
+      "args": {
+        "name": "phase-d-no-such-policy",
+        "description": "x"
+      },
+      "expect_error": true,
+      "_phase_d": "fault"
+    },
+    {
+      "phase": "write",
+      "tool": "cnc_delete_alarm_suppression_policy",
+      "args": {
+        "name": "phase-d-policy"
+      },
+      "_phase_d": "fault"
     }
   ]
 }

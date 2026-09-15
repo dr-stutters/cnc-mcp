@@ -40,19 +40,26 @@ from cnc_mcp.tools.fault import (
     alarm_line,
     alarm_markdown,
     alarm_text,
+    autoclear_minutes,
+    autoclear_minutes_error,
     canonical,
     check_lifecycle,
     check_query,
     event_count,
+    event_type_state,
     fault_event,
     fault_event_label,
     filter_alarms,
     filter_event_types,
     filter_events,
     find_alarm,
+    find_event_type,
+    find_policy,
     history_stamp,
     is_cleared,
     is_stale,
+    platform_message,
+    resolve_setting_key,
     sort_alarms,
     stale_alarm_footer,
 )
@@ -73,6 +80,8 @@ SETTINGS_URL = f"{ALARM_V1}/settings"
 GNMI_URL = f"{ALARM_V1}/gnmi/settings"
 MANAGER_URL = f"{ALARM_V1}/manager/settings"
 SEVERITY_URL = f"{ALARM_V1}/severity-config"
+AUTOCLEAR_URL = f"{ALARM_V1}/autoclear"
+AUTOCLEAR_REVERT_URL = f"{ALARM_V1}/autoclear/revert"
 RECOMMENDED_URL = f"{ALARM_V1}/recommended-action"
 POLICY_URL = f"{ALARM_V1}/suppressionpolicy"
 RTM_URL = f"{BASE_URL}/crosswork/alarm/restconf/data/v2/rtm:alarm"
@@ -457,6 +466,13 @@ WRITE_TOOLS = {
     "cnc_clear_alarm",
     "cnc_create_alarm_suppression_policy",
     "cnc_delete_alarm_suppression_policy",
+    "cnc_update_alarm_suppression_policy",
+    "cnc_set_event_type_severity",
+    "cnc_set_event_type_autoclear",
+    "cnc_revert_event_type_autoclear",
+    "cnc_update_alarm_manager_settings",
+    "cnc_update_gnmi_alarm_settings",
+    "cnc_set_event_type_recommendation",
 }
 
 
@@ -523,6 +539,30 @@ async def test_annotations(make_settings):
     assert ann["cnc_create_alarm_suppression_policy"].destructive_hint is False
     assert ann["cnc_delete_alarm_suppression_policy"].destructive_hint is True
     assert ann["cnc_delete_alarm_suppression_policy"].idempotent_hint is True
+    # Settings writes: repeatable; the ones that overwrite or delete state are destructive.
+    for name in (
+        "cnc_update_alarm_suppression_policy",
+        "cnc_set_event_type_severity",
+        "cnc_set_event_type_autoclear",
+        "cnc_revert_event_type_autoclear",
+        "cnc_update_alarm_manager_settings",
+        "cnc_update_gnmi_alarm_settings",
+        "cnc_set_event_type_recommendation",
+    ):
+        assert ann[name].idempotent_hint is True, name
+    for name in (
+        "cnc_set_event_type_severity",
+        "cnc_set_event_type_autoclear",
+        "cnc_update_alarm_manager_settings",
+        "cnc_update_gnmi_alarm_settings",
+    ):
+        assert ann[name].destructive_hint is False, name
+    for name in (
+        "cnc_update_alarm_suppression_policy",
+        "cnc_revert_event_type_autoclear",
+        "cnc_set_event_type_recommendation",
+    ):
+        assert ann[name].destructive_hint is True, name
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -1605,7 +1645,7 @@ async def test_get_event_type_recommendation_custom_overrides(settings):
     custom = {
         **RECOMMENDATION,
         "recommendedaction": "Open a ticket with NOC",
-        "nextstepupdate": "x",
+        "nextstepupdate": 1,
     }
     respx.get(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json=custom))
     text = await call_tool_text(
@@ -1614,7 +1654,19 @@ async def test_get_event_type_recommendation_custom_overrides(settings):
     assert "- Recommended action: Open a ticket with NOC" in text
     assert "- Source: custom text set on this instance" in text
     assert "- Default recommended action: Check the neighbor and the link." in text
-    assert "- Next step: x" in text
+    assert "nextstepupdate" not in text
+
+
+@respx.mock
+async def test_get_event_type_recommendation_cleared_custom_text_is_explained(settings):
+    """Verified live 2026-09-15: nextstepupdate stays 1 after the custom text is cleared."""
+    cleared = {**RECOMMENDATION, "nextstepupdate": 1}
+    respx.get(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json=cleared))
+    text = await call_tool_text(
+        build(settings), "cnc_get_event_type_recommendation", {"event_type": "BGP-5-ADJCHANGE_DOWN"}
+    )
+    assert "- Source: platform defaults" in text
+    assert "saved on this instance before and later cleared (nextstepupdate=1)" in text
 
 
 @respx.mock
@@ -2271,5 +2323,914 @@ async def test_delete_suppression_policy_other_error_is_string(make_settings):
     respx.delete(f"{POLICY_URL}/p").mock(return_value=NATS_500)
     text = await call_tool_text(
         writable(make_settings, max_retries=0), "cnc_delete_alarm_suppression_policy", {"name": "p"}
+    )
+    assert text.startswith("Error:") and "500" in text
+
+
+# --- settings writes: pure helpers -------------------------------------------
+
+
+def test_autoclear_minutes_error_mirrors_the_platform_rule():
+    """Verified live 2026-09-15: 5..599940; <= 55 in multiples of 5; >= 60 in multiples of 60."""
+    for ok in (5, 55, 60, 120, 1440, 599940):
+        assert autoclear_minutes_error(ok) is None, ok
+    assert "between 5 and 599940" in autoclear_minutes_error(4)
+    assert "between 5 and 599940" in autoclear_minutes_error(599941)
+    assert "multiple of 5" in autoclear_minutes_error(7)
+    assert "multiple of 60" in autoclear_minutes_error(61)
+    assert "multiple of 60" in autoclear_minutes_error(599939)
+
+
+def test_autoclear_minutes_and_event_type_state():
+    assert autoclear_minutes({"revert": "1440"}) == 1440
+    assert autoclear_minutes({"revert": "0"}) is None
+    assert autoclear_minutes({}) is None
+    assert autoclear_minutes({"revert": "soon"}) is None
+    assert event_type_state(SEVERITY_ITEMS["items"][0]) == {
+        "name": "BGP-5-ADJCHANGE_DOWN",
+        "category": "BGP",
+        "severity": "Major",
+        "autoclear_minutes": 15,
+    }
+
+
+def test_find_event_type_exact_then_case_insensitive():
+    items = SEVERITY_ITEMS["items"]
+    assert find_event_type(items, "BGP-5-ADJCHANGE_DOWN")["severity"] == "Major"
+    assert find_event_type(items, " link-3-updown_down ")["severity"] == "Critical"
+    assert find_event_type(items, "nope") is None
+
+
+def test_find_policy_exact_then_case_insensitive():
+    assert find_policy([POLICY], "Suppress-BGP-Flaps") is POLICY
+    assert find_policy([POLICY], "other") is None
+
+
+def test_resolve_setting_key_with_and_without_prefix():
+    assert (
+        resolve_setting_key(MANAGER, "Cisco IOS XR", "alarmManager/") == "alarmManager/Cisco IOS XR"
+    )
+    assert resolve_setting_key(MANAGER, "alarmManager/Cisco IOS XR", "alarmManager/") == (
+        "alarmManager/Cisco IOS XR"
+    )
+    assert (
+        resolve_setting_key(MANAGER, " cisco nx-os ", "alarmManager/") == "alarmManager/Cisco NX-OS"
+    )
+    assert resolve_setting_key(MANAGER, "Cisco ASR 9000", "alarmManager/") is None
+    assert resolve_setting_key(GNMI, "cisco systems") == "Cisco Systems"
+    assert resolve_setting_key(GNMI, "Juniper") is None
+
+
+def test_platform_message_json_keys_and_plain_text():
+    r400 = httpx.Response(400, text="Invalid eventType")
+    assert platform_message(r400, None) == "Invalid eventType"
+    assert platform_message(r400, {"Message ": "Action type is null", "status": "Failed"}) == (
+        "Action type is null"
+    )
+    assert platform_message(r400, {"responseResult": "Invalid input : X"}) == "Invalid input : X"
+    assert platform_message(
+        r400, {"status": "OK", "body": "Severity configuration update success"}
+    ) == ("Severity configuration update success")
+    assert platform_message(httpx.Response(500), None) == "HTTP 500 with an empty body"
+
+
+# --- settings writes: shared fixtures ----------------------------------------
+
+
+def catalogue(**overrides: dict) -> dict:
+    """SEVERITY_ITEMS with some entries replaced (by name) — the 'after' catalogue."""
+    items = [dict(overrides.get(i["name"], i)) for i in SEVERITY_ITEMS["items"]]
+    return {"items": items}
+
+
+def mock_catalogue(*documents: dict) -> respx.Route:
+    """GET severity-config answering each document in turn (before, after, ...)."""
+    return respx.get(SEVERITY_URL).mock(
+        side_effect=[httpx.Response(200, json=d) for d in documents]
+    )
+
+
+SEVERITY_OK = {"status": "OK", "headers": {}, "body": "Severity configuration update success"}
+AUTOCLEAR_OK = {"status": "OK", "headers": {}, "body": "Alarm autoclear update:success"}
+REVERT_OK = {
+    "status": "OK",
+    "headers": {},
+    "body": "Alarm autoclear deletion operation completed successfully",
+}
+# The severity-config / autoclear 400s are plain text under a JSON content type (live).
+INVALID_EVENT_TYPE = httpx.Response(
+    400, content=b"Invalid eventType", headers={"content-type": "application/json"}
+)
+
+
+# --- cnc_set_event_type_severity ---------------------------------------------
+
+
+@respx.mock
+async def test_set_event_type_severity_body_lowercase_and_before_after(make_settings):
+    after = catalogue(**{"LINK-3-UPDOWN_DOWN": {**SEVERITY_ITEMS["items"][2], "severity": "Minor"}})
+    mock_catalogue(SEVERITY_ITEMS, after)
+    post = respx.post(SEVERITY_URL).mock(return_value=httpx.Response(200, json=SEVERITY_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "link-3-updown_down", "severity": "MINOR"},
+    )
+    # Lowercase on the wire, the platform's own spelling of the name.
+    assert sent(post) == {
+        "sourceType": "scc",
+        "sourceValue": "minor",
+        "eventTypes": ["LINK-3-UPDOWN_DOWN"],
+    }
+    assert text.startswith("Event type LINK-3-UPDOWN_DOWN severity: Critical -> Minor.")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"]["severity"] == "Critical" and data["after"]["severity"] == "Minor"
+    assert data["changed"] is True and data["response"] == SEVERITY_OK
+
+
+@respx.mock
+async def test_set_event_type_severity_same_value_is_a_reported_no_op(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    respx.post(SEVERITY_URL).mock(return_value=httpx.Response(200, json=SEVERITY_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "major"},
+    )
+    assert text.startswith(
+        "Event type BGP-5-ADJCHANGE_DOWN severity is Major (already; nothing changed)."
+    )
+    assert json.loads(text.split("\n\n", 1)[1])["changed"] is False
+
+
+@respx.mock
+async def test_set_event_type_severity_ignored_write_is_error_not_already(make_settings):
+    """'already; nothing changed' follows the REQUEST, not the read-back: a write the
+    platform accepted but did not apply (the catalogue still shows the old value)
+    is an error that says so, never a claimed no-op."""
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    respx.post(SEVERITY_URL).mock(return_value=httpx.Response(200, json=SEVERITY_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "minor"},
+    )
+    assert text.startswith(
+        "Error: Set severity of BGP-5-ADJCHANGE_DOWN: the platform accepted the write ("
+    )
+    assert "Severity configuration update success" in text
+    assert text.endswith(
+        "but the catalogue still shows severity Major; re-read with cnc_list_event_types"
+    )
+    assert "already" not in text
+
+
+@respx.mock
+async def test_set_event_type_severity_unknown_type_writes_nothing(make_settings):
+    mock_catalogue(SEVERITY_ITEMS)
+    post = respx.post(SEVERITY_URL).mock(return_value=httpx.Response(200, json=SEVERITY_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "NOPE-1", "severity": "major"},
+    )
+    assert text == "Error: no event type 'NOPE-1' (find names with cnc_list_event_types)"
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_set_event_type_severity_bad_severity_is_error_without_a_call(make_settings):
+    get = mock_catalogue(SEVERITY_ITEMS)
+    post = respx.post(SEVERITY_URL).mock(return_value=httpx.Response(200, json=SEVERITY_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "cleared"},
+    )
+    assert text.startswith("Error: Unknown event severity 'cleared'") and "information" in text
+    assert get.call_count == 0 and post.call_count == 0
+
+
+@respx.mock
+async def test_set_event_type_severity_plain_text_400_is_explained(make_settings):
+    mock_catalogue(SEVERITY_ITEMS)
+    respx.post(SEVERITY_URL).mock(return_value=INVALID_EVENT_TYPE)
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "minor"},
+    )
+    assert text.startswith("Error: Set severity of BGP-5-ADJCHANGE_DOWN: the platform rejected")
+    assert "Invalid eventType" in text and "nothing was changed" in text
+
+
+@respx.mock
+async def test_set_event_type_severity_other_400_and_500_are_errors(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    respx.post(SEVERITY_URL).mock(
+        side_effect=[
+            httpx.Response(
+                400, content=b"Invalid sourceValue", headers={"content-type": "application/json"}
+            ),
+            NATS_500,
+        ]
+    )
+    mcp = writable(make_settings, max_retries=0)
+    args = {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "minor"}
+    text = await call_tool_text(mcp, "cnc_set_event_type_severity", args)
+    assert text == (
+        "Error: Set severity of BGP-5-ADJCHANGE_DOWN rejected: Invalid sourceValue. "
+        "Nothing was changed."
+    )
+    text = await call_tool_text(mcp, "cnc_set_event_type_severity", args)
+    assert text.startswith("Error:") and "500" in text
+
+
+@respx.mock
+async def test_set_event_type_severity_200_error_document_is_error(make_settings):
+    mock_catalogue(SEVERITY_ITEMS)
+    respx.post(SEVERITY_URL).mock(
+        return_value=httpx.Response(
+            200, json={"error": "Fail", "code": 0, "message": "Input Request is invalid"}
+        )
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_severity",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "severity": "minor"},
+    )
+    assert text == (
+        "Error: Set severity of BGP-5-ADJCHANGE_DOWN failed (code 0): Input Request is invalid"
+    )
+
+
+# --- cnc_set_event_type_autoclear ---------------------------------------------
+
+
+@respx.mock
+async def test_set_event_type_autoclear_body_and_before_after(make_settings):
+    after = catalogue(**{"LINK-3-UPDOWN_DOWN": {**SEVERITY_ITEMS["items"][2], "revert": "30"}})
+    mock_catalogue(SEVERITY_ITEMS, after)
+    post = respx.post(AUTOCLEAR_URL).mock(return_value=httpx.Response(200, json=AUTOCLEAR_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_autoclear",
+        {"event_type": "LINK-3-UPDOWN_DOWN", "minutes": 30},
+    )
+    assert sent(post) == {
+        "sourceType": "aac",
+        "sourceValue": "30",
+        "eventTypes": ["LINK-3-UPDOWN_DOWN"],
+    }
+    assert text.startswith("Event type LINK-3-UPDOWN_DOWN auto-clear: never -> 30 min.")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"]["autoclear_minutes"] is None
+    assert data["after"]["autoclear_minutes"] == 30 and data["changed"] is True
+
+
+@respx.mock
+async def test_set_event_type_autoclear_change_and_no_op(make_settings):
+    after = catalogue(**{"BGP-5-ADJCHANGE_DOWN": {**SEVERITY_ITEMS["items"][0], "revert": "1440"}})
+    mock_catalogue(SEVERITY_ITEMS, after, after, after)
+    respx.post(AUTOCLEAR_URL).mock(return_value=httpx.Response(200, json=AUTOCLEAR_OK))
+    mcp = writable(make_settings)
+    text = await call_tool_text(
+        mcp, "cnc_set_event_type_autoclear", {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 1440}
+    )
+    assert text.startswith("Event type BGP-5-ADJCHANGE_DOWN auto-clear: 15 min -> 1440 min.")
+    text = await call_tool_text(
+        mcp, "cnc_set_event_type_autoclear", {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 1440}
+    )
+    assert text.startswith(
+        "Event type BGP-5-ADJCHANGE_DOWN auto-clear is 1440 min (already; nothing changed)."
+    )
+
+
+@respx.mock
+async def test_set_event_type_autoclear_ignored_write_is_error_not_already(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)  # 15 min before AND after
+    respx.post(AUTOCLEAR_URL).mock(return_value=httpx.Response(200, json=AUTOCLEAR_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_autoclear",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 30},
+    )
+    assert text.startswith(
+        "Error: Set auto-clear of BGP-5-ADJCHANGE_DOWN: the platform accepted the write ("
+    )
+    assert text.endswith(
+        "but the catalogue still shows auto-clear 15 min; re-read with cnc_list_event_types"
+    )
+    assert "already" not in text
+
+
+@respx.mock
+async def test_set_event_type_autoclear_bad_minutes_is_error_without_a_call(make_settings):
+    get = mock_catalogue(SEVERITY_ITEMS)
+    post = respx.post(AUTOCLEAR_URL).mock(return_value=httpx.Response(200, json=AUTOCLEAR_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_autoclear",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 61},
+    )
+    assert text == "Error: auto-clear minutes from 60 up must be a multiple of 60 (got 61)"
+    assert get.call_count == 0 and post.call_count == 0
+
+
+async def test_set_event_type_autoclear_schema_bounds(make_settings):
+    mcp = writable(make_settings)
+    for minutes in (4, 599941):
+        with pytest.raises(ToolError):
+            await mcp.call_tool(
+                "cnc_set_event_type_autoclear",
+                {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": minutes},
+            )
+
+
+@respx.mock
+async def test_set_event_type_autoclear_unknown_type_and_platform_400(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    post = respx.post(AUTOCLEAR_URL).mock(
+        return_value=httpx.Response(
+            400,
+            content=b"Invalid sourceValue : Please enter valid integer value in the range of "
+            b"5 to 599940.",
+            headers={"content-type": "application/json"},
+        )
+    )
+    mcp = writable(make_settings)
+    text = await call_tool_text(
+        mcp, "cnc_set_event_type_autoclear", {"event_type": "NOPE-1", "minutes": 30}
+    )
+    assert text == "Error: no event type 'NOPE-1' (find names with cnc_list_event_types)"
+    assert post.call_count == 0
+    text = await call_tool_text(
+        mcp, "cnc_set_event_type_autoclear", {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 30}
+    )
+    assert text.startswith(
+        "Error: Set auto-clear of BGP-5-ADJCHANGE_DOWN rejected: Invalid sourceValue"
+    )
+    assert text.endswith("Nothing was changed.")
+
+
+@respx.mock
+async def test_set_event_type_autoclear_http_error_is_string(make_settings):
+    mock_catalogue(SEVERITY_ITEMS)
+    respx.post(AUTOCLEAR_URL).mock(return_value=NATS_500)
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0),
+        "cnc_set_event_type_autoclear",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "minutes": 30},
+    )
+    assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_revert_event_type_autoclear ------------------------------------------
+
+
+@respx.mock
+async def test_revert_event_type_autoclear_deletes_the_interval_and_says_how_to_restore(
+    make_settings,
+):
+    after = catalogue(
+        **{
+            "BGP-5-ADJCHANGE_DOWN": {
+                "severity": "Major",
+                "defaultCategory": "BGP",
+                "name": "BGP-5-ADJCHANGE_DOWN",
+                "eventTypeName": "BGP-5-ADJCHANGE_DOWN",
+            }
+        }
+    )
+    mock_catalogue(SEVERITY_ITEMS, after)
+    post = respx.post(AUTOCLEAR_REVERT_URL).mock(return_value=httpx.Response(200, json=REVERT_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_revert_event_type_autoclear",
+        {"event_type": "bgp-5-adjchange_down"},
+    )
+    assert sent(post) == {"eventTypes": ["BGP-5-ADJCHANGE_DOWN"]}
+    assert text.startswith(
+        "Event type BGP-5-ADJCHANGE_DOWN auto-clear: 15 min -> never. Restore with "
+        "cnc_set_event_type_autoclear(minutes=15)."
+    )
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"]["autoclear_minutes"] == 15 and data["after"]["autoclear_minutes"] is None
+    assert data["response"] == REVERT_OK
+
+
+@respx.mock
+async def test_revert_event_type_autoclear_without_interval_is_a_reported_no_op(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    post = respx.post(AUTOCLEAR_REVERT_URL).mock(return_value=httpx.Response(200, json=REVERT_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_revert_event_type_autoclear",
+        {"event_type": "LINK-3-UPDOWN_DOWN"},
+    )
+    # The platform answers 200 for a type with nothing to delete (verified live); the
+    # write is still sent (it is harmless) and the no-op is reported.
+    assert post.call_count == 1
+    assert text.startswith(
+        "Event type LINK-3-UPDOWN_DOWN auto-clear is never (already; nothing changed)."
+    )
+
+
+@respx.mock
+async def test_revert_event_type_autoclear_interval_still_there_is_error(make_settings):
+    """A revert the platform answered OK but that left the interval in the catalogue
+    must not be reported as a no-op."""
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)  # 15 min before AND after
+    respx.post(AUTOCLEAR_REVERT_URL).mock(return_value=httpx.Response(200, json=REVERT_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_revert_event_type_autoclear",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN"},
+    )
+    assert text.startswith(
+        "Error: Revert auto-clear of BGP-5-ADJCHANGE_DOWN: the platform accepted the write ("
+    )
+    assert text.endswith(
+        "but the catalogue still shows auto-clear 15 min; re-read with cnc_list_event_types"
+    )
+    assert "already" not in text
+
+
+@respx.mock
+async def test_revert_event_type_autoclear_unknown_type_and_400(make_settings):
+    mock_catalogue(SEVERITY_ITEMS, SEVERITY_ITEMS)
+    post = respx.post(AUTOCLEAR_REVERT_URL).mock(return_value=INVALID_EVENT_TYPE)
+    mcp = writable(make_settings)
+    text = await call_tool_text(mcp, "cnc_revert_event_type_autoclear", {"event_type": "NOPE-1"})
+    assert text == "Error: no event type 'NOPE-1' (find names with cnc_list_event_types)"
+    assert post.call_count == 0
+    text = await call_tool_text(
+        mcp, "cnc_revert_event_type_autoclear", {"event_type": "BGP-5-ADJCHANGE_DOWN"}
+    )
+    assert text.startswith(
+        "Error: Revert auto-clear of BGP-5-ADJCHANGE_DOWN: the platform rejected"
+    )
+
+
+# --- cnc_update_alarm_manager_settings ----------------------------------------
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_partial_document_and_echo(make_settings):
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    post = respx.post(MANAGER_URL).mock(
+        return_value=httpx.Response(200, json={"alarmManager/Cisco NX-OS": True})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "cisco nx-os", "enabled": True},
+    )
+    assert sent(post) == {"alarmManager/Cisco NX-OS": True}
+    assert text.startswith("Alarm manager — Cisco NX-OS: on\n")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data == {
+        "key": "alarmManager/Cisco NX-OS",
+        "before": False,
+        "after": True,
+        "changed": True,
+        "response": {"alarmManager/Cisco NX-OS": True},
+    }
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_already_set_and_prefixed_name(make_settings):
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    respx.post(MANAGER_URL).mock(
+        return_value=httpx.Response(200, json={"alarmManager/Cisco IOS XR": True})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "alarmManager/Cisco IOS XR", "enabled": True},
+    )
+    assert text.startswith("Alarm manager — Cisco IOS XR: on (already; nothing changed)")
+    assert json.loads(text.split("\n\n", 1)[1])["changed"] is False
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_unknown_type_writes_nothing(make_settings):
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    post = respx.post(MANAGER_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "Cisco ASR 9000", "enabled": True},
+    )
+    assert text == (
+        "Error: no alarm-manager device type 'Cisco ASR 9000' (list them with "
+        "cnc_get_alarm_manager_settings)"
+    )
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_echo_mismatch_is_error(make_settings):
+    """The platform stores a non-boolean as false and echoes what it stored (live)."""
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    respx.post(MANAGER_URL).mock(
+        return_value=httpx.Response(200, json={"alarmManager/Cisco NX-OS": False})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "Cisco NX-OS", "enabled": True},
+    )
+    assert text == (
+        "Error: Alarm manager update for alarmManager/Cisco NX-OS: the platform stored "
+        "'alarmManager/Cisco NX-OS' as False, not True"
+    )
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_missing_echo_is_error(make_settings):
+    """{} is what the platform answers an empty body with (live): without the key in
+    the echo nothing proves the flag was stored, so it is not reported as done."""
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    respx.post(MANAGER_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "Cisco NX-OS", "enabled": True},
+    )
+    assert text == (
+        "Error: Alarm manager update for alarmManager/Cisco NX-OS: the platform did not echo "
+        "'alarmManager/Cisco NX-OS' (answer {}); re-read with cnc_get_alarm_manager_settings"
+    )
+
+
+@respx.mock
+async def test_update_alarm_manager_settings_http_error_is_string(make_settings):
+    respx.get(MANAGER_URL).mock(return_value=httpx.Response(200, json=MANAGER))
+    respx.post(MANAGER_URL).mock(return_value=NATS_500)
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0),
+        "cnc_update_alarm_manager_settings",
+        {"device_type": "Cisco NX-OS", "enabled": True},
+    )
+    assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_update_gnmi_alarm_settings -------------------------------------------
+
+
+@respx.mock
+async def test_update_gnmi_alarm_settings_default_vendor_and_echo(make_settings):
+    respx.get(GNMI_URL).mock(return_value=httpx.Response(200, json=GNMI))
+    post = respx.post(GNMI_URL).mock(return_value=httpx.Response(200, json={"Cisco Systems": True}))
+    text = await call_tool_text(
+        writable(make_settings), "cnc_update_gnmi_alarm_settings", {"enabled": True}
+    )
+    assert sent(post) == {"Cisco Systems": True}
+    assert text.startswith("gNMI alarm collection — Cisco Systems: on\n")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["key"] == "Cisco Systems" and data["before"] is False and data["after"] is True
+
+
+@respx.mock
+async def test_update_gnmi_alarm_settings_unknown_vendor_writes_nothing(make_settings):
+    respx.get(GNMI_URL).mock(return_value=httpx.Response(200, json=GNMI))
+    post = respx.post(GNMI_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_gnmi_alarm_settings",
+        {"enabled": True, "vendor": "Juniper"},
+    )
+    assert text == "Error: no gNMI alarm vendor 'Juniper' (cnc_get_alarm_settings lists them)"
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_update_gnmi_alarm_settings_missing_echo_is_error(make_settings):
+    respx.get(GNMI_URL).mock(return_value=httpx.Response(200, json=GNMI))
+    respx.post(GNMI_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings), "cnc_update_gnmi_alarm_settings", {"enabled": True}
+    )
+    assert text == (
+        "Error: gNMI alarm settings update for Cisco Systems: the platform did not echo "
+        "'Cisco Systems' (answer {}); re-read with cnc_get_alarm_settings"
+    )
+
+
+@respx.mock
+async def test_update_gnmi_alarm_settings_read_failure_is_string(make_settings):
+    respx.get(GNMI_URL).mock(return_value=NATS_500)
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0), "cnc_update_gnmi_alarm_settings", {"enabled": False}
+    )
+    assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_set_event_type_recommendation ----------------------------------------
+
+
+@respx.mock
+async def test_set_event_type_recommendation_body_and_before_after(make_settings):
+    saved = {
+        **RECOMMENDATION,
+        "explaination": "CE session dropped",
+        "recommendedaction": "Open a P2 ticket",
+        "nextstepupdate": 1,
+    }
+    respx.get(RECOMMENDED_URL).mock(
+        side_effect=[httpx.Response(200, json=RECOMMENDATION), httpx.Response(200, json=saved)]
+    )
+    post = respx.post(RECOMMENDED_URL).mock(
+        return_value=httpx.Response(200, json={"responseResult": "Data Saved Successfully"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_recommendation",
+        {
+            "event_type": "BGP-5-ADJCHANGE_DOWN",
+            "explanation": " CE session dropped ",
+            "recommended_action": "Open a P2 ticket",
+        },
+    )
+    assert sent(post) == {
+        "erroreventype": "BGP-5-ADJCHANGE_DOWN",
+        "explaination": "CE session dropped",
+        "recommendedaction": "Open a P2 ticket",
+    }
+    assert text.startswith("Recommendation for BGP-5-ADJCHANGE_DOWN saved.")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"] == {"explanation": "", "recommended_action": ""}
+    assert data["after"] == {
+        "explanation": "CE session dropped",
+        "recommended_action": "Open a P2 ticket",
+    }
+    assert data["defaults"]["explanation"] == "A BGP neighbor session went down."
+    assert data["response"] == {"responseResult": "Data Saved Successfully"}
+
+
+@respx.mock
+async def test_set_event_type_recommendation_empty_clears_to_defaults(make_settings):
+    custom = {**RECOMMENDATION, "explaination": "old", "recommendedaction": "old action"}
+    cleared = {**RECOMMENDATION, "nextstepupdate": 1}
+    respx.get(RECOMMENDED_URL).mock(
+        side_effect=[httpx.Response(200, json=custom), httpx.Response(200, json=cleared)]
+    )
+    post = respx.post(RECOMMENDED_URL).mock(
+        return_value=httpx.Response(200, json={"responseResult": "Data Saved Successfully"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_recommendation",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN"},
+    )
+    assert sent(post) == {
+        "erroreventype": "BGP-5-ADJCHANGE_DOWN",
+        "explaination": "",
+        "recommendedaction": "",
+    }
+    assert text.startswith(
+        "Recommendation for BGP-5-ADJCHANGE_DOWN cleared to the platform defaults."
+    )
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"] == {"explanation": "old", "recommended_action": "old action"}
+
+
+@respx.mock
+async def test_set_event_type_recommendation_200_error_document_is_error(make_settings):
+    """recommended-action answers HTTP 200 for error documents too, and the tool
+    asked to SET text must never answer 'cleared' because the read-back is still
+    empty: only a read-back equal to the request is a success."""
+    respx.get(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json=RECOMMENDATION))
+    respx.post(RECOMMENDED_URL).mock(
+        return_value=httpx.Response(
+            200, json={"responseResult": "Invalid input : something went wrong"}
+        )
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_recommendation",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "explanation": "x", "recommended_action": "y"},
+    )
+    assert text == (
+        "Error: Set recommendation for BGP-5-ADJCHANGE_DOWN: the platform answered Invalid "
+        "input : something went wrong but the read-back shows {'explanation': '', "
+        "'recommended_action': ''}; re-read with cnc_get_event_type_recommendation"
+    )
+
+
+@respx.mock
+async def test_set_event_type_recommendation_ignored_write_is_error(make_settings):
+    """A 'Data Saved Successfully' whose read-back does not match the request (the
+    platform silently ignored or altered it) is an error, not 'saved'."""
+    stored = {**RECOMMENDATION, "explaination": "x", "recommendedaction": "something else"}
+    respx.get(RECOMMENDED_URL).mock(
+        side_effect=[httpx.Response(200, json=RECOMMENDATION), httpx.Response(200, json=stored)]
+    )
+    respx.post(RECOMMENDED_URL).mock(
+        return_value=httpx.Response(200, json={"responseResult": "Data Saved Successfully"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_recommendation",
+        {"event_type": "BGP-5-ADJCHANGE_DOWN", "explanation": "x", "recommended_action": "y"},
+    )
+    assert text.startswith(
+        "Error: Set recommendation for BGP-5-ADJCHANGE_DOWN: the platform answered Data Saved "
+        "Successfully but the read-back shows {'explanation': 'x', 'recommended_action': "
+        "'something else'}"
+    )
+
+
+@respx.mock
+async def test_set_event_type_recommendation_dry_run_withholds_the_texts(make_settings):
+    """The two runbook texts are free-form (an operator may paste 'login with
+    admin/<password>'): register_tool(redact=...) keeps them out of the recorded
+    dry-run answer, summarised by size."""
+    post = respx.post(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json={}))
+    explanation = "login with admin/secret123 and check the CE"
+    text = await call_tool_text(
+        writable(make_settings, dry_run=True),
+        "cnc_set_event_type_recommendation",
+        {
+            "event_type": "BGP-5-ADJCHANGE_DOWN",
+            "explanation": explanation,
+            "recommended_action": "Open a P2 ticket",
+        },
+    )
+    assert text.startswith("NOT EXECUTED — DRY-RUN MODE")
+    assert "secret123" not in text and "P2 ticket" not in text
+    assert f'"explanation": "<withheld: {len(explanation)} chars>"' in text
+    assert '"recommended_action": "<withheld: 16 chars>"' in text
+    assert '"event_type": "BGP-5-ADJCHANGE_DOWN"' in text
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_set_event_type_recommendation_unknown_type_writes_nothing(make_settings):
+    respx.get(RECOMMENDED_URL).mock(
+        return_value=httpx.Response(
+            400, json={"responseResult": "Invalid input : EventType does not exist : NOPE-1"}
+        )
+    )
+    post = respx.post(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_set_event_type_recommendation",
+        {"event_type": "NOPE-1", "explanation": "x"},
+    )
+    assert text == "Error: no event type 'NOPE-1' (find names with cnc_list_event_types)"
+    assert post.call_count == 0
+
+
+@respx.mock
+async def test_set_event_type_recommendation_post_400_and_500_are_errors(make_settings):
+    respx.get(RECOMMENDED_URL).mock(return_value=httpx.Response(200, json=RECOMMENDATION))
+    respx.post(RECOMMENDED_URL).mock(
+        side_effect=[
+            httpx.Response(
+                400, json={"responseResult": "Invalid input : EventType does not exist : null"}
+            ),
+            NATS_500,
+        ]
+    )
+    mcp = writable(make_settings, max_retries=0)
+    args = {"event_type": "BGP-5-ADJCHANGE_DOWN", "explanation": "x"}
+    text = await call_tool_text(mcp, "cnc_set_event_type_recommendation", args)
+    assert (
+        text == "Error: no event type 'BGP-5-ADJCHANGE_DOWN' (find names with cnc_list_event_types)"
+    )
+    text = await call_tool_text(mcp, "cnc_set_event_type_recommendation", args)
+    assert text.startswith("Error:") and "500" in text
+
+
+# --- cnc_update_alarm_suppression_policy --------------------------------------
+
+
+@respx.mock
+async def test_update_suppression_policy_merges_over_the_current_rule(make_settings):
+    respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    put = respx.put(POLICY_URL).mock(
+        return_value=httpx.Response(200, json={"Message": "Success", "status": "Success"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_suppression_policy",
+        {"name": "Suppress-BGP-Flaps", "description": "Maintenance extended"},
+    )
+    # Full body on the collection path, the platform's spelling of the name, other
+    # fields kept from the current rule (a partial body is 400 "Action type is null").
+    assert sent(put) == {
+        "policyname": "suppress-bgp-flaps",
+        "description": "Maintenance extended",
+        "action": "suppressAlarm",
+        "deviceGroups": ["g-1", "g-2"],
+        "criteria": "eventType in [BGP-5-ADJCHANGE_DOWN,BGP-5-ADJCHANGE_UP]",
+    }
+    assert text.startswith("Suppression policy 'suppress-bgp-flaps' updated (description).")
+    data = json.loads(text.split("\n\n", 1)[1])
+    assert data["before"] == POLICY and data["changed"] == ["description"]
+    assert data["response"] == {"Message": "Success", "status": "Success"}
+
+
+@respx.mock
+async def test_update_suppression_policy_all_fields_and_empty_groups(make_settings):
+    respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    put = respx.put(POLICY_URL).mock(
+        return_value=httpx.Response(200, json={"Message": "Success", "status": "Success"})
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_suppression_policy",
+        {
+            "name": "suppress-bgp-flaps",
+            "description": "",
+            "action": "suppressevent",
+            "criteria": "eventType in [BGP-5-ADJCHANGE_DOWN]",
+            "device_groups": "",
+        },
+    )
+    assert sent(put) == {
+        "policyname": "suppress-bgp-flaps",
+        "description": "",
+        "action": "suppressEvent",
+        "deviceGroups": [],
+        "criteria": "eventType in [BGP-5-ADJCHANGE_DOWN]",
+    }
+    assert "updated (description, action, device_groups, criteria)." in text
+
+
+@respx.mock
+async def test_update_suppression_policy_nothing_to_update_makes_no_call(make_settings):
+    get = respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    put = respx.put(POLICY_URL).mock(return_value=httpx.Response(200, json={}))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_update_alarm_suppression_policy",
+        {"name": "suppress-bgp-flaps"},
+    )
+    assert text.startswith("Error: nothing to update: give at least one of")
+    assert get.call_count == 0 and put.call_count == 0
+
+
+@respx.mock
+async def test_update_suppression_policy_unknown_name_and_bad_action_write_nothing(make_settings):
+    get = respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    put = respx.put(POLICY_URL).mock(return_value=httpx.Response(200, json={}))
+    mcp = writable(make_settings)
+    text = await call_tool_text(
+        mcp, "cnc_update_alarm_suppression_policy", {"name": "nope", "description": "x"}
+    )
+    assert text == (
+        "Error: no suppression policy 'nope' (list with cnc_list_alarm_suppression_policies)"
+    )
+    text = await call_tool_text(
+        mcp, "cnc_update_alarm_suppression_policy", {"name": "suppress-bgp-flaps", "action": "drop"}
+    )
+    assert text.startswith("Error: Unknown suppression action 'drop'")
+    assert get.call_count == 1 and put.call_count == 0
+
+
+@respx.mock
+async def test_update_suppression_policy_platform_400s_are_explained(make_settings):
+    respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    respx.put(POLICY_URL).mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "Message": "Failed to update policy rule suppress-bgp-flaps",
+                    "status": "Failed",
+                },
+            ),
+            # The key really carries a trailing space (verified live 2026-09-15).
+            httpx.Response(400, json={"Message ": "Invalid Action type", "status": "Failed"}),
+            httpx.Response(200, json={"Message": "Failed", "status": "Failed"}),
+        ]
+    )
+    mcp = writable(make_settings)
+    args = {"name": "suppress-bgp-flaps", "description": "x"}
+    text = await call_tool_text(mcp, "cnc_update_alarm_suppression_policy", args)
+    assert text.startswith(
+        "Error: no suppression policy 'suppress-bgp-flaps' — the platform refused"
+    )
+    assert "Failed to update policy rule suppress-bgp-flaps" in text
+    text = await call_tool_text(mcp, "cnc_update_alarm_suppression_policy", args)
+    assert (
+        text
+        == "Error: Update suppression policy 'suppress-bgp-flaps' rejected: Invalid Action type"
+    )
+    text = await call_tool_text(mcp, "cnc_update_alarm_suppression_policy", args)
+    assert text == "Error: Update suppression policy 'suppress-bgp-flaps' failed: Failed"
+
+
+@respx.mock
+async def test_update_suppression_policy_http_error_is_string(make_settings):
+    respx.get(POLICY_URL).mock(return_value=httpx.Response(200, json={"data": [POLICY]}))
+    respx.put(POLICY_URL).mock(return_value=NATS_500)
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0),
+        "cnc_update_alarm_suppression_policy",
+        {"name": "suppress-bgp-flaps", "description": "x"},
     )
     assert text.startswith("Error:") and "500" in text

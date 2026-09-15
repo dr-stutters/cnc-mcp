@@ -1,6 +1,6 @@
 {
  "captured": "2026-09-15",
- "how": "CNC 7.2.0 lab, admin API session: PUT /crosswork/aaa/v1/role/cnc-mcp-operator with the inner object of docs/rbac/cnc-mcp-operator.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-operator (200). 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back; 'versions' and 'role_fields' the other fields the service stored. Refresh whenever the body changes (re-PUT, read back, sanitise).",
+ "how": "CNC 7.2.0 lab, admin API session: PUT /crosswork/aaa/v1/role/cnc-mcp-operator with the inner object of docs/rbac/cnc-mcp-operator.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-operator (200). 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back; 'versions' and 'role_fields' the other fields the service stored. Refresh whenever the body changes (re-PUT, read back, sanitise). This capture is the Phase D generation (grouping, PM policy, ZTP, external-subscription and alarm-settings writes added): the operator body's cw-ztp-service row carries Read+Write+Delete on a POST-delete API and came back verbatim (no split).",
  "role_fields": {
   "name": "cnc-mcp-operator",
   "org_id": "1",
@@ -95,7 +95,11 @@
   "cw-config-service-deprecated": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH",
+     "DELETE"
     ],
     "url": "/.*"
    }
@@ -110,10 +114,33 @@
     "url": "/.*"
    }
   ],
+  "cw-fault-alarm-autoclear": [
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "cw-fault-alarm-autoclear-revert": [
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
+    ],
+    "url": "/.*"
+   }
+  ],
   "cw-fault-alarm-manager-settings": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -121,7 +148,10 @@
   "cw-fault-alarm-recommended-action": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -137,7 +167,10 @@
   "cw-fault-alarm-severity-settings": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -183,7 +216,10 @@
   "cw-fault-gnmi-settings": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -201,7 +237,11 @@
   "cw-grouping-service": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH",
+     "DELETE"
     ],
     "url": "/.*"
    }
@@ -242,15 +282,13 @@
   "cw-ztp-service": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH",
+     "DELETE"
     ],
     "url": "/.*"
-   },
-   {
-    "methods": [
-     "POST"
-    ],
-    "url": "/.+/(query|csvtemplate|export|count)$"
    }
   ],
   "cwcollection": [
@@ -324,7 +362,11 @@
   "external-notification-subscription": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH",
+     "DELETE"
     ],
     "url": "/.*"
    }
@@ -353,6 +395,16 @@
    {
     "methods": [
      "GET"
+    ],
+    "url": "/.*"
+   }
+  ],
+  "nb-api-alarm-nt-3-700": [
+   {
+    "methods": [
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -460,7 +512,10 @@
   "performance-dataretention-apis": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH"
     ],
     "url": "/.*"
    }
@@ -468,7 +523,11 @@
   "performance-policies-rest-apis": [
    {
     "methods": [
-     "GET"
+     "GET",
+     "POST",
+     "PUT",
+     "PATCH",
+     "DELETE"
     ],
     "url": "/.*"
    }
@@ -561,6 +620,8 @@
   "collection_dg-manager": [],
   "cw-config-service-deprecated": [],
   "cw-fault-ack-api": [],
+  "cw-fault-alarm-autoclear": [],
+  "cw-fault-alarm-autoclear-revert": [],
   "cw-fault-alarm-manager-settings": [],
   "cw-fault-alarm-recommended-action": [],
   "cw-fault-alarm-settings": [],
@@ -584,6 +645,7 @@
   "inventory_cwinventory": [],
   "nb-api-alarm-1-700": [],
   "nb-api-alarm-nt-2-700": [],
+  "nb-api-alarm-nt-3-700": [],
   "nb-api-alarm-nt-9-700": [],
   "nb-api-inv-chassis-700": [],
   "nb-api-inv-equipment-700": [],
@@ -612,6 +674,8 @@
   "collection_dg-manager": "Data Gateway Manager APIs",
   "cw-config-service-deprecated": "Config Service",
   "cw-fault-ack-api": "Alarms &amp; Events",
+  "cw-fault-alarm-autoclear": "Alarm Settings",
+  "cw-fault-alarm-autoclear-revert": "Alarm Settings",
   "cw-fault-alarm-manager-settings": "Alarm Settings",
   "cw-fault-alarm-recommended-action": "Alarm Settings",
   "cw-fault-alarm-settings": "Alarm Settings",
@@ -635,6 +699,7 @@
   "inventory_cwinventory": "Inventory APIs",
   "nb-api-alarm-1-700": "Alarms and Events RESTCONF",
   "nb-api-alarm-nt-2-700": "RESTCONF Notification Subscription",
+  "nb-api-alarm-nt-3-700": "RESTCONF Notification Subscription",
   "nb-api-alarm-nt-9-700": "RESTCONF Notification Subscription",
   "nb-api-inv-chassis-700": "Device Inventory RESTCONF",
   "nb-api-inv-equipment-700": "Device Inventory RESTCONF",

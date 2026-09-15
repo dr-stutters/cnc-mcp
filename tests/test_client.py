@@ -413,6 +413,53 @@ async def test_json_body_default_content_type_is_json(settings):
 
 
 @respx.mock
+async def test_files_body_goes_out_as_multipart_with_httpx_boundary(settings):
+    """A files= body (the ZTP configsvc upload, verified live 2026-09-15) is a
+    multipart/form-data body whose boundary Content-Type httpx writes itself; the
+    part carries the given filename, bytes and media type, and the query-string
+    metadata rides alongside."""
+    route = respx.post(f"{BASE_URL}/crosswork/configsvc/v1/configs/upload").mock(
+        return_value=httpx.Response(201, json={"confId": "c1"})
+    )
+    client = make_client(settings)
+    try:
+        result = await client.request_json(
+            "POST",
+            "/crosswork/configsvc/v1/configs/upload",
+            params={"confname": "phase-d-ztp-cfg", "osname": "IOS XR"},
+            files={"configFile": ("phase-d-ztp.txt", b"!! IOS XR\nhostname x\n", "text/plain")},
+        )
+        assert result == {"confId": "c1"}
+        sent = route.calls[0].request
+        content_type = sent.headers["Content-Type"]
+        assert content_type.startswith("multipart/form-data; boundary=")
+        assert sent.url.params["confname"] == "phase-d-ztp-cfg"
+        body = sent.content
+        assert b'name="configFile"; filename="phase-d-ztp.txt"' in body
+        assert b"Content-Type: text/plain" in body
+        assert b"!! IOS XR\nhostname x\n" in body
+        # A POST is a write: not auto-retried, so a lost answer cannot upload twice.
+        assert route.call_count == 1
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_files_body_is_exclusive_with_the_other_body_forms(settings):
+    route = respx.post(f"{BASE_URL}/v1/thing").mock(return_value=httpx.Response(200, json={}))
+    client = make_client(settings)
+    part = {"configFile": ("f.txt", b"x", "text/plain")}
+    try:
+        with pytest.raises(ValueError, match="either json_body or content or files"):
+            await client.request("POST", "/v1/thing", json_body={}, files=part)
+        with pytest.raises(ValueError, match="either json_body or content or files"):
+            await client.request("POST", "/v1/thing", content="x", files=part)
+        assert route.call_count == 0
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_content_and_json_body_are_mutually_exclusive(settings):
     route = respx.post(f"{BASE_URL}/v1/thing").mock(return_value=httpx.Response(200, json={}))
     client = make_client(settings)

@@ -1312,7 +1312,7 @@
   "platform": "CNC 7.2.0",
   "routing": "a path is routed to the secured API with the longest matching listen path ({...} = one segment, trailing slash optional); a role's allowed_urls regex is an unanchored search on the full request path (Tyk v5.1.1 source); '{}' in a path is a runtime value; method '*' means the tool passes the method through (all five needed); 'any_of' lists groups of api_ids of which one group's rows suffice (the tool falls back from the first to the next)",
   "ticks": "the role editor submits per ticked row one entry {url: '/.*', methods: <union>} — Read adds GET, Write adds POST, PUT, PATCH, Delete adds DELETE (verified 2026-09-15 by reading a UI-built role back); a row with a GET entry and no POST entry also receives the platform's read templates ('platform.read_templates', extra POST entries for that API's read-by-POST paths) and every stored role the 'platform.baseline_rows'; on the 'platform.post_delete_apis' a row whose single entry carries POST without DELETE is split — the other methods stay on '/.*' in alphabetical order and POST moves to 'platform.not_delete_pattern', every path except one ending in the segment 'delete' (verified 2026-09-15 by reading the generated operator role back on three of them, extrapolated to the seven others from a POST-only experiment); a requirement is permitted by Read when its method is GET or a read template of its API matches its path under the unanchored-search rule",
-  "tool_count": 245
+  "tool_count": 282
  },
  "platform": {
   "baseline_rows": {
@@ -1532,6 +1532,33 @@
     }
    ]
   },
+  "cnc_activate_performance_policy": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "PUT",
+     "path": "/crosswork/performance/v1/policies/activate/{}"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/devices/{}"
+    }
+   ]
+  },
+  "cnc_add_ztp_serial_numbers": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/serialnumbers"
+    }
+   ]
+  },
   "cnc_alarm_triage": {
    "area": "composite",
    "composed_from": [
@@ -1736,6 +1763,22 @@
     }
    ]
   },
+  "cnc_clear_notification_subscriptions_by_topic": {
+   "area": "notifications",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "nb-api-alarm-nt-3-700",
+     "method": "POST",
+     "path": "/crosswork/notification/restconf/data/v2/clear-by-topic/{}"
+    },
+    {
+     "api_id": "nb-api-alarm-nt-2-700",
+     "method": "GET",
+     "path": "/crosswork/notification/restconf/data/v2/notifications:subscription-admin"
+    }
+   ]
+  },
   "cnc_create_alarm_suppression_policy": {
    "area": "fault",
    "read_only": false,
@@ -1782,6 +1825,63 @@
      "api_id": "inventory_cwinventory",
      "method": "POST",
      "path": "/crosswork/inventory/v1/nodes"
+    }
+   ]
+  },
+  "cnc_create_device_group": {
+   "area": "grouping",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/rule/conditions"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/group"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/root/{}/uuid"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "DELETE",
+     "path": "/crosswork/grouping/v1/grouping/group/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/groups/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/ports/rule/conditions"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/rule"
+    }
+   ]
+  },
+  "cnc_create_external_subscription": {
+   "area": "notifications",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "collection_dg-manager",
+     "method": "POST",
+     "path": "/crosswork/dg-manager/v1/destinations/query"
+    },
+    {
+     "api_id": "external-notification-subscription",
+     "method": "POST",
+     "path": "/crosswork/notification/v2/subscription"
     }
    ]
   },
@@ -1834,6 +1934,42 @@
      "api_id": "proxy_cw-proxy",
      "method": "GET",
      "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_create_performance_policy": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "POST",
+     "path": "/crosswork/performance/v1/policies"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "PUT",
+     "path": "/crosswork/performance/v1/policies/activate/{}"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/devices/{}"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/inventory-devices"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/policy-templates"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/{}"
     }
    ]
   },
@@ -1975,6 +2111,70 @@
     }
    ]
   },
+  "cnc_create_ztp_device": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/serialnumbers"
+    }
+   ]
+  },
+  "cnc_create_ztp_profile": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles/query"
+    }
+   ]
+  },
+  "cnc_create_ztp_static_route": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/staticroutes"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/staticroutes/query"
+    }
+   ]
+  },
+  "cnc_deactivate_performance_policy": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "PUT",
+     "path": "/crosswork/performance/v1/policies/deactivate/{}"
+    }
+   ]
+  },
   "cnc_delete_alarm_suppression_policy": {
    "area": "fault",
    "read_only": false,
@@ -2046,6 +2246,43 @@
     }
    ]
   },
+  "cnc_delete_device_group": {
+   "area": "grouping",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "DELETE",
+     "path": "/crosswork/grouping/v1/grouping/group/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/details"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/rule/group/{}"
+    }
+   ]
+  },
+  "cnc_delete_external_subscription": {
+   "area": "notifications",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "external-notification-subscription",
+     "method": "DELETE",
+     "path": "/crosswork/notification/v2/subscription"
+    }
+   ]
+  },
   "cnc_delete_notification_subscription": {
    "area": "notifications",
    "read_only": false,
@@ -2080,6 +2317,17 @@
      "api_id": "proxy_cw-proxy",
      "method": "GET",
      "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_performance_policy": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "DELETE",
+     "path": "/crosswork/performance/v1/policies/{}"
     }
    ]
   },
@@ -2238,6 +2486,101 @@
      "api_id": "proxy_cw-proxy",
      "method": "GET",
      "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_delete_ztp_config_file": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "DELETE",
+     "path": "/crosswork/configsvc/v1/configs/{}"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/configs/{}"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles/query"
+    }
+   ]
+  },
+  "cnc_delete_ztp_device": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "DELETE",
+     "path": "/crosswork/ztp/v1/devices"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    }
+   ]
+  },
+  "cnc_delete_ztp_profile": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "DELETE",
+     "path": "/crosswork/ztp/v1/profiles"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles/query"
+    }
+   ]
+  },
+  "cnc_delete_ztp_serial_numbers": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "DELETE",
+     "path": "/crosswork/ztp/v1/serialnumbers"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/serialnumbers/query"
+    }
+   ]
+  },
+  "cnc_delete_ztp_static_route": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "DELETE",
+     "path": "/crosswork/ztp/v1/staticroutes"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/staticroutes/query"
     }
    ]
   },
@@ -4095,6 +4438,17 @@
     }
    ]
   },
+  "cnc_list_group_ports": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/port/{}"
+    }
+   ]
+  },
   "cnc_list_group_rule_conditions": {
    "area": "grouping",
    "read_only": true,
@@ -4108,6 +4462,22 @@
      "api_id": "cw-grouping-service",
      "method": "GET",
      "path": "/crosswork/grouping/v1/grouping/ports/rule/conditions"
+    }
+   ]
+  },
+  "cnc_list_group_rules": {
+   "area": "grouping",
+   "read_only": true,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/rule/classifier/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/rule/group/{}"
     }
    ]
   },
@@ -4659,6 +5029,32 @@
     }
    ]
   },
+  "cnc_move_group_members": {
+   "area": "grouping",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/group/member/copy"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/group/member/move"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/details"
+    }
+   ]
+  },
   "cnc_network_health_report": {
    "area": "composite",
    "composed_from": [
@@ -4939,6 +5335,27 @@
     }
    ]
   },
+  "cnc_reset_performance_retention": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dataretention/all"
+    },
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dataretention/default"
+    },
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "POST",
+     "path": "/crosswork/performance/v1/dataretention/reset"
+    }
+   ]
+  },
   "cnc_restart_microservice": {
    "area": "admin",
    "read_only": false,
@@ -4987,6 +5404,22 @@
     }
    ]
   },
+  "cnc_revert_event_type_autoclear": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-autoclear-revert",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/autoclear/revert"
+    },
+    {
+     "api_id": "cw-fault-alarm-severity-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/severity-config"
+    }
+   ]
+  },
   "cnc_run_inventory_scheduler_job": {
    "area": "ems_jobs",
    "read_only": false,
@@ -5014,6 +5447,47 @@
     }
    ]
   },
+  "cnc_set_device_group_members": {
+   "area": "grouping",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/group/member/copy"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/group/member/move"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/root/{}/uuid"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/details"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "PUT",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/members"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/groups/{}"
+    }
+   ]
+  },
   "cnc_set_device_location": {
    "area": "inventory_extras",
    "read_only": false,
@@ -5027,6 +5501,54 @@
      "api_id": "inventory_cwinventory",
      "method": "PATCH",
      "path": "/crosswork/inventory/v1/nodesgeocoord"
+    }
+   ]
+  },
+  "cnc_set_event_type_autoclear": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-autoclear",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/autoclear"
+    },
+    {
+     "api_id": "cw-fault-alarm-severity-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/severity-config"
+    }
+   ]
+  },
+  "cnc_set_event_type_recommendation": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-recommended-action",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/recommended-action"
+    },
+    {
+     "api_id": "cw-fault-alarm-recommended-action",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/recommended-action"
+    }
+   ]
+  },
+  "cnc_set_event_type_severity": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-severity-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/severity-config"
+    },
+    {
+     "api_id": "cw-fault-alarm-severity-settings",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/severity-config"
     }
    ]
   },
@@ -5153,6 +5675,38 @@
     }
    ]
   },
+  "cnc_update_alarm_manager_settings": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-alarm-manager-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/manager/settings"
+    },
+    {
+     "api_id": "cw-fault-alarm-manager-settings",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/manager/settings"
+    }
+   ]
+  },
+  "cnc_update_alarm_suppression_policy": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "event-processing-service-suppressionpolicy-api",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/suppressionpolicy"
+    },
+    {
+     "api_id": "event-processing-service-suppressionpolicy-api",
+     "method": "PUT",
+     "path": "/crosswork/alarm/v1/suppressionpolicy"
+    }
+   ]
+  },
   "cnc_update_credential_profile": {
    "area": "credentials",
    "read_only": false,
@@ -5177,6 +5731,115 @@
      "api_id": "inventory_cwinventory",
      "method": "PATCH",
      "path": "/crosswork/inventory/v1/nodes"
+    }
+   ]
+  },
+  "cnc_update_device_group": {
+   "area": "grouping",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/device/rule/conditions"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "PUT",
+     "path": "/crosswork/grouping/v1/grouping/group/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/group/{}/details"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/ports/rule/conditions"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "POST",
+     "path": "/crosswork/grouping/v1/grouping/rule"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "GET",
+     "path": "/crosswork/grouping/v1/grouping/rule/group/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "DELETE",
+     "path": "/crosswork/grouping/v1/grouping/rule/{}"
+    },
+    {
+     "api_id": "cw-grouping-service",
+     "method": "PUT",
+     "path": "/crosswork/grouping/v1/grouping/rule/{}"
+    }
+   ]
+  },
+  "cnc_update_gnmi_alarm_settings": {
+   "area": "fault",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-fault-gnmi-settings",
+     "method": "GET",
+     "path": "/crosswork/alarm/v1/gnmi/settings"
+    },
+    {
+     "api_id": "cw-fault-gnmi-settings",
+     "method": "POST",
+     "path": "/crosswork/alarm/v1/gnmi/settings"
+    }
+   ]
+  },
+  "cnc_update_performance_policy": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/inventory-devices"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/policy-templates"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/policies/{}"
+    },
+    {
+     "api_id": "performance-policies-rest-apis",
+     "method": "PUT",
+     "path": "/crosswork/performance/v1/policies/{}"
+    }
+   ]
+  },
+  "cnc_update_performance_retention": {
+   "area": "performance",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "PUT",
+     "path": "/crosswork/performance/v1/dataretention"
+    },
+    {
+     "api_id": "performance-dataretention-apis",
+     "method": "GET",
+     "path": "/crosswork/performance/v1/dataretention/all"
     }
    ]
   },
@@ -5230,6 +5893,70 @@
      "api_id": "proxy_cw-proxy",
      "method": "GET",
      "path": "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}"
+    }
+   ]
+  },
+  "cnc_update_ztp_config_file": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/configs/files/{}"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "GET",
+     "path": "/crosswork/configsvc/v1/configs/{}"
+    },
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "PUT",
+     "path": "/crosswork/configsvc/v1/configs/{}"
+    }
+   ]
+  },
+  "cnc_update_ztp_device": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "PUT",
+     "path": "/crosswork/ztp/v1/devices"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/devices/query"
+    }
+   ]
+  },
+  "cnc_update_ztp_profile": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-ztp-service",
+     "method": "PUT",
+     "path": "/crosswork/ztp/v1/profiles"
+    },
+    {
+     "api_id": "cw-ztp-service",
+     "method": "POST",
+     "path": "/crosswork/ztp/v1/profiles/query"
+    }
+   ]
+  },
+  "cnc_upload_ztp_config_file": {
+   "area": "swim_ztp",
+   "read_only": false,
+   "requirements": [
+    {
+     "api_id": "cw-config-service-deprecated",
+     "method": "POST",
+     "path": "/crosswork/configsvc/v1/configs/upload"
     }
    ]
   },

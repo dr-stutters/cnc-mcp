@@ -601,6 +601,11 @@ def test_ztp_lines_follow_the_document():
     assert profile_line(swim_ztp.profile_view(secure)).endswith(
         "(image img; secure ZTP; OUT OF SYNC with its files)"
     )
+    # A deleted Pre-config flags isPreConfigInvalid (verified); the view carries the ids.
+    stale = {**PROFILE, "preConfig": "pre-1", "preConfigName": "pre", "isPreConfigInvalid": True}
+    view = swim_ztp.profile_view(stale)
+    assert view["preConfig"] == "pre-1" and view["isPreConfigInvalid"] is True
+    assert profile_line(view).endswith("(OUT OF SYNC with its files)")
     assert device_line(swim_ztp.device_view(DEVICE)) == (
         "- **test1** (e1d32c83-9141-4eb5-8105-8afb47c25533): Unprovisioned, serial 1, IOS XR "
         "CISCO NCS540 v7.0.2, profile test-1, credentials cred1, ip -, updated "

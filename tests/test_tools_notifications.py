@@ -11,11 +11,22 @@ EMPTY Kafka body. Error routing is checked on every tool: any rc.errors answer
 (the list and streams GETs included) renders the service's own NOT.xxxx tag,
 an empty-bodied 500 on the subscription POST is the module's own explanation,
 and a 2xx DELETE without the "Success" text is reported as unconfirmed.
+
+The external (Kafka/gRPC) subscription fixtures mirror what the 7.2 lab answered
+on 2026-09-15 (recorded in the module docstring of cnc_mcp.tools.notifications,
+"External (Kafka/gRPC) subscription writes"): the non-empty subscriptionList,
+HTTP 200 {"result": "Create Successful"} / {"result": "Delete Successful"}, the
+HTTP-200 application failures (duplicate topic, refused destination — also for
+a destination name in the wrong case), the 400 {"error": "Following param(s)
+are invalid : ..."} form, the 400 {"result": "... not found and could not be
+deleted :[t]"} delete answer, and the text "Clear successful" of clear-by-topic
+(also for a topic with none).
 """
 
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
@@ -30,6 +41,8 @@ from cnc_mcp.errors import PlatformError
 from cnc_mcp.safety import AppContext
 from cnc_mcp.tools import notifications
 from cnc_mcp.tools.notifications import (
+    CLEAR_BY_TOPIC_PATH,
+    DESTINATIONS_QUERY_PATH,
     KAFKA_SUBSCRIPTION_PATH,
     NOTIFICATIONS,
     NS,
@@ -37,19 +50,28 @@ from cnc_mcp.tools.notifications import (
     SUBSCRIPTION_ADMIN_PATH,
     SUBSCRIPTION_PATH,
     bare_500_error,
+    build_external_subscription,
+    clear_confirmed,
     delete_confirmed,
+    destination_diagnosis,
     emf_body,
     emf_rejection,
     error_matches,
+    external_result,
+    invalid_params_error,
     is_rc_error,
     kafka_entries,
+    kafka_line,
+    match_choice,
     rc_error,
     rejection,
+    result_is,
     streams_from,
     subscription_items,
     subscription_line,
     subscription_markdown,
     subscription_with_id,
+    subscriptions_of_topic,
     validate_client_url,
 )
 from tests.conftest import BASE_URL, call_tool_text
@@ -58,6 +80,8 @@ STREAMS_URL = f"{BASE_URL}{STREAMS_PATH}"
 SUBSCRIPTION_URL = f"{BASE_URL}{SUBSCRIPTION_PATH}"
 ADMIN_URL = f"{BASE_URL}{SUBSCRIPTION_ADMIN_PATH}"
 KAFKA_URL = f"{BASE_URL}{KAFKA_SUBSCRIPTION_PATH}"
+CLEAR_URL = f"{BASE_URL}{CLEAR_BY_TOPIC_PATH}"
+DESTINATIONS_URL = f"{BASE_URL}{DESTINATIONS_QUERY_PATH}"
 
 SINK_URL = "http://198.18.140.17:80/hook"
 
@@ -174,7 +198,7 @@ NOT_0006 = rc_errors(
 NOT_0037 = rc_errors("NOT.0037", "There is no subscription for given subscriptionId")
 NOT_0016 = rc_errors("NOT.0016", "Unable to find subscription")
 
-# Documented (NOT verified live) non-empty Kafka/gRPC answer.
+# Verified non-empty Kafka/gRPC answer (the spec's example shape, seen live 2026-09-15).
 KAFKA_LISTED = {
     "subscriptionList": [
         {
@@ -196,7 +220,63 @@ READ_TOOLS = {
     "cnc_get_notification_subscription",
     "cnc_list_kafka_subscriptions",
 }
-WRITE_TOOLS = {"cnc_create_webhook_subscription", "cnc_delete_notification_subscription"}
+WRITE_TOOLS = {
+    "cnc_create_webhook_subscription",
+    "cnc_delete_notification_subscription",
+    "cnc_create_external_subscription",
+    "cnc_delete_external_subscription",
+    "cnc_clear_notification_subscriptions_by_topic",
+}
+
+# Verified external-subscription answers (2026-09-15).
+EXT_CREATE_OK = {"result": "Create Successful"}
+EXT_DELETE_OK = {"result": "Delete Successful"}
+EXT_DUPLICATE = {
+    "result": "A subscription with this topic name already exists. Please choose a different "
+    "topic name."
+}
+EXT_BAD_DESTINATION = {
+    "result": "Destination does not exist or might be a data-gateway destination, which is not "
+    "allowed for external subscriptions."
+}
+EXT_NOT_FOUND = {
+    "result": "Following subscription(s) not found and could not be deleted :[phase-d-audit]"
+}
+EXT_INVALID = {
+    "error": "Following param(s) are invalid : Subscription Data Type, Subscription Data"
+}
+# Verified destinations list (trimmed): the system Kafka one (datagateway) and an
+# application-dispatch Kafka and gRPC pair like the throwaway ones used live.
+DESTINATIONS = {
+    "data": [
+        {
+            "uuid": "c2a8fba8-8363-3d22-b0c2-a9e449693fae",
+            "name": "CW_KAFKA_DESTINATION",
+            "properties": {
+                "DESTINATION_TYPE": "destination_type_kafka",
+                "DISPATCH_SOURCE": "datagateway",
+                "IS_SYSTEM_DEFINED": "true",
+            },
+        },
+        {
+            "uuid": "b7f73ed3-62e6-47d8-927c-ece3d8e79bff",
+            "name": "phase-d-kafka",
+            "properties": {
+                "DESTINATION_TYPE": "destination_type_kafka",
+                "DISPATCH_SOURCE": "application",
+                "IS_SYSTEM_DEFINED": "false",
+            },
+        },
+        {
+            "uuid": "7de83fa7-adde-4337-92f0-9d6a99317649",
+            "name": "phase-d-grpc",
+            "properties": {
+                "DESTINATION_TYPE": "destination_type_grpc",
+                "DISPATCH_SOURCE": "application",
+            },
+        },
+    ]
+}
 
 
 def build(settings: Settings) -> MCPServer:
@@ -242,6 +322,18 @@ async def test_annotations(make_settings):
     assert delete.read_only_hint is False
     assert delete.destructive_hint is True
     assert delete.idempotent_hint is True
+    create_ext = tools["cnc_create_external_subscription"].annotations
+    assert create_ext.read_only_hint is False
+    assert create_ext.destructive_hint is False
+    assert create_ext.idempotent_hint is False
+    for name in (
+        "cnc_delete_external_subscription",
+        "cnc_clear_notification_subscriptions_by_topic",
+    ):
+        ann = tools[name].annotations
+        assert ann.read_only_hint is False, name
+        assert ann.destructive_hint is True, name
+        assert ann.idempotent_hint is True, name
 
 
 def test_base_path_is_the_verified_one():
@@ -250,6 +342,8 @@ def test_base_path_is_the_verified_one():
     assert SUBSCRIPTION_PATH.endswith("/notifications:subscription")
     assert SUBSCRIPTION_ADMIN_PATH.endswith("/notifications:subscription-admin")
     assert KAFKA_SUBSCRIPTION_PATH == "/crosswork/notification/v2/subscription"
+    assert CLEAR_BY_TOPIC_PATH == "/crosswork/notification/restconf/data/v2/clear-by-topic"
+    assert DESTINATIONS_QUERY_PATH == "/crosswork/dg-manager/v1/destinations/query"
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -791,7 +885,7 @@ async def test_list_kafka_subscriptions_documented_shape_and_raw_fallback(settin
     respx.get(KAFKA_URL).mock(return_value=httpx.Response(200, json=KAFKA_LISTED))
     text = await call_tool_text(build(settings), "cnc_list_kafka_subscriptions", {})
     assert text.startswith("# Kafka/gRPC subscriptions (1)")
-    assert "not been verified live" in text
+    assert "verified" not in text
     assert (
         "- audit123 -> kafkadest (Kafka; data System_Audit; user admin; "
         "created Thu Sep 11 06:06:07 UTC 2025)"
@@ -804,8 +898,8 @@ async def test_list_kafka_subscriptions_documented_shape_and_raw_fallback(settin
     other = {"subscriptions": [{"name": "x"}]}
     respx.get(KAFKA_URL).mock(return_value=httpx.Response(200, json=other))
     text = await call_tool_text(build(settings), "cnc_list_kafka_subscriptions", {})
-    assert text.startswith("# Kafka/gRPC subscriptions (shape not the documented one")
-    assert "not been verified live" in text
+    assert text.startswith("# Kafka/gRPC subscriptions (shape not the verified one")
+    assert "shown unparsed" in text
     assert json.loads(text.split("\n\n", 2)[2]) == other
     # JSON mode for the unknown shape: empty items plus the body under "raw".
     text = await call_tool_text(
@@ -1141,3 +1235,709 @@ async def test_delete_subscription_schema_requires_an_integer(make_settings):
         await call_tool_text(
             writable(make_settings), "cnc_delete_notification_subscription", {"subscription_id": -1}
         )
+
+
+# --- external (Kafka/gRPC) subscription helpers ------------------------------
+
+
+def test_kafka_line_carries_subscription_data_and_filter():
+    entry = {
+        **KAFKA_LISTED["subscriptionList"][0],
+        "topicName": "phase-d-inv",
+        "subscriptionDataType": "Inventory_Changes",
+        "filter": "Routers",
+    }
+    assert kafka_line(entry) == (
+        "- phase-d-inv -> kafkadest (Kafka; data Inventory_Changes; filter Routers; user admin; "
+        "created Thu Sep 11 06:06:07 UTC 2025)"
+    )
+    entry = {**entry, "subscriptionDataType": "Network_Performance_Monitoring"}
+    entry["subscriptionData"] = "SR_PM_Interface"
+    entry["filter"] = None
+    assert "data Network_Performance_Monitoring SR_PM_Interface; user" in kafka_line(entry)
+
+
+def test_match_choice_canonicalises_known_values_and_passes_others_through():
+    assert match_choice(" sr_pm_interface ", ("SR_PM_Interface", "SR_PM_Policy")) == (
+        "SR_PM_Interface"
+    )
+    assert match_choice("policy_type=X,policy_instance=y", ("A",)) == (
+        "policy_type=X,policy_instance=y"
+    )
+    assert match_choice(None, ("A",)) == ""
+
+
+def test_build_external_subscription_verified_bodies():
+    # Minimal (Alarm): no optional keys at all — the verified accepted body.
+    minimal = {
+        "destinationName": "phase-d-kafka",
+        "destinationType": "Kafka",
+        "topicName": "phase-d-alarm",
+        "subscriptionDataType": "Alarm",
+    }
+    assert build_external_subscription(" phase-d-kafka ", "kafka", " phase-d-alarm ", "alarm") == (
+        minimal
+    )
+    # None (the spec example's explicit nulls), "" and whitespace all omit the keys.
+    assert build_external_subscription(
+        "phase-d-kafka", "Kafka", "phase-d-alarm", "Alarm", None, None
+    ) == (minimal)
+    assert build_external_subscription(
+        "phase-d-kafka", "Kafka", "phase-d-alarm", "Alarm", " ", ""
+    ) == (minimal)
+    # The destination name is sent verbatim (trimmed only): the lookup is case-sensitive.
+    assert build_external_subscription("Phase-D-KAFKA", "Kafka", "t", "Alarm")[
+        "destinationName"
+    ] == ("Phase-D-KAFKA")
+    # NPM on gRPC with the selector canonicalised.
+    body = build_external_subscription(
+        "phase-d-grpc", "GRPC", "phase-d-gnpm", "network_performance_monitoring", "sr_pm_policy"
+    )
+    assert body["destinationType"] == "gRPC"
+    assert body["subscriptionDataType"] == "Network_Performance_Monitoring"
+    assert body["subscriptionData"] == "SR_PM_Policy"
+    # Inventory with a filter; SHM selector canonicalised; DPM passed through.
+    body = build_external_subscription("d", "Kafka", "t", "Inventory_Changes", "", " Routers ")
+    assert body["filter"] == "Routers" and "subscriptionData" not in body
+    body = build_external_subscription("d", "Kafka", "t", "Service_Health_Monitoring", "pca_probes")
+    assert body["subscriptionData"] == "PCA_Probes"
+    body = build_external_subscription(
+        "d",
+        "Kafka",
+        "t",
+        "Device_Performance_Monitoring",
+        "policy_type=OpticalSFP,policy_instance=i",
+    )
+    assert body["subscriptionData"] == "policy_type=OpticalSFP,policy_instance=i"
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("", "Kafka", "t", "Alarm"), "destination_name must not be blank"),
+        (("d", "Kafka", " ", "Alarm"), "topic_name must not be blank"),
+        (("d", "", "t", "Alarm"), "destination_type must not be blank"),
+        (("d", "MQTT", "t", "Alarm"), "Unknown destination_type 'MQTT'"),
+        (("d", "Kafka", "t", ""), "data_type must not be blank"),
+        (("d", "Kafka", "t", "Bogus_Type"), "Unknown data_type 'Bogus_Type'"),
+        (("d", "gRPC", "t", "Alarm"), "a gRPC destination cannot receive Alarm"),
+        (("d", "gRPC", "t", "System_Audit"), "gRPC subscriptions take only"),
+        (
+            ("d", "Kafka", "t", "Network_Performance_Monitoring"),
+            "Network_Performance_Monitoring needs subscription_data",
+        ),
+        (
+            ("d", "Kafka", "t", "Network_Performance_Monitoring", "SR_PM_Nope"),
+            "'SR_PM_Interface' or 'SR_PM_Policy' (got 'SR_PM_Nope'",
+        ),
+        (("d", "Kafka", "t", "Alarm", "", "Routers"), "filter is only accepted with data_type"),
+        (
+            ("d", "Kafka", "t", "Service_Health_Monitoring", "Bogus"),
+            "Service_Health_Monitoring needs subscription_data 'Y1731_Probes' or 'PCA_Probes' "
+            "(got 'Bogus'",
+        ),
+        (("d", "Kafka", "t", "Service_Health_Monitoring"), "(got ''"),
+        (
+            ("d", "Kafka", "t", "Device_Performance_Monitoring"),
+            "needs subscription_data 'policy_type=",
+        ),
+        (
+            ("d", "Kafka", "t", "Alarm", "SR_PM_Interface"),
+            "subscription_data is only accepted with the performance-monitoring data types",
+        ),
+        (
+            ("d", "Kafka", "t", "Inventory_Changes", "x", "Routers"),
+            "Inventory_Changes with a subscriptionData",
+        ),
+    ],
+)
+def test_build_external_subscription_refuses_what_the_platform_refuses(args, message):
+    with pytest.raises(PlatformError, match=re.escape(message)):
+        build_external_subscription(*args)
+
+
+def test_external_result_and_result_is():
+    assert external_result(EXT_CREATE_OK) == "Create Successful"
+    assert external_result(EXT_INVALID).startswith("Following param(s)")
+    assert external_result({"result": "", "error": " x "}) == "x"
+    assert external_result({"other": 1}) == "" and external_result("text") == ""
+    assert external_result(None) == ""
+    assert result_is(" create successful. ", "Create Successful")
+    assert not result_is("Delete Successful", "Create Successful")
+
+
+def test_invalid_params_error_adds_the_rule_per_named_parameter():
+    err = invalid_params_error(400, external_result(EXT_INVALID), {"topicName": "t"})
+    text = str(err)
+    assert text.startswith("the platform rejected the subscription (HTTP 400): Following param(s)")
+    assert "subscriptionDataType must be one of Inventory_Changes, Alarm" in text
+    assert "subscriptionData is required for Network_Performance_Monitoring" in text
+    assert 'Body sent: {\n  "topicName": "t"\n}' in text
+    # An unknown parameter name: the platform words alone, still with the body.
+    err = invalid_params_error(400, "Following param(s) are invalid : Colour", {})
+    assert "Colour" in str(err) and "Body sent" in str(err)
+    for name, rule in (
+        ("Topic Name", "topicName must not be blank"),
+        ("Destination Name", "destinationName must not be blank"),
+        ("Destination Type", "exactly 'Kafka' or 'gRPC' (case-sensitive)"),
+        ("Filter", "only accepted with subscriptionDataType Inventory_Changes"),
+    ):
+        assert rule in str(
+            invalid_params_error(400, f"Following param(s) are invalid : {name}", {})
+        )
+
+
+def test_destination_diagnosis_names_the_verified_cause():
+    dests = DESTINATIONS["data"]
+    text = destination_diagnosis(dests, "nope", "Kafka")
+    assert text.startswith("no Data Destination is named 'nope' (known: CW_KAFKA_DESTINATION, ")
+    assert "cnc_list_data_destinations" in text
+    text = destination_diagnosis(dests, "CW_KAFKA_DESTINATION", "Kafka")
+    assert "exists but its DISPATCH_SOURCE is 'datagateway'" in text
+    assert "'application' or 'any'" in text
+    text = destination_diagnosis(dests, "phase-d-grpc", "Kafka")
+    assert "it is a gRPC destination (DESTINATION_TYPE destination_type_grpc)" in text
+    assert "while destination_type 'Kafka' was requested" in text
+    # The right destination in the wrong case (verified live: refused — the platform's
+    # lookup is case-sensitive): name the exact spelling to retry with.
+    text = destination_diagnosis(dests, " Phase-D-KAFKA ", "Kafka")
+    assert text == (
+        "Data Destination 'phase-d-kafka' exists but the name was sent as 'Phase-D-KAFKA' — "
+        "the platform looks the destination up by exact, case-sensitive name (verified live); "
+        "retry with destination_name 'phase-d-kafka'."
+    )
+    # ... and alongside the other causes when they apply too.
+    text = destination_diagnosis(dests, "cw_kafka_destination", "Kafka")
+    assert text.startswith(
+        "Data Destination 'CW_KAFKA_DESTINATION' exists but the name was sent as "
+        "'cw_kafka_destination'"
+    )
+    assert "retry with destination_name 'CW_KAFKA_DESTINATION'; and its DISPATCH_SOURCE" in text
+    # Both problems at once are both named.
+    both = [{"name": "x", "properties": {"DESTINATION_TYPE": "destination_type_grpc"}}]
+    text = destination_diagnosis(both, "x", "Kafka")
+    assert "DISPATCH_SOURCE is 'unset'" in text and "; and it is a gRPC destination" in text
+    # Nothing wrong that this tool knows: say so and show the properties.
+    text = destination_diagnosis(dests, "phase-d-kafka", "Kafka")
+    assert text.startswith("Data Destination 'phase-d-kafka' exists, its DISPATCH_SOURCE is")
+    assert "cause this tool does not know" in text and '"DISPATCH_SOURCE": "application"' in text
+    assert destination_diagnosis([], "x", "Kafka").startswith(
+        "no Data Destination is named 'x' (known: none)"
+    )
+
+
+def test_clear_confirmed_and_subscriptions_of_topic():
+    assert clear_confirmed("Clear successful")
+    assert clear_confirmed(' "clear successful" \n')
+    assert not clear_confirmed("") and not clear_confirmed(None) and not clear_confirmed("Success")
+    subs = [SUB, SUB2]
+    assert subscriptions_of_topic(subs, "Inventory") == [SUB2]
+    assert subscriptions_of_topic(subs, "alarm") == [SUB]
+    assert subscriptions_of_topic([{"x": 1}], "alarm") == []
+
+
+# --- cnc_create_external_subscription ----------------------------------------
+
+
+@respx.mock
+async def test_create_external_subscription_sends_the_verified_body(make_settings):
+    route = respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_CREATE_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-kafka",
+            "destination_type": "kafka",
+            "topic_name": "phase-d-audit",
+            "data_type": "system_audit",
+        },
+    )
+    assert route.call_count == 1
+    request = route.calls[0].request
+    assert request.method == "POST"
+    assert request.headers["Content-Type"] == "application/json"
+    assert sent(route) == {
+        "destinationName": "phase-d-kafka",
+        "destinationType": "Kafka",
+        "topicName": "phase-d-audit",
+        "subscriptionDataType": "System_Audit",
+    }
+    assert text.startswith(
+        "External subscription created: topic phase-d-audit -> phase-d-kafka (Kafka), data "
+        "System_Audit. Platform said: Create Successful\n\n"
+    )
+    assert json.loads(text.split("\n\n", 1)[1]) == sent(route)
+
+
+@respx.mock
+async def test_create_external_subscription_accepts_null_optional_arguments(make_settings):
+    """The spec's own example sends "filter": null, "subscriptionData": null; an agent
+    copying it must get the verified minimal body, not a schema error."""
+    route = respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_CREATE_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-kafka",
+            "destination_type": "Kafka",
+            "topic_name": "phase-d-nulls",
+            "data_type": "System_Audit",
+            "subscription_data": None,
+            "filter": None,
+        },
+    )
+    assert route.call_count == 1
+    assert sent(route) == {
+        "destinationName": "phase-d-kafka",
+        "destinationType": "Kafka",
+        "topicName": "phase-d-nulls",
+        "subscriptionDataType": "System_Audit",
+    }
+    assert text.startswith("External subscription created: topic phase-d-nulls -> phase-d-kafka")
+    # Empty strings are the same as null.
+    await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-kafka",
+            "destination_type": "Kafka",
+            "topic_name": "phase-d-nulls",
+            "data_type": "System_Audit",
+            "subscription_data": "",
+            "filter": " ",
+        },
+    )
+    assert sent(route, 1) == sent(route)
+
+
+@respx.mock
+async def test_create_external_subscription_grpc_npm_with_selector_and_filter(make_settings):
+    route = respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_CREATE_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-grpc",
+            "destination_type": "gRPC",
+            "topic_name": "phase-d-gnpm",
+            "data_type": "Network_Performance_Monitoring",
+            "subscription_data": "sr_pm_interface",
+        },
+    )
+    assert sent(route)["subscriptionData"] == "SR_PM_Interface"
+    assert sent(route)["destinationType"] == "gRPC"
+    assert "data Network_Performance_Monitoring SR_PM_Interface. Platform said" in text
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-kafka",
+            "destination_type": "Kafka",
+            "topic_name": "phase-d-inv",
+            "data_type": "Inventory_Changes",
+            "filter": "Routers",
+        },
+    )
+    assert sent(route, 1)["filter"] == "Routers"
+    assert "data Inventory_Changes, filter Routers. Platform said" in text
+
+
+@respx.mock
+async def test_create_external_subscription_refuses_before_sending(make_settings):
+    route = respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_CREATE_OK))
+    mcp = writable(make_settings)
+    base = {"destination_name": "d", "destination_type": "Kafka", "topic_name": "t"}
+    text = await call_tool_text(
+        mcp, "cnc_create_external_subscription", {**base, "data_type": "Alarm", "filter": "R"}
+    )
+    assert text.startswith("Error: filter is only accepted with data_type Inventory_Changes")
+    text = await call_tool_text(
+        mcp,
+        "cnc_create_external_subscription",
+        {**base, "destination_type": "gRPC", "data_type": "Alarm"},
+    )
+    assert text.startswith("Error: a gRPC destination cannot receive Alarm")
+    text = await call_tool_text(
+        mcp,
+        "cnc_create_external_subscription",
+        {**base, "data_type": "Network_Performance_Monitoring"},
+    )
+    assert text.startswith("Error: Network_Performance_Monitoring needs subscription_data")
+    text = await call_tool_text(
+        mcp, "cnc_create_external_subscription", {**base, "data_type": "Bogus"}
+    )
+    assert text.startswith("Error: Unknown data_type 'Bogus'")
+    assert route.call_count == 0
+    # Schema: the four required arguments.
+    with pytest.raises(ToolError, match="data_type"):
+        await call_tool_text(mcp, "cnc_create_external_subscription", base)
+
+
+@respx.mock
+async def test_create_external_subscription_duplicate_topic_is_a_200(make_settings):
+    respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_DUPLICATE))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "phase-d-kafka",
+            "destination_type": "Kafka",
+            "topic_name": "phase-d-audit",
+            "data_type": "Alarm",
+        },
+    )
+    assert text.startswith("Error: a subscription with topic 'phase-d-audit' already exists")
+    assert "cnc_delete_external_subscription" in text
+    assert "Platform said: A subscription with this topic name already exists" in text
+
+
+@respx.mock
+async def test_create_external_subscription_refused_destination_is_diagnosed(make_settings):
+    create = respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_BAD_DESTINATION))
+    dests = respx.post(DESTINATIONS_URL).mock(return_value=httpx.Response(200, json=DESTINATIONS))
+    mcp = writable(make_settings)
+    args = {"destination_type": "Kafka", "topic_name": "t", "data_type": "Alarm"}
+    text = await call_tool_text(
+        mcp,
+        "cnc_create_external_subscription",
+        {**args, "destination_name": "CW_KAFKA_DESTINATION"},
+    )
+    assert dests.call_count == 1
+    assert sent(dests) == {"limit": 100, "filter": {}}
+    assert text.startswith(
+        "Error: the platform refused destination 'CW_KAFKA_DESTINATION' as a Kafka destination: "
+        "Data Destination 'CW_KAFKA_DESTINATION' exists but its DISPATCH_SOURCE is 'datagateway'"
+    )
+    assert text.endswith("Platform said: " + EXT_BAD_DESTINATION["result"])
+    text = await call_tool_text(
+        mcp, "cnc_create_external_subscription", {**args, "destination_name": "nope"}
+    )
+    assert "no Data Destination is named 'nope' (known: CW_KAFKA_DESTINATION, phase-d-grpc" in text
+    text = await call_tool_text(
+        mcp, "cnc_create_external_subscription", {**args, "destination_name": "phase-d-grpc"}
+    )
+    assert "it is a gRPC destination" in text and "while destination_type 'Kafka'" in text
+    # The name in the wrong case is sent verbatim (the platform refused it live) and the
+    # diagnosis names the exact spelling.
+    text = await call_tool_text(
+        mcp, "cnc_create_external_subscription", {**args, "destination_name": "Phase-D-KAFKA"}
+    )
+    assert sent(create, 3)["destinationName"] == "Phase-D-KAFKA"
+    assert text.startswith(
+        "Error: the platform refused destination 'Phase-D-KAFKA' as a Kafka destination: Data "
+        "Destination 'phase-d-kafka' exists but the name was sent as 'Phase-D-KAFKA'"
+    )
+    assert "retry with destination_name 'phase-d-kafka'" in text
+
+
+@respx.mock
+async def test_create_external_subscription_diagnosis_lookup_failure_keeps_the_refusal(
+    make_settings,
+):
+    respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_BAD_DESTINATION))
+    respx.post(DESTINATIONS_URL).mock(return_value=httpx.Response(403, text="Unauthorized"))
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "x",
+            "destination_type": "Kafka",
+            "topic_name": "t",
+            "data_type": "Alarm",
+        },
+    )
+    assert text.startswith("Error: the platform refused destination 'x' as a Kafka destination: ")
+    assert "the lookup for this hint failed" in text
+    assert "cnc_list_data_destinations" in text
+    assert text.endswith("Platform said: " + EXT_BAD_DESTINATION["result"])
+
+
+@respx.mock
+async def test_create_external_subscription_400_invalid_params_carries_the_rules(make_settings):
+    respx.post(KAFKA_URL).mock(
+        return_value=httpx.Response(
+            400, json={"error": "Following param(s) are invalid : Destination Type"}
+        )
+    )
+    text = await call_tool_text(
+        writable(make_settings, max_retries=0),
+        "cnc_create_external_subscription",
+        {
+            "destination_name": "d",
+            "destination_type": "Kafka",
+            "topic_name": "t",
+            "data_type": "Alarm",
+        },
+    )
+    assert text.startswith(
+        "Error: the platform rejected the subscription (HTTP 400): Following param(s) are "
+        "invalid : Destination Type. destinationType must be exactly 'Kafka' or 'gRPC'"
+    )
+    assert '"topicName": "t"' in text
+
+
+@respx.mock
+async def test_create_external_subscription_other_answers(make_settings):
+    mcp = writable(make_settings, max_retries=0)
+    args = {
+        "destination_name": "d",
+        "destination_type": "Kafka",
+        "topic_name": "t",
+        "data_type": "Alarm",
+    }
+    # A 2xx without the verified text: unconfirmed, never "created".
+    respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, json={"result": "Queued"}))
+    text = await call_tool_text(mcp, "cnc_create_external_subscription", args)
+    assert text.startswith(
+        "Error: the platform answered HTTP 200 to the subscription request but not the verified "
+        '"Create Successful" text: Queued.'
+    )
+    assert "cnc_list_kafka_subscriptions" in text
+    respx.post(KAFKA_URL).mock(return_value=httpx.Response(200, text=""))
+    text = await call_tool_text(mcp, "cnc_create_external_subscription", args)
+    assert "(empty body)" in text
+    # Other HTTP errors take the generic hint; the POST is not auto-retried (503 is
+    # in the client's RETRYABLE_STATUS set: a GET would be sent four times).
+    route = respx.post(KAFKA_URL).mock(return_value=httpx.Response(503, text=""))
+    before = route.call_count
+    text = await call_tool_text(
+        writable(make_settings, max_retries=3), "cnc_create_external_subscription", args
+    )
+    assert text.startswith("Error: API request failed with status 503")
+    assert route.call_count == before + 1
+
+
+# --- cnc_delete_external_subscription ----------------------------------------
+
+
+@respx.mock
+async def test_delete_external_subscription_by_topic_alone(make_settings):
+    route = respx.delete(KAFKA_URL).mock(return_value=httpx.Response(200, json=EXT_DELETE_OK))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_delete_external_subscription",
+        {"topic_name": " phase-d-audit "},
+    )
+    assert route.call_count == 1
+    assert route.calls[0].request.method == "DELETE"
+    assert route.calls[0].request.headers["Content-Type"] == "application/json"
+    assert sent(route) == {"subscriptionList": [{"topicName": "phase-d-audit"}]}
+    assert text == (
+        "External subscription for topic 'phase-d-audit' deleted. Platform said: Delete Successful"
+    )
+    # Optional fields are sent verbatim (type canonicalised) when given.
+    await call_tool_text(
+        writable(make_settings),
+        "cnc_delete_external_subscription",
+        {"topic_name": "t", "destination_name": "phase-d-kafka", "destination_type": "kafka"},
+    )
+    assert sent(route, 1) == {
+        "subscriptionList": [
+            {"topicName": "t", "destinationName": "phase-d-kafka", "destinationType": "Kafka"}
+        ]
+    }
+    # Explicit nulls (and blanks) omit them — no schema error.
+    await call_tool_text(
+        writable(make_settings),
+        "cnc_delete_external_subscription",
+        {"topic_name": "t", "destination_name": None, "destination_type": None},
+    )
+    assert sent(route, 2) == {"subscriptionList": [{"topicName": "t"}]}
+    await call_tool_text(
+        writable(make_settings),
+        "cnc_delete_external_subscription",
+        {"topic_name": "t", "destination_name": " ", "destination_type": ""},
+    )
+    assert sent(route, 3) == {"subscriptionList": [{"topicName": "t"}]}
+
+
+@respx.mock
+async def test_delete_external_subscription_unknown_topic_is_not_found(make_settings):
+    route = respx.delete(KAFKA_URL).mock(return_value=httpx.Response(400, json=EXT_NOT_FOUND))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_delete_external_subscription",
+        {"topic_name": "phase-d-audit"},
+    )
+    assert route.call_count == 1
+    assert text == (
+        "Error: no external subscription for topic 'phase-d-audit' (list with "
+        "cnc_list_kafka_subscriptions)"
+    )
+
+
+@respx.mock
+async def test_delete_external_subscription_other_answers(make_settings):
+    mcp = writable(make_settings, max_retries=0)
+    respx.delete(KAFKA_URL).mock(return_value=httpx.Response(200, json={"result": "Failed"}))
+    text = await call_tool_text(mcp, "cnc_delete_external_subscription", {"topic_name": "t"})
+    assert text.startswith(
+        "Error: the platform answered HTTP 200 to the delete of topic 't' but not the verified "
+        '"Delete Successful" text: Failed.'
+    )
+    respx.delete(KAFKA_URL).mock(
+        return_value=httpx.Response(
+            400, json={"result": "Please provide at least one valid subscription data to delete"}
+        )
+    )
+    text = await call_tool_text(mcp, "cnc_delete_external_subscription", {"topic_name": "t"})
+    assert text.startswith("Error:") and "400" in text
+    respx.delete(KAFKA_URL).mock(return_value=httpx.Response(415, json={"status": 415}))
+    text = await call_tool_text(mcp, "cnc_delete_external_subscription", {"topic_name": "t"})
+    assert text.startswith("Error:") and "415" in text
+    text = await call_tool_text(
+        mcp, "cnc_delete_external_subscription", {"topic_name": "t", "destination_type": "MQTT"}
+    )
+    assert text.startswith("Error: Unknown destination_type 'MQTT'")
+    with pytest.raises(ToolError, match="topic_name"):
+        await call_tool_text(mcp, "cnc_delete_external_subscription", {"topic_name": ""})
+
+
+# --- cnc_clear_notification_subscriptions_by_topic ---------------------------
+
+
+def admin_answers(*bodies):
+    """Mock the admin list to answer ``bodies`` in order (the last one repeats)."""
+    return respx.get(ADMIN_URL).mock(
+        side_effect=[httpx.Response(200, json=b) for b in bodies]
+        + [httpx.Response(200, json=bodies[-1])]
+    )
+
+
+@respx.mock
+async def test_clear_by_topic_lists_before_and_after(make_settings):
+    # Before: an alarm and an inventory subscription; after: only the alarm one.
+    admin = admin_answers(LISTED, envelope(SUB, 0))
+    clear = respx.post(f"{CLEAR_URL}/inventory").mock(
+        return_value=httpx.Response(200, text="Clear successful")
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_clear_notification_subscriptions_by_topic",
+        {"topic": "Inventory"},
+    )
+    assert clear.call_count == 1
+    assert clear.calls[0].request.method == "POST"
+    assert accept_of(clear) == ["application/json"]
+    assert clear.calls[0].request.content == b""
+    assert admin.call_count == 2
+    assert admin.calls[0].request.url.params[".maxCount"] == "100"
+    assert text == (
+        "Cleared 1 notification subscription(s) of topic inventory (ids 13 "
+        "(https://sink.example:443/inv, user ops)). Platform said: Clear successful"
+    )
+
+
+@respx.mock
+async def test_clear_by_topic_sends_nothing_when_the_topic_has_none(make_settings):
+    admin_answers(SINGLE)  # only an alarm subscription
+    clear = respx.post(f"{CLEAR_URL}/inventory").mock(
+        return_value=httpx.Response(200, text="Clear successful")
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_clear_notification_subscriptions_by_topic",
+        {"topic": "inventory"},
+    )
+    assert clear.call_count == 0
+    assert text == (
+        "No notification subscriptions of topic inventory to clear (every user's view); "
+        "nothing sent."
+    )
+    admin_answers(EMPTY)
+    text = await call_tool_text(
+        writable(make_settings), "cnc_clear_notification_subscriptions_by_topic", {"topic": "alarm"}
+    )
+    assert text.startswith("No notification subscriptions of topic alarm to clear")
+    assert clear.call_count == 0
+
+
+@respx.mock
+async def test_clear_by_topic_refuses_unknown_topic_before_sending(make_settings):
+    admin = respx.get(ADMIN_URL).mock(return_value=httpx.Response(200, json=LISTED))
+    clear = respx.post(url__startswith=CLEAR_URL).mock(
+        return_value=httpx.Response(200, text="Clear successful")
+    )
+    text = await call_tool_text(
+        writable(make_settings), "cnc_clear_notification_subscriptions_by_topic", {"topic": "nope"}
+    )
+    assert text == "Error: Unknown topic 'nope'. Use one of: alarm, inventory."
+    text = await call_tool_text(
+        writable(make_settings), "cnc_clear_notification_subscriptions_by_topic", {"topic": " "}
+    )
+    assert text == "Error: topic must not be blank. Use one of: alarm, inventory."
+    assert admin.call_count == 0 and clear.call_count == 0
+
+
+@respx.mock
+async def test_clear_by_topic_unconfirmed_and_remaining_are_errors(make_settings):
+    mcp = writable(make_settings, max_retries=0)
+    # 2xx without the verified text.
+    admin_answers(LISTED)
+    respx.post(f"{CLEAR_URL}/alarm").mock(return_value=httpx.Response(200, text=""))
+    text = await call_tool_text(
+        mcp, "cnc_clear_notification_subscriptions_by_topic", {"topic": "alarm"}
+    )
+    assert text.startswith(
+        "Error: the platform answered HTTP 200 to clear-by-topic/alarm but not the verified "
+        '"Clear successful" text: (empty body).'
+    )
+    # "Clear successful" but the topic's subscriptions are still listed afterwards.
+    admin_answers(LISTED, LISTED)
+    respx.post(f"{CLEAR_URL}/alarm").mock(return_value=httpx.Response(200, text="Clear successful"))
+    text = await call_tool_text(
+        mcp, "cnc_clear_notification_subscriptions_by_topic", {"topic": "alarm"}
+    )
+    assert text.startswith(
+        'Error: the platform said "Clear successful" for topic alarm but 1 subscription(s) of '
+        f"that topic remain in the admin view: 12 ({SINK_URL}, user admin)."
+    )
+    assert "cnc_delete_notification_subscription" in text
+    # rc.errors on the clear renders the service tag; a failing admin list is an error too.
+    admin_answers(LISTED)
+    respx.post(f"{CLEAR_URL}/alarm").mock(
+        return_value=httpx.Response(403, json=rc_errors("NOT.0099", "Not permitted"))
+    )
+    text = await call_tool_text(
+        mcp, "cnc_clear_notification_subscriptions_by_topic", {"topic": "alarm"}
+    )
+    assert text.startswith(
+        "Error: EMF RESTCONF rejected the request (HTTP 403): operation-failed [NOT.0099]: "
+        "Not permitted."
+    )
+    respx.get(ADMIN_URL).mock(return_value=httpx.Response(500, text=""))
+    text = await call_tool_text(
+        mcp, "cnc_clear_notification_subscriptions_by_topic", {"topic": "alarm"}
+    )
+    assert text.startswith("Error:") and "500" in text
+
+
+@respx.mock
+async def test_clear_by_topic_notes_a_full_admin_page(make_settings):
+    # 100 inventory subscriptions before (a full page), none after.
+    many = [{**SUB2, f"{NS}subscription-id": 1000 + i} for i in range(100)]
+    admin_answers(envelope(many, 99), EMPTY)
+    respx.post(f"{CLEAR_URL}/inventory").mock(
+        return_value=httpx.Response(200, text="Clear successful")
+    )
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_clear_notification_subscriptions_by_topic",
+        {"topic": "inventory"},
+    )
+    assert text.startswith(
+        "Cleared 100 notification subscription(s) of topic inventory (ids 1000 ("
+    )
+    assert text.endswith("so the count is a lower bound.")
+    # A full page with none of the topic: the "may have more" note, nothing sent.
+    alarms = [{**SUB, f"{NS}subscription-id": 2000 + i} for i in range(100)]
+    admin_answers(envelope(alarms, 99))
+    text = await call_tool_text(
+        writable(make_settings),
+        "cnc_clear_notification_subscriptions_by_topic",
+        {"topic": "inventory"},
+    )
+    assert text == (
+        "No notification subscriptions of topic inventory to clear (every user's view) (the "
+        "admin view was a full page of 100 — the topic may have more beyond it); nothing sent."
+    )

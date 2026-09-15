@@ -71,14 +71,26 @@ Only the latest release is supported with fixes.
 
 ## Writes are off by default
 
-`CNC_MCP_ENABLE_WRITES` defaults to `false`. While it is unset the 63 write
+`CNC_MCP_ENABLE_WRITES` defaults to `false`. While it is unset the 98 write
 tools are **not registered** — they are absent from the tool list an agent
 sees, not merely refused — so a read-only deployment cannot be talked into
 changing anything. `safety.register_tool()` is the only registration path,
 and it forces every tool to declare `read_only` (with `destructive` and
 `idempotent` for writes); deletes and overwrites carry the MCP `destructive`
-annotation so a client can ask for confirmation. Writes that could not be verified
-against a live instance are not exposed at all (see the README roadmap).
+annotation so a client can ask for confirmation. The write set covers
+devices, credential profiles, providers, gateway mapping, NSO actions, SR-TE
+policies, platform administration (login banner, maintenance mode,
+microservice restart), tags / locations / locks, alarms and alarm settings
+(event-type severity, auto-clear, alarm-manager and gNMI switches,
+recommended actions, suppression policies), configuration backups /
+templates / deployments, webhook and external Kafka / gRPC subscriptions,
+device groups and their membership, the LCM recommendation pause, T-SDN
+service provisioning, performance-monitoring policies (activation starts
+collection on the devices) and retention, OAM trace routes and probe
+reactivation, the ZTP catalogue (config files, profiles, serial numbers,
+static routes, devices), the EMS scheduler jobs and the two playbooks.
+Writes that could not be verified against a live instance are not exposed
+at all (see the README roadmap).
 
 Three further controls narrow a deployment that does enable writes. All
 three are decided when the tools are registered, before an agent connects,
@@ -103,7 +115,8 @@ and an unknown area or tool name in any of them is a startup failure with a
   live. The "not executed" answer redacts values by argument name
   (`password`, `secret`, `token`, `key`, `passphrase`, `community`) and
   withholds the free-text bodies a tool declares (configlets, template
-  variables, webhook URLs); a secret passed under an unrelated argument name
+  variables, webhook URLs, ZTP config-file content, event-type
+  recommendation texts); a secret passed under an unrelated argument name
   would be echoed back to the agent that supplied it.
 
 The account's Crosswork role is the layer beneath all of these: a write tool

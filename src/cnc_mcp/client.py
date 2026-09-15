@@ -24,6 +24,12 @@ Wraps httpx.AsyncClient with the behaviors every platform server needs:
   as ``Switch Inventory:Inventory`` sent as ``application/json``; verified live
   2026-09-13 — the service answers a bare ``true``/``false``). It is the only
   raw-text consumer — the EMF RESTCONF endpoints take JSON/XML, never raw text.
+- a ``files=`` multipart body for the one multipart consumer, the ZTP
+  configuration service (``POST /crosswork/configsvc/v1/configs/upload`` and
+  ``PUT .../configs/{confId}``, a ``configFile`` part plus query-string
+  metadata — verified live 2026-09-15, see ``tools/swim_ztp.py``). httpx builds
+  the ``multipart/form-data`` body and its boundary Content-Type itself, so a
+  caller must NOT set a Content-Type header for such a call.
 
 Accepted statuses (``ok_statuses``) and the re-auth pass: an accepted status is
 never retried by the backoff loop, but it is still subject to the one
@@ -107,6 +113,7 @@ class ApiClient:
         params: dict[str, Any] | None = None,
         json_body: Any = None,
         content: str | bytes | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
         headers: dict[str, str] | None = None,
         raise_on_error: bool = True,
         retryable: bool | None = None,
@@ -114,16 +121,21 @@ class ApiClient:
     ) -> httpx.Response:
         """Make a request with auth, retries, and one re-auth on auth failure. Returns the response.
 
-        Body: pass EITHER ``json_body`` (serialised as JSON, Content-Type
+        Body: pass at most ONE of ``json_body`` (serialised as JSON, Content-Type
         ``application/json`` unless ``headers`` carries its own — RESTCONF RPC
         bodies and the NSO proxy need ``application/yang-data+json``; the proxy
-        answers ``application/json`` with 415) OR ``content`` (sent verbatim;
+        answers ``application/json`` with 415), ``content`` (sent verbatim;
         Content-Type from ``headers`` or :data:`DEFAULT_RAW_CONTENT_TYPE` when
-        none is given). The one raw-body consumer is the Inventory Job
-        Scheduler (``POST /crosswork/rs/json/jobSchedulerServiceInv/v1/
-        {runJob,suspendJob,resumeJob}``, body an unquoted string such as
-        ``Switch Inventory:Inventory`` under ``application/json`` — verified
-        live 2026-09-13, see ``tools/ems_jobs.py``). Passing both is a
+        none is given) or ``files`` (a ``multipart/form-data`` body:
+        ``{"<part name>": (filename, bytes, media type)}`` — httpx writes the
+        boundary Content-Type itself, so pass no Content-Type header). The one
+        raw-body consumer is the Inventory Job Scheduler (``POST
+        /crosswork/rs/json/jobSchedulerServiceInv/v1/{runJob,suspendJob,
+        resumeJob}``, body an unquoted string such as ``Switch
+        Inventory:Inventory`` under ``application/json`` — verified live
+        2026-09-13, see ``tools/ems_jobs.py``); the one multipart consumer is
+        the ZTP configuration service (``configFile`` part — verified live
+        2026-09-15, see ``tools/swim_ztp.py``). Passing two body forms is a
         programming error and raises ValueError before anything is sent.
 
         retryable=None (default) auto-retries 5xx/transport errors only for
@@ -144,14 +156,16 @@ class ApiClient:
         Raises PlatformError for non-success responses unless raise_on_error=False,
         and for transport failures that survive all retries.
         """
-        if content is not None and json_body is not None:
-            raise ValueError("ApiClient.request(): pass either json_body or content, not both")
+        if sum(body is not None for body in (json_body, content, files)) > 1:
+            raise ValueError(
+                "ApiClient.request(): pass either json_body or content or files, not several"
+            )
         if retryable is None:
             retryable = method.upper() in IDEMPOTENT_METHODS
         accepted = ok_statuses or set()
         async with self._semaphore:
             response = await self._request_with_retries(
-                method, path, params, json_body, content, headers, retryable, accepted
+                method, path, params, json_body, content, files, headers, retryable, accepted
             )
         if raise_on_error and not response.is_success and response.status_code not in accepted:
             raise http_error(response)
@@ -165,6 +179,7 @@ class ApiClient:
         params: dict[str, Any] | None = None,
         json_body: Any = None,
         content: str | bytes | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
         headers: dict[str, str] | None = None,
         retryable: bool | None = None,
         ok_statuses: set[int] | None = None,
@@ -180,6 +195,7 @@ class ApiClient:
             params=params,
             json_body=json_body,
             content=content,
+            files=files,
             headers=headers,
             retryable=retryable,
             ok_statuses=ok_statuses,
@@ -209,6 +225,7 @@ class ApiClient:
         params: dict[str, Any] | None,
         json_body: Any,
         content: str | bytes | None,
+        files: dict[str, tuple[str, bytes, str]] | None,
         extra_headers: dict[str, str] | None,
         retryable: bool,
         accepted: set[int],
@@ -225,7 +242,13 @@ class ApiClient:
                 # derives from ``json=`` (verified against httpx 0.28: request
                 # headers take precedence over the encoder's defaults).
                 response = await self._http.request(
-                    method, path, params=params, json=json_body, content=content, headers=headers
+                    method,
+                    path,
+                    params=params,
+                    json=json_body,
+                    content=content,
+                    files=files,
+                    headers=headers,
                 )
             except httpx.TransportError as e:
                 if retryable and attempt < self._settings.max_retries:

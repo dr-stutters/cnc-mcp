@@ -1,5 +1,5 @@
-"""Notifications: the streams catalogue, webhook (connection-less) subscriptions
-and the Kafka/gRPC subscription list.
+"""Notifications: the streams catalogue, webhook (connection-less) subscriptions,
+external Kafka/gRPC subscriptions and the per-topic clear.
 
 Crosswork can push alarm and inventory notifications to external consumers in
 three ways (the streams document, ``cnc_list_notification_streams``, lists
@@ -17,11 +17,13 @@ them as the platform advertises them):
    is up. NOT driven by these tools (an MCP tool call cannot hold a socket);
    the streams tool only reports the locations. Such sessions appear in the
    admin subscription list while they are open.
-3. **Kafka / gRPC subscriptions** (``/crosswork/notification/v2/subscription``)
-   — the platform publishes to an external Kafka or gRPC destination defined
-   under the Data Gateway destinations. ``cnc_list_kafka_subscriptions`` reads
-   the list; create/delete are not exposed (their bodies need a configured
-   destination and were not exercised live).
+3. **Kafka / gRPC ("external") subscriptions**
+   (``/crosswork/notification/v2/subscription``) — the platform publishes a
+   data type (alarms, inventory changes, system audit, the PM feeds) to a
+   Kafka or gRPC Data Destination on a topic of the caller's choosing.
+   ``cnc_list_kafka_subscriptions`` reads the list;
+   ``cnc_create_external_subscription`` / ``cnc_delete_external_subscription``
+   create and delete them (see the wire facts below).
 
 Wire facts (verified live 2026-09-13 on the 7.2 lab with a real webhook sink —
 an nginx that answers 200 ``{}`` to everything):
@@ -73,12 +75,71 @@ an nginx that answers 200 ``{}`` to everything):
   unconfirmed rather than as deleted (this platform routinely rides
   application failures inside HTTP 200).
 - ``GET /crosswork/notification/v2/subscription`` (Kafka/gRPC) → 200 with an
-  EMPTY body when there are none; the non-empty shape is documented
-  (``{"subscriptionList": [...]}``) but was not observed live.
+  EMPTY body when there are none; with some (verified live 2026-09-15)
+  ``{"subscriptionList": [{"createTime", "destinationName", "destinationType",
+  "filter", "subscriptionData", "subscriptionDataType", "topicName",
+  "userName"}]}``.
 
-Not exposed: the ``clear-all-subscriptions`` / ``clear-by-topic`` /
-``clear-sockets`` operations (bulk deletes across users), and Kafka/gRPC
-subscription create/delete.
+External (Kafka/gRPC) subscription writes — verified live 2026-09-15 against
+throwaway ``phase-d-kafka`` / ``phase-d-grpc`` destinations created with
+``DISPATCH_SOURCE application`` (plain JSON Spring service, no envelope;
+**every application failure of the POST rides inside HTTP 200**):
+
+- ``POST /crosswork/notification/v2/subscription {"destinationName",
+  "destinationType": "Kafka"|"gRPC", "topicName", "subscriptionDataType",
+  "subscriptionData"?, "filter"?}`` → 200 ``{"result": "Create Successful"}``.
+  200 ``{"result": "A subscription with this topic name already exists. Please
+  choose a different topic name."}`` — the topic name is the platform-wide
+  key. 200 ``{"result": "Destination does not exist or might be a data-gateway
+  destination, which is not allowed for external subscriptions."}`` for an
+  unknown destination name, a destination whose ``DISPATCH_SOURCE`` is
+  ``datagateway`` (every system-defined one, ``CW_KAFKA_DESTINATION`` and
+  ``cdg-common-pipeline`` included — external subscriptions need a destination
+  created with ``DISPATCH_SOURCE`` ``application`` or ``any``), AND for a
+  ``destinationType`` that does not match the destination's kind (a gRPC
+  destination named with type Kafka, or the reverse), AND for the right name
+  in the wrong case (``Phase-D-KAFKA`` for ``phase-d-kafka``): the lookup is
+  by exact name + type. Parameter validation is 400 ``{"error": "Following
+  param(s) are invalid : <Name>[, <Name>]"}`` with the names ``Topic Name`` (blank),
+  ``Destination Name`` (blank), ``Destination Type`` (not exactly ``Kafka`` /
+  ``gRPC`` — case-sensitive — or gRPC with a data type other than
+  Device_/Network_Performance_Monitoring), ``Subscription Data Type`` (unknown
+  or missing; then ``Subscription Data`` is listed too), ``Subscription Data``
+  (Network_Performance_Monitoring without ``SR_PM_Interface`` /
+  ``SR_PM_Policy``; Device_Performance_Monitoring without a selector;
+  Service_Health_Monitoring with a value other than ``Y1731_Probes`` /
+  ``PCA_Probes``; ANY subscriptionData on Alarm — the non-PM types take none)
+  and ``Filter`` (a filter on a data type other than Inventory_Changes).
+  Accepted: ``Inventory_Changes`` with ``filter "Routers"``, ``Alarm`` /
+  ``System_Audit`` without extras — with the optional keys absent OR sent as
+  explicit ``null`` as in the spec's example — ``Network_Performance_Monitoring``
+  + ``SR_PM_Interface`` (Kafka and gRPC), ``Service_Health_Monitoring`` +
+  ``Y1731_Probes`` (accepted although Service Health is not installed on the
+  lab), ``Device_Performance_Monitoring`` + ``policy_type=OpticalSFP,
+  policy_instance=instance1`` (no such policy exists — the selector's content
+  is not validated, only its presence).
+- ``DELETE /crosswork/notification/v2/subscription {"subscriptionList":
+  [{"topicName": ...}]}`` → 200 ``{"result": "Delete Successful"}``. The
+  match is on ``topicName`` ALONE: a body with a wrong destinationName,
+  destinationType or subscriptionDataType still deleted the subscription of
+  that topic, and ``{"topicName"}`` by itself works. Unknown topic → 400
+  ``{"result": "Following subscription(s) not found and could not be deleted
+  :[<topic>]"}`` (note ``result``, not ``error``); an empty list → 400
+  ``{"result": "Please provide at least one valid subscription data to
+  delete"}``; no body at all → Spring 415.
+- ``POST /crosswork/notification/restconf/data/v2/clear-by-topic/<topic>``
+  (no body) → 200 with the text ``Clear successful`` — for a topic with
+  subscriptions (a phase-d webhook subscription of topic ``inventory`` was
+  gone from ``notifications:subscription-admin`` afterwards), for a topic with
+  none (``alarm``) AND for a topic the platform does not know (``nope``): the
+  operation validates nothing and reports no count, so
+  ``cnc_clear_notification_subscriptions_by_topic`` lists the admin view
+  before and after to say what it removed.
+
+Not exposed: ``clear-all-subscriptions`` and ``clear-connection-less`` (one
+unscoped call wipes every user's subscriptions of both topics — WebSocket
+sessions included, per the spec — with no per-topic limit; the per-topic
+clear covers the scoped need) and ``clear-sockets``.
 """
 
 from __future__ import annotations
@@ -113,6 +174,47 @@ SUBSCRIPTION_PATH = f"{NOTIFICATIONS}/notifications:subscription"
 SUBSCRIPTION_ADMIN_PATH = f"{NOTIFICATIONS}/notifications:subscription-admin"
 # Kafka/gRPC subscriptions live on a plain-JSON Spring service, not the EMF base.
 KAFKA_SUBSCRIPTION_PATH = "/crosswork/notification/v2/subscription"
+# Bulk clear of one topic's webhook/WebSocket subscriptions (EMF base, text answer).
+CLEAR_BY_TOPIC_PATH = f"{NOTIFICATIONS}/clear-by-topic"
+# Read only to EXPLAIN a refused destination (the Data Gateway destinations list).
+DESTINATIONS_QUERY_PATH = "/crosswork/dg-manager/v1/destinations/query"
+DESTINATIONS_QUERY_BODY: dict[str, Any] = {"limit": 100, "filter": {}}
+
+# External subscription vocabulary (spelling verified live: destinationType is
+# case-sensitive on the wire, the data types are the spec's).
+DESTINATION_TYPES = ("Kafka", "gRPC")
+DATA_TYPES = (
+    "Inventory_Changes",
+    "Alarm",
+    "System_Audit",
+    "Device_Performance_Monitoring",
+    "Network_Performance_Monitoring",
+    "Service_Health_Monitoring",
+)
+# gRPC destinations take only the two PM feeds (verified: anything else is 400
+# "Destination Type").
+GRPC_DATA_TYPES = ("Device_Performance_Monitoring", "Network_Performance_Monitoring")
+# subscriptionData vocabularies (both verified live: required, closed — an unknown
+# value is 400 "Subscription Data"; SHM Y1731_Probes was accepted with Service
+# Health not installed).
+NPM_SUBSCRIPTION_DATA = ("SR_PM_Interface", "SR_PM_Policy")
+SHM_SUBSCRIPTION_DATA = ("Y1731_Probes", "PCA_Probes")
+DPM_DATA_TYPE = "Device_Performance_Monitoring"
+NPM_DATA_TYPE = "Network_Performance_Monitoring"
+SHM_DATA_TYPE = "Service_Health_Monitoring"
+FILTER_DATA_TYPE = "Inventory_Changes"
+# The three result texts verified live (compared case-insensitively).
+EXTERNAL_CREATE_OK = "Create Successful"
+EXTERNAL_DELETE_OK = "Delete Successful"
+CLEAR_OK = "Clear successful"
+# Result-message markers verified live (the service has no error codes).
+_EXT_DUPLICATE_MARKER = "already exists"
+_EXT_DESTINATION_MARKER = "destination does not exist"
+_EXT_NOT_FOUND_MARKER = "not found and could not be deleted"
+_EXT_INVALID_MARKER = "are invalid"
+# Destination properties (Data Gateway destinations list) read by the diagnosis.
+_DISPATCH_ALLOWED = ("application", "any")
+_DESTINATION_KIND = {"destination_type_kafka": "Kafka", "destination_type_grpc": "gRPC"}
 
 # Every subscription field on the wire is spelled with this prefix (verbatim).
 NS = "ietf-restconf:notification."
@@ -438,12 +540,268 @@ def kafka_entries(data: Any) -> list[dict[str, Any]] | None:
 
 
 def kafka_line(entry: dict[str, Any]) -> str:
-    """``- <topicName> -> <destinationName> (<type>; data <data type>; user <u>; created <t>)``."""
+    """One list line per external subscription.
+
+    ``- <topicName> -> <destinationName> (<type>; data <data type>[ <subscriptionData>]
+    [; filter <filter>]; user <userName>; created <createTime>)``.
+    """
+    data = entry.get("subscriptionDataType") or "?"
+    if entry.get("subscriptionData"):
+        data += f" {entry['subscriptionData']}"
+    filt = f"; filter {entry['filter']}" if entry.get("filter") else ""
     return (
         f"- {entry.get('topicName') or '?'} -> {entry.get('destinationName') or '?'} "
-        f"({entry.get('destinationType') or '?'}; data {entry.get('subscriptionDataType') or '?'}; "
+        f"({entry.get('destinationType') or '?'}; data {data}{filt}; "
         f"user {entry.get('userName') or '?'}; created {entry.get('createTime') or '?'})"
     )
+
+
+# --- external (Kafka/gRPC) subscription helpers ---------------------------------
+
+
+def match_choice(value: str | None, allowed: tuple[str, ...]) -> str:
+    """The canonical spelling of ``value`` when it matches one of ``allowed``
+    case-insensitively, else ``value`` stripped (the platform decides; "" for None).
+
+    Unlike :func:`cnc_mcp.tools.fault.canonical` this never refuses: the caller
+    decides what an unmatched value means (the NPM and SHM vocabularies are
+    closed — verified live — the DPM selector is free text).
+    """
+    text = (value or "").strip()
+    for candidate in allowed:
+        if candidate.lower() == text.lower():
+            return candidate
+    return text
+
+
+def build_external_subscription(
+    destination_name: str,
+    destination_type: str,
+    topic_name: str,
+    data_type: str,
+    subscription_data: str | None = None,
+    filter: str | None = None,
+) -> dict[str, Any]:
+    """The verified POST body for an external subscription, or PlatformError.
+
+    Refuses BEFORE anything is sent exactly what the platform was seen to
+    refuse with 400 "Following param(s) are invalid" (every rule verified
+    live, 2026-09-15): a blank topic or destination name, a destinationType
+    other than Kafka/gRPC (matched case-insensitively here, sent in the
+    platform's case-sensitive spelling), an unknown subscriptionDataType, gRPC
+    with a data type other than the two PM feeds,
+    Network_Performance_Monitoring without SR_PM_Interface / SR_PM_Policy,
+    Service_Health_Monitoring without Y1731_Probes / PCA_Probes (Y1731_Probes
+    was accepted with Service Health not installed), Device_Performance_Monitoring
+    without a selector (its content is passed through — the platform accepted
+    ``policy_type=OpticalSFP,policy_instance=instance1`` with no such policy),
+    a subscriptionData on any non-PM data type, and a filter on a data type
+    other than Inventory_Changes. ``subscription_data`` / ``filter`` may be
+    None, "" or whitespace alike (the spec's example sends explicit nulls; the
+    platform accepted both absent and null keys): the optional keys are sent
+    only when a value is given. The destination name is sent verbatim
+    (trimmed): the platform's lookup is case-sensitive.
+    """
+    name = (destination_name or "").strip()
+    topic = (topic_name or "").strip()
+    if not name:
+        raise PlatformError(
+            "destination_name must not be blank: the name of a Data Destination as listed by "
+            "cnc_list_data_destinations (e.g. 'ext-kafka')."
+        )
+    if not topic:
+        raise PlatformError("topic_name must not be blank (e.g. 'cnc-alarms').")
+    wire_type = canonical(destination_type, DESTINATION_TYPES, "destination_type")
+    if wire_type is None:
+        raise PlatformError(
+            f"destination_type must not be blank. Use one of: {', '.join(DESTINATION_TYPES)}."
+        )
+    wire_data_type = canonical(data_type, DATA_TYPES, "data_type")
+    if wire_data_type is None:
+        raise PlatformError(f"data_type must not be blank. Use one of: {', '.join(DATA_TYPES)}.")
+    if wire_type == "gRPC" and wire_data_type not in GRPC_DATA_TYPES:
+        raise PlatformError(
+            f"a gRPC destination cannot receive {wire_data_type}: gRPC subscriptions take only "
+            f"{' or '.join(GRPC_DATA_TYPES)} (verified live: the platform answers 400 "
+            "'Destination Type'); use a Kafka destination for the other data types."
+        )
+    data = (subscription_data or "").strip()
+    if wire_data_type == NPM_DATA_TYPE:
+        data = match_choice(data, NPM_SUBSCRIPTION_DATA)
+        if data not in NPM_SUBSCRIPTION_DATA:
+            raise PlatformError(
+                f"{NPM_DATA_TYPE} needs subscription_data "
+                f"{' or '.join(repr(v) for v in NPM_SUBSCRIPTION_DATA)} (got "
+                f"{data!r}; verified live: the platform answers 400 'Subscription Data')."
+            )
+    elif wire_data_type == SHM_DATA_TYPE:
+        data = match_choice(data, SHM_SUBSCRIPTION_DATA)
+        if data not in SHM_SUBSCRIPTION_DATA:
+            raise PlatformError(
+                f"{SHM_DATA_TYPE} needs subscription_data "
+                f"{' or '.join(repr(v) for v in SHM_SUBSCRIPTION_DATA)} (got "
+                f"{data!r}; verified live: the platform answers 400 'Subscription Data' to "
+                "any other value)."
+            )
+    elif wire_data_type == DPM_DATA_TYPE:
+        if not data:
+            raise PlatformError(
+                f"{DPM_DATA_TYPE} needs subscription_data "
+                "'policy_type=<type>,policy_instance=<policy name>' (e.g. "
+                "'policy_type=OpticalSFP,policy_instance=instance1'; the platform does not "
+                "check that the policy exists — verified live)."
+            )
+    elif data:
+        raise PlatformError(
+            f"subscription_data is only accepted with the performance-monitoring data types "
+            f"({', '.join((DPM_DATA_TYPE, NPM_DATA_TYPE, SHM_DATA_TYPE))}); verified live: "
+            f"{wire_data_type} with a subscriptionData is answered 400 'Subscription Data'. "
+            "Leave it empty."
+        )
+    filt = (filter or "").strip()
+    if filt and wire_data_type != FILTER_DATA_TYPE:
+        raise PlatformError(
+            f"filter is only accepted with data_type {FILTER_DATA_TYPE} (verified live: a "
+            f"filter on {wire_data_type} is answered 400 'Filter'); drop it or subscribe "
+            f"{FILTER_DATA_TYPE}."
+        )
+    body: dict[str, Any] = {
+        "destinationName": name,
+        "destinationType": wire_type,
+        "topicName": topic,
+        "subscriptionDataType": wire_data_type,
+    }
+    if data:
+        body["subscriptionData"] = data
+    if filt:
+        body["filter"] = filt
+    return body
+
+
+def external_result(data: Any) -> str:
+    """The ``result`` (or ``error``) text of a v2 subscription answer, "" when absent.
+
+    Verified live: successes and application failures alike answer HTTP 200
+    ``{"result": "<text>"}``; parameter validation answers 400
+    ``{"error": "Following param(s) are invalid : ..."}``; the delete's
+    not-found answer is 400 with ``result``.
+    """
+    if not isinstance(data, dict):
+        return ""
+    for key in ("result", "error"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def result_is(text: str, expected: str) -> bool:
+    """True when a result text equals ``expected`` (case- and whitespace-insensitive)."""
+    return text.strip().rstrip(".").lower() == expected.lower()
+
+
+def invalid_params_error(status: int, message: str, body: dict[str, Any]) -> PlatformError:
+    """The PlatformError for a 400 ``Following param(s) are invalid : ...`` answer.
+
+    Adds, per parameter the platform names, the rule verified live for it, so
+    the agent learns the constraint rather than only the field name.
+    """
+    hints = {
+        "topic name": "topicName must not be blank",
+        "destination name": "destinationName must not be blank",
+        "destination type": "destinationType must be exactly 'Kafka' or 'gRPC' (case-sensitive), "
+        "and a gRPC destination takes only Device_/Network_Performance_Monitoring",
+        "subscription data type": f"subscriptionDataType must be one of {', '.join(DATA_TYPES)}",
+        "subscription data": "subscriptionData is required for Network_Performance_Monitoring "
+        "(SR_PM_Interface | SR_PM_Policy), Service_Health_Monitoring (Y1731_Probes | "
+        "PCA_Probes) and Device_Performance_Monitoring "
+        "('policy_type=<type>,policy_instance=<name>')",
+        "filter": "filter is only accepted with subscriptionDataType Inventory_Changes",
+    }
+    named = message.split(":", 1)[1] if ":" in message else message
+    lines = []
+    for raw in named.split(","):
+        rule = hints.get(raw.strip().lower())
+        if rule:
+            lines.append(rule)
+    detail = ("; ".join(lines) + ". ") if lines else ""
+    return PlatformError(
+        f"the platform rejected the subscription (HTTP {status}): {message}. {detail}"
+        f"Body sent: {to_json(body)}"
+    )
+
+
+def destination_diagnosis(destinations: list[dict[str, Any]], name: str, wire_type: str) -> str:
+    """Why the platform refused ``name`` as an external ``wire_type`` destination,
+    from the Data Gateway destinations list.
+
+    The platform's single message covers four verified causes: the name is
+    unknown; the name differs from an existing destination's only in case (the
+    platform's lookup is case-sensitive — verified live with ``Phase-D-KAFKA``
+    for ``phase-d-kafka`` — while the match here is case-insensitive so the
+    exact spelling can be named); the destination exists but its
+    ``DISPATCH_SOURCE`` is ``datagateway`` (every system-defined one); the
+    destination exists but is of the other kind (``DESTINATION_TYPE``
+    destination_type_grpc asked for as Kafka, or the reverse). A destination
+    that passes every check is reported as such, with the raw properties, so
+    the agent is never told a wrong cause.
+    """
+    given = name.strip()
+    wanted = given.lower()
+    match = None
+    for dest in destinations:
+        if str(dest.get("name") or "").strip().lower() == wanted:
+            match = dest
+            break
+    if match is None:
+        known = sorted(str(d.get("name") or "?") for d in destinations)
+        return (
+            f"no Data Destination is named '{name}' (known: {', '.join(known) or 'none'}); "
+            "list them with cnc_list_data_destinations."
+        )
+    exact = str(match.get("name") or "").strip()
+    props = match.get("properties") if isinstance(match.get("properties"), dict) else {}
+    dispatch = str(props.get("DISPATCH_SOURCE") or "").strip().lower()
+    kind = _DESTINATION_KIND.get(str(props.get("DESTINATION_TYPE") or "").strip().lower())
+    reasons = []
+    if exact != given:
+        reasons.append(
+            f"the name was sent as '{given}' — the platform looks the destination up by "
+            f"exact, case-sensitive name (verified live); retry with destination_name "
+            f"'{exact}'"
+        )
+    if dispatch not in _DISPATCH_ALLOWED:
+        reasons.append(
+            f"its DISPATCH_SOURCE is '{dispatch or 'unset'}' — external subscriptions need a "
+            "destination created with DISPATCH_SOURCE 'application' or 'any' (system-defined "
+            "and data-gateway destinations are refused)"
+        )
+    if kind and kind != wire_type:
+        reasons.append(
+            f"it is a {kind} destination (DESTINATION_TYPE {props.get('DESTINATION_TYPE')}) "
+            f"while destination_type '{wire_type}' was requested — the lookup is by name AND "
+            "type"
+        )
+    if not reasons:
+        return (
+            f"Data Destination '{match.get('name')}' exists, its DISPATCH_SOURCE is "
+            f"'{dispatch or 'unset'}' and its kind matches; the refusal has a cause this tool "
+            f"does not know. Properties: {to_json(props)}"
+        )
+    return f"Data Destination '{match.get('name')}' exists but " + "; and ".join(reasons) + "."
+
+
+def clear_confirmed(body: str | None) -> bool:
+    """True when a 2xx clear-by-topic body is the verified ``Clear successful`` text."""
+    if not isinstance(body, str):
+        return False
+    return body.strip().strip('"').strip().lower() == CLEAR_OK.lower()
+
+
+def subscriptions_of_topic(subs: list[dict[str, Any]], topic: str) -> list[dict[str, Any]]:
+    """The entries whose ``topic`` equals ``topic`` (case-insensitive)."""
+    wanted = topic.strip().lower()
+    return [s for s in subs if str(field(s, "topic") or "").strip().lower() == wanted]
 
 
 def _parse_json(response: httpx.Response) -> Any:
@@ -759,30 +1117,32 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         ] = ResponseFormat.MARKDOWN,
     ) -> str:
         """List the external Kafka / gRPC notification subscriptions (platform
-        events published to a Data Gateway Kafka or gRPC destination).
+        data — alarms, inventory changes, system audit, PM feeds — published to
+        a Kafka or gRPC Data Destination on a named topic).
 
         Read-only. Reads GET /crosswork/notification/v2/subscription (a plain
         JSON service, not the RESTCONF base). VERIFIED LIVE: with no
         subscriptions the platform answers HTTP 200 with an EMPTY body, which is
-        reported as "No Kafka/gRPC subscriptions.". The NON-EMPTY shape has NOT
-        been observed live: the 7.2 spec documents {"subscriptionList":
-        [{"topicName", "destinationName", "destinationType": "Kafka"|"gRPC",
-        "subscriptionDataType", "userName", "createTime", "filter",
-        "subscriptionData"}]} — when the answer matches that, markdown renders
-        one line per entry; otherwise the body is shown as JSON, as-is, with a
-        note. Creating or deleting these subscriptions is not offered.
+        reported as "No Kafka/gRPC subscriptions."; with some it answers
+        {"subscriptionList": [{"topicName", "destinationName",
+        "destinationType": "Kafka"|"gRPC", "subscriptionDataType",
+        "subscriptionData", "filter", "userName", "createTime"}]} (there is no
+        id: the topicName is the platform-wide key, and what
+        cnc_delete_external_subscription takes). A body of any other shape is
+        shown as JSON, as-is, with a note. Create with
+        cnc_create_external_subscription.
 
         Returns:
             str: Markdown lines "<topicName> -> <destinationName>
-            (<destinationType>; data <subscriptionDataType>; user <u>; created
-            <t>)" or the raw JSON body when its shape is not the documented one;
-            JSON: always the same envelope {"count": int, "items": [<entry>, ...]}
-            — "items" are the documented subscriptionList entries (empty for the
-            verified empty body and for a documented empty list) — plus
-            "raw": <body> when the body's shape is not the documented one
-            (items are then empty). "No Kafka/gRPC subscriptions." when the
-            body is empty (not an error). On failure: "Error: <actionable
-            message>".
+            (<destinationType>; data <subscriptionDataType> [<subscriptionData>]
+            [; filter <filter>]; user <u>; created <t>)" or the raw JSON body
+            when its shape is not the verified one; JSON: always the same
+            envelope {"count": int, "items": [<entry>, ...]} — "items" are the
+            subscriptionList entries (empty for the verified empty body and for
+            an empty list) — plus "raw": <body> when the body's shape is not
+            the verified one (items are then empty). "No Kafka/gRPC
+            subscriptions." when the body is empty (not an error). On failure:
+            "Error: <actionable message>".
         """
         try:
             data = await client.request_json("GET", KAFKA_SUBSCRIPTION_PATH)
@@ -795,19 +1155,16 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
                 if unknown_shape:
                     payload["raw"] = data
                 return finalize(to_json(payload), settings)
-            note = (
-                "Note: the non-empty answer of this endpoint has not been verified live; "
-                "the rendering follows the 7.2 spec."
-            )
             if unknown_shape:
                 return finalize(
-                    "# Kafka/gRPC subscriptions (shape not the documented one — body as-is)\n\n"
-                    f"{note}\n\n{to_json(data)}",
+                    "# Kafka/gRPC subscriptions (shape not the verified one — body as-is)\n\n"
+                    'Note: the verified answer is {"subscriptionList": [...]}; this body is '
+                    f"shown unparsed.\n\n{to_json(data)}",
                     settings,
                 )
             if not entries:
                 return finalize("No Kafka/gRPC subscriptions.", settings)
-            lines = [f"# Kafka/gRPC subscriptions ({len(entries)})", "", note, ""]
+            lines = [f"# Kafka/gRPC subscriptions ({len(entries)})", ""]
             lines.extend(kafka_line(e) for e in entries)
             return finalize("\n".join(lines), settings)
         except Exception as e:
@@ -1030,6 +1387,487 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             return finalize(
                 f"Notification subscription {subscription_id} deleted. Platform said: "
                 f"{response.text.strip()[:200]}",
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    # --- external (Kafka/gRPC) subscription writes ---------------------------
+
+    async def explain_destination(name: str, wire_type: str) -> str:
+        """The :func:`destination_diagnosis` for the platform's destination refusal,
+        or a pointer to the list tool when the destinations cannot be read."""
+        try:
+            data = await client.request_json(
+                "POST", DESTINATIONS_QUERY_PATH, json_body=DESTINATIONS_QUERY_BODY
+            )
+        except Exception as e:  # the diagnosis must never mask the refusal itself
+            logger.info("destination lookup for the diagnosis failed: %s", e)
+            return (
+                "check the name, its DISPATCH_SOURCE (must be 'application' or 'any') and its "
+                "kind with cnc_list_data_destinations (the lookup for this hint failed: "
+                f"{format_error(e)[:200]})."
+            )
+        items = data.get("data") if isinstance(data, dict) else None
+        destinations = [d for d in items if isinstance(d, dict)] if isinstance(items, list) else []
+        return destination_diagnosis(destinations, name, wire_type)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_create_external_subscription",
+        title="Create External Kafka/gRPC Subscription",
+        read_only=False,
+        destructive=False,
+        idempotent=False,
+    )
+    async def cnc_create_external_subscription(
+        destination_name: Annotated[
+            str,
+            Field(
+                description="Name of the Data Destination to publish to, exactly as listed "
+                "by cnc_list_data_destinations (e.g. 'ext-kafka'; case-sensitive). It must "
+                "have been created with DISPATCH_SOURCE 'application' or 'any' — in the UI "
+                "(Administration > Data Gateway > Data Destinations) or the dg-manager API; "
+                "no cnc_create_data_destination tool exists — because the system-defined "
+                "CW_KAFKA_DESTINATION / cdg-common-pipeline and every 'datagateway' "
+                "destination are refused.",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        destination_type: Annotated[
+            str,
+            Field(
+                description="Kind of the destination: 'Kafka' or 'gRPC' (case-insensitive here; "
+                "must match the destination's own kind).",
+                max_length=10,
+            ),
+        ],
+        topic_name: Annotated[
+            str,
+            Field(
+                description="Kafka topic (or gRPC topic label) the data is published on, "
+                "e.g. 'cnc-alarms'. Unique platform-wide: it is the subscription's key "
+                "(cnc_delete_external_subscription takes it) and a second subscription "
+                "with the same topic is refused whatever its destination.",
+                min_length=1,
+                max_length=249,
+            ),
+        ],
+        data_type: Annotated[
+            str,
+            Field(
+                description="What to publish (subscriptionDataType): 'Alarm', "
+                "'Inventory_Changes', 'System_Audit' (JSON encoded), "
+                "'Device_Performance_Monitoring', 'Network_Performance_Monitoring', "
+                "'Service_Health_Monitoring' (GPB-KV encoded). gRPC destinations take only "
+                "the two *_Performance_Monitoring types.",
+                max_length=40,
+            ),
+        ],
+        subscription_data: Annotated[
+            str | None,
+            Field(
+                description="Feed selector (subscriptionData), required by the PM data types "
+                "and otherwise omitted (null or empty): Network_Performance_Monitoring -> "
+                "'SR_PM_Interface' or 'SR_PM_Policy'; Service_Health_Monitoring -> "
+                "'Y1731_Probes' or 'PCA_Probes'; Device_Performance_Monitoring -> "
+                "'policy_type=<type>,policy_instance=<policy name>' (e.g. "
+                "'policy_type=OpticalSFP,policy_instance=instance1').",
+                max_length=500,
+            ),
+        ] = None,
+        filter: Annotated[
+            str | None,
+            Field(
+                description="Inventory_Changes only: comma-separated device product "
+                "families / series / types, OR-ed — a change is forwarded when the device "
+                "matches any (e.g. 'Routers,Switches and Hubs' or 'Cisco 8000 Series "
+                "Routers'). Refused with any other data_type; null or empty otherwise.",
+                max_length=2000,
+            ),
+        ] = None,
+    ) -> str:
+        """Create an external subscription: from then on Crosswork publishes the
+        chosen data type (alarms, inventory changes, system audit events or a
+        performance-monitoring feed) to a Kafka or gRPC Data Destination on the
+        given topic.
+
+        Write. Sends POST /crosswork/notification/v2/subscription
+        {"destinationName", "destinationType": "Kafka"|"gRPC", "topicName",
+        "subscriptionDataType", "subscriptionData"?, "filter"?} (plain JSON
+        service; the optional keys only when a value is given — the platform
+        accepts them absent or as explicit null alike). RULES VERIFIED LIVE
+        (2026-09-15, each one exercised against a throwaway destination):
+        (1) the destination must exist under Data Gateway > Data Destinations
+        with DISPATCH_SOURCE 'application' or 'any' — one created for the
+        data gateways (DISPATCH_SOURCE 'datagateway', which includes every
+        system-defined destination) is refused; no tool here creates a
+        destination (UI or dg-manager API) — its name must match EXACTLY
+        (case-sensitive: 'Phase-D-KAFKA' does not find 'phase-d-kafka') AND
+        destination_type must match its kind (the lookup is by name and type);
+        the platform gives one message for all four cases, HTTP 200 {"result":
+        "Destination does not exist or might be a data-gateway destination,
+        which is not allowed for external subscriptions."}, so this tool reads
+        the destinations list and says which one applies; (2) the topic name
+        is the platform-wide key: a second subscription with the same topic,
+        to any destination, is HTTP 200 {"result": "A subscription with this
+        topic name already exists ..."}; (3) destinationType is case-sensitive
+        on the wire ('Kafka' / 'gRPC' — normalised here), gRPC takes only
+        Device_/Network_Performance_Monitoring, the PM data types need their
+        subscription_data (Network_: SR_PM_Interface | SR_PM_Policy;
+        Service_Health_: Y1731_Probes | PCA_Probes — closed vocabularies,
+        Y1731_Probes accepted with Service Health not installed; Device_:
+        'policy_type=...,policy_instance=...' — required, its content not
+        validated against the policies), the non-PM types take NONE, and
+        filter is accepted only with Inventory_Changes — each of those is
+        refused here before anything is sent; whatever else the
+        platform rejects comes back as HTTP 400 {"error": "Following param(s)
+        are invalid : <Name>, ..."} and is reported with the rule per named
+        parameter. Success is HTTP 200 {"result": "Create Successful"} — ONLY
+        that text confirms the create (every application failure of this
+        endpoint rides inside HTTP 200). Not idempotent: a repeat fails as a
+        duplicate topic. The POST is not auto-retried (a lost answer may mean
+        the subscription exists: list before repeating). A destination whose
+        broker/server is down is not probed at create time (verified: the
+        throwaway destinations pointed at nothing).
+
+        Args:
+            destination_name: Data Destination name (cnc_list_data_destinations).
+            destination_type: 'Kafka' | 'gRPC'.
+            topic_name: unique topic (the key).
+            data_type: Alarm | Inventory_Changes | System_Audit |
+                Device_Performance_Monitoring | Network_Performance_Monitoring |
+                Service_Health_Monitoring (case-insensitive).
+            subscription_data: PM feed selector (see the argument description);
+                null / empty otherwise.
+            filter: Inventory_Changes device-type filter, OR-ed, comma-separated;
+                null / empty otherwise.
+
+        Returns:
+            str: "External subscription created: topic <topic> -> <destination>
+            (<type>), data <data_type>[ <subscription_data>][, filter <filter>].
+            Platform said: Create Successful" followed by the JSON body sent
+            (there is no id: the topic is the key; cnc_list_kafka_subscriptions
+            shows the record with its createTime and userName).
+            "Error: ... must not be blank" / "Error: Unknown destination_type
+            ..." / "Error: a gRPC destination cannot receive <type> ..." /
+            "Error: <PM type> needs subscription_data ..." / "Error:
+            subscription_data is only accepted with the performance-monitoring
+            data types ..." / "Error: filter is only accepted with data_type
+            Inventory_Changes ..." (nothing sent); "Error: a subscription with topic '<topic>'
+            already exists ..." for the duplicate; "Error: the platform refused
+            destination '<name>' as a <type> destination: <diagnosis> ..." for
+            the destination refusal; "Error: the platform rejected the
+            subscription (HTTP 400): Following param(s) are invalid : ..." with
+            the per-parameter rule; "Error: the platform answered HTTP <n> to
+            the subscription request but not the verified "Create Successful"
+            text: <body> ..." for any other 2xx (unconfirmed — list to check);
+            other failures: "Error: <actionable message>".
+        """
+        try:
+            body = build_external_subscription(
+                destination_name, destination_type, topic_name, data_type, subscription_data, filter
+            )
+            # Default POST retry policy (none): a lost answer may mean the
+            # subscription was created; the agent lists before repeating.
+            response = await client.request(
+                "POST",
+                KAFKA_SUBSCRIPTION_PATH,
+                json_body=body,
+                headers=EMF_HEADERS,
+                raise_on_error=False,
+            )
+            data = _parse_json(response)
+            result = external_result(data)
+            if not response.is_success:
+                if response.status_code == 400 and _EXT_INVALID_MARKER in result.lower():
+                    raise invalid_params_error(response.status_code, result, body)
+                raise http_error(response)
+            if result_is(result, EXTERNAL_CREATE_OK):
+                summary = (
+                    f"topic {body['topicName']} -> {body['destinationName']} "
+                    f"({body['destinationType']}), data {body['subscriptionDataType']}"
+                )
+                if body.get("subscriptionData"):
+                    summary += f" {body['subscriptionData']}"
+                if body.get("filter"):
+                    summary += f", filter {body['filter']}"
+                return finalize(
+                    f"External subscription created: {summary}. Platform said: {result}\n\n"
+                    f"{to_json(body)}",
+                    settings,
+                )
+            lowered = result.lower()
+            if _EXT_DUPLICATE_MARKER in lowered:
+                raise PlatformError(
+                    f"a subscription with topic '{body['topicName']}' already exists (the topic "
+                    "name is the platform-wide key, whatever the destination); see it with "
+                    "cnc_list_kafka_subscriptions, delete it with "
+                    f"cnc_delete_external_subscription or choose another topic. Platform said: "
+                    f"{result}"
+                )
+            if _EXT_DESTINATION_MARKER in lowered:
+                why = await explain_destination(body["destinationName"], body["destinationType"])
+                raise PlatformError(
+                    f"the platform refused destination '{body['destinationName']}' as a "
+                    f"{body['destinationType']} destination: {why} Platform said: {result}"
+                )
+            raise PlatformError(
+                f"the platform answered HTTP {response.status_code} to the subscription "
+                f'request but not the verified "{EXTERNAL_CREATE_OK}" text: '
+                f"{result or response.text.strip()[:200] or '(empty body)'}. The create is "
+                "unconfirmed (this endpoint rides application failures inside HTTP 200); "
+                "check with cnc_list_kafka_subscriptions before repeating."
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_delete_external_subscription",
+        title="Delete External Kafka/gRPC Subscription",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_delete_external_subscription(
+        topic_name: Annotated[
+            str,
+            Field(
+                description="topicName of the subscription to delete, as listed by "
+                "cnc_list_kafka_subscriptions (e.g. 'cnc-alarms'). The topic is the key: "
+                "the platform matches on it alone.",
+                min_length=1,
+                max_length=249,
+            ),
+        ],
+        destination_name: Annotated[
+            str | None,
+            Field(
+                description="Optional destinationName of the subscription, sent along when "
+                "given (e.g. 'ext-kafka'; null or empty to omit). On 7.2 the platform "
+                "ignores it and matches on the topic alone (verified live); pass it on a "
+                "build that keys on more.",
+                max_length=200,
+            ),
+        ] = None,
+        destination_type: Annotated[
+            str | None,
+            Field(
+                description="Optional destinationType, 'Kafka' or 'gRPC', sent along when "
+                "given (null or empty to omit); ignored by 7.2 (matches on the topic alone).",
+                max_length=10,
+            ),
+        ] = None,
+    ) -> str:
+        """Delete an external Kafka/gRPC subscription by topic name — the platform
+        stops publishing that data type to the destination's topic.
+
+        Write, destructive. Sends DELETE /crosswork/notification/v2/subscription
+        {"subscriptionList": [{"topicName": <topic>[, "destinationName",
+        "destinationType"]}]} (plain JSON service). VERIFIED LIVE (2026-09-15):
+        the platform matches on topicName ALONE — a body naming a wrong
+        destination name, type or data type still deleted the subscription of
+        that topic — so the topic is all that is required; the optional fields
+        are sent verbatim when given for builds that key on more. Success is
+        HTTP 200 {"result": "Delete Successful"} — ONLY that text confirms the
+        delete; a 2xx with any other body is reported as unconfirmed (this
+        platform rides application failures inside HTTP 200). An unknown topic
+        — including one already deleted — is HTTP 400 {"result": "Following
+        subscription(s) not found and could not be deleted :[<topic>]"} and is
+        reported as not found, so a repeat is harmless (the DELETE keeps the
+        client's idempotent auto-retry).
+
+        Args:
+            topic_name: the topic (key).
+            destination_name / destination_type: optional (null or empty to
+                omit), sent when given.
+
+        Returns:
+            str: "External subscription for topic '<topic>' deleted. Platform
+            said: Delete Successful". "Error: no external subscription for topic
+            '<topic>' (list with cnc_list_kafka_subscriptions)" when it does not
+            exist; "Error: the platform answered HTTP <n> to the delete of topic
+            '<topic>' but not the verified "Delete Successful" text: <body> ..."
+            for a 2xx without that text; other failures: "Error: <actionable
+            message>".
+        """
+        try:
+            topic = topic_name.strip()
+            if not topic:
+                raise PlatformError("topic_name must not be blank (e.g. 'cnc-alarms').")
+            entry: dict[str, Any] = {"topicName": topic}
+            if (destination_name or "").strip():
+                entry["destinationName"] = (destination_name or "").strip()
+            wire_type = canonical(destination_type, DESTINATION_TYPES, "destination_type")
+            if wire_type is not None:
+                entry["destinationType"] = wire_type
+            response = await client.request(
+                "DELETE",
+                KAFKA_SUBSCRIPTION_PATH,
+                json_body={"subscriptionList": [entry]},
+                headers=EMF_HEADERS,
+                raise_on_error=False,
+            )
+            result = external_result(_parse_json(response))
+            if not response.is_success:
+                if response.status_code == 400 and _EXT_NOT_FOUND_MARKER in result.lower():
+                    raise PlatformError(
+                        f"no external subscription for topic '{topic}' (list with "
+                        "cnc_list_kafka_subscriptions)"
+                    )
+                raise http_error(response)
+            if not result_is(result, EXTERNAL_DELETE_OK):
+                said = result or response.text.strip()[:200] or "(empty body)"
+                raise PlatformError(
+                    f"the platform answered HTTP {response.status_code} to the delete of topic "
+                    f"'{topic}' but not the verified \"{EXTERNAL_DELETE_OK}\" text: {said}. The "
+                    "delete is unconfirmed (this platform rides application failures inside "
+                    "HTTP 200); check with cnc_list_kafka_subscriptions before assuming it is "
+                    "gone."
+                )
+            return finalize(
+                f"External subscription for topic '{topic}' deleted. Platform said: {result}",
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_clear_notification_subscriptions_by_topic",
+        title="Clear Notification Subscriptions By Topic",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_clear_notification_subscriptions_by_topic(
+        topic: Annotated[
+            str,
+            Field(
+                description="Notification topic to clear: 'alarm' or 'inventory'.",
+                max_length=20,
+            ),
+        ],
+    ) -> str:
+        """Clear EVERY notification subscription of one topic (alarm or
+        inventory) in a single call — the webhook (connection-less)
+        subscriptions and, per the spec, the open WebSocket sessions of that
+        topic, across users.
+
+        Write, destructive, bulk: prefer cnc_delete_notification_subscription
+        for one subscription; use this only to sweep a topic (e.g. after a
+        consumer was decommissioned and left subscriptions behind). Sends POST
+        /crosswork/notification/restconf/data/v2/clear-by-topic/<topic> (EMF
+        base, no body). VERIFIED LIVE (2026-09-15): the answer is HTTP 200 with
+        the text "Clear successful" whether the topic had subscriptions (a
+        webhook subscription of topic inventory was gone from the admin list
+        afterwards), had none, or is not even a known topic — the operation
+        validates nothing and reports no count. So this tool (1) refuses a topic
+        other than alarm/inventory before sending, (2) lists every user's
+        subscriptions (notifications:subscription-admin, first page of 100)
+        BEFORE the clear and answers "nothing to clear" WITHOUT sending when
+        the topic has none, (3) lists again AFTER and reports what was removed
+        and what, if anything, of that topic still remains (reported as an
+        error, since the platform said success). Verified on the configured
+        user's own webhook subscription; that the sweep also covers other users'
+        subscriptions and WebSocket sessions follows the spec and was not
+        exercised. Only the "Clear successful" text confirms the clear.
+
+        Args:
+            topic: 'alarm' | 'inventory' (case-insensitive).
+
+        Returns:
+            str: "Cleared <n> notification subscription(s) of topic <topic>
+            (ids <id>, ...). Platform said: Clear successful" — the ids are the
+            subscription-ids the admin list showed before the clear, each with
+            its client URL and user; "No notification subscriptions of topic
+            <topic> to clear (every user's view); nothing sent." when there were
+            none (not an error). "Error: Unknown topic ..." (nothing sent);
+            "Error: the platform answered HTTP <n> to clear-by-topic/<topic> but
+            not the verified "Clear successful" text: <body> ..." for a 2xx
+            without that text; "Error: the platform said "Clear successful" for
+            topic <topic> but <k> subscription(s) of that topic remain: ..." when
+            the after-list still shows some; "Error: EMF RESTCONF rejected the
+            request (HTTP <n>): ..." for an rc.errors answer; other failures:
+            "Error: <actionable message>".
+        """
+        try:
+            wire_topic = canonical(topic, TOPICS, "topic")
+            if wire_topic is None:
+                raise PlatformError(f"topic must not be blank. Use one of: {', '.join(TOPICS)}.")
+
+            async def admin_page() -> tuple[list[dict[str, Any]], bool]:
+                response = await client.request(
+                    "GET",
+                    SUBSCRIPTION_ADMIN_PATH,
+                    headers=EMF_HEADERS,
+                    params=page_params(0, MAX_COUNT),
+                    raise_on_error=False,
+                )
+                subs, header = subscription_items(emf_body(response), SUBSCRIPTION_ADMIN_PATH)
+                envelope = page_envelope_from(subs, header, 0, MAX_COUNT)
+                return subscriptions_of_topic(subs, wire_topic), bool(envelope.get("has_more"))
+
+            before, more_before = await admin_page()
+            if not before:
+                note = (
+                    " (the admin view was a full page of 100 — the topic may have more beyond it)"
+                    if more_before
+                    else ""
+                )
+                return finalize(
+                    f"No notification subscriptions of topic {wire_topic} to clear (every "
+                    f"user's view){note}; nothing sent.",
+                    settings,
+                )
+            response = await client.request(
+                "POST",
+                f"{CLEAR_BY_TOPIC_PATH}/{wire_topic}",
+                headers=EMF_HEADERS,
+                raise_on_error=False,
+            )
+            if not response.is_success:
+                raise rejection(response)
+            if not clear_confirmed(response.text):
+                said = response.text.strip()[:200] or "(empty body)"
+                raise PlatformError(
+                    f"the platform answered HTTP {response.status_code} to "
+                    f'clear-by-topic/{wire_topic} but not the verified "{CLEAR_OK}" text: '
+                    f"{said}. The clear is unconfirmed (this platform rides application "
+                    "failures inside HTTP 200); check with cnc_list_notification_subscriptions "
+                    "all_users=True."
+                )
+            after, _ = await admin_page()
+            if after:
+                remaining = ", ".join(
+                    f"{field(s, 'subscription-id')} ({field(s, 'client-url') or '?'}, user "
+                    f"{field(s, 'subscribed-user') or '?'})"
+                    for s in after
+                )
+                raise PlatformError(
+                    f'the platform said "{response.text.strip()}" for topic {wire_topic} but '
+                    f"{len(after)} subscription(s) of that topic remain in the admin view: "
+                    f"{remaining}. Delete them singly with cnc_delete_notification_subscription."
+                )
+            cleared = ", ".join(
+                f"{field(s, 'subscription-id')} ({field(s, 'client-url') or '?'}, user "
+                f"{field(s, 'subscribed-user') or '?'})"
+                for s in before
+            )
+            more = (
+                " The admin view was a full page of 100 before the clear, so the count is a "
+                "lower bound."
+                if more_before
+                else ""
+            )
+            return finalize(
+                f"Cleared {len(before)} notification subscription(s) of topic {wire_topic} "
+                f"(ids {cleared}). Platform said: {response.text.strip()[:200]}{more}",
                 settings,
             )
         except Exception as e:

@@ -66,8 +66,49 @@ READ_TOOLS_REFUSED_BY_READ = {
 # The one write tool the Read tick permits: cw-probe-mgr's read template names
 # reactivateProbe.
 WRITE_TOOLS_PERMITTED_BY_READ = {"cnc_reactivate_probe"}
-READ_TOOL_COUNT = 182
-TOOL_COUNT = 245
+READ_TOOL_COUNT = 184
+TOOL_COUNT = 282
+READS_PERMITTED_BY_READ = 170  # READ_TOOL_COUNT minus the 14
+# The requests only WRITE tools send that the stored read-only role permits (what they
+# read before they write): GETs on rows the read tools use, and the one POST a read
+# template names — every one classed R (Phase D added the config-service and
+# PM-policy GETs to the two NSO plan GETs).
+READONLY_EXCEPTIONS = [
+    ("GET", "/crosswork/configsvc/v1/configs/files/{}", "cw-config-service-deprecated"),
+    ("GET", "/crosswork/configsvc/v1/configs/{}", "cw-config-service-deprecated"),
+    (
+        "GET",
+        "/crosswork/performance/v1/policies/inventory-devices",
+        "performance-policies-rest-apis",
+    ),
+    ("GET", "/crosswork/proxy/nso/restconf/data/{}-plan={}", "proxy_cw-proxy"),
+    ("GET", "/crosswork/proxy/nso/restconf/data/{}/{}-plan={}", "proxy_cw-proxy"),
+    ("POST", "/crosswork/probemgr/v1/reactivateProbe", "cw-probe-mgr"),
+]
+# The operator body (Phase D): its rows, the rows carrying DELETE (all Read+Write+Delete)
+# and the Write-only rows (no read tool uses the API).
+OPERATOR_ROW_COUNT = 49
+OPERATOR_DELETE_ROWS = [
+    "cw-config-service-deprecated",
+    "cw-grouping-service",
+    "cw-ztp-service",
+    "device-config",
+    "event-processing-service-suppressionpolicy-api",
+    "external-notification-subscription",
+    "inventory_cwinventory",
+    "nb-api-subscription-api-700",
+    "performance-policies-rest-apis",
+    "proxy_cw-proxy",
+]
+OPERATOR_WRITE_ONLY_ROWS = [
+    "cw-fault-ack-api",
+    "cw-fault-alarm-autoclear",
+    "cw-fault-alarm-autoclear-revert",
+    "cw-fault-clear-api",
+    "cw-fault-notes-api",
+    "nb-api-alarm-nt-3-700",
+    "nso-connector",
+]
 
 
 @pytest.fixture(scope="module")
@@ -377,7 +418,7 @@ def test_role_bodies_are_what_the_editor_submits(rbac, kind):
         assert ({"POST", "PUT", "PATCH"} <= set(methods)) or not (
             {"POST", "PUT", "PATCH"} & set(methods)
         )
-    assert len(role_obj["access_rights"]) == (42 if kind == "readonly" else 46)
+    assert len(role_obj["access_rights"]) == (42 if kind == "readonly" else OPERATOR_ROW_COUNT)
 
 
 def test_readonly_body_is_read_only_and_a_subset_of_the_operator_body(rbac):
@@ -392,18 +433,16 @@ def test_readonly_body_is_read_only_and_a_subset_of_the_operator_body(rbac):
     for grant in ro["access_rights"].values():
         for entry in grant["allowed_urls"]:
             assert entry["methods"] == ["GET"], grant["api_id"]
-    # the operator body: Write on 13 rows, Delete on 5, Write without Read on 4
-    assert sum("W" in t for t in op_ticks.values()) == 13
-    assert sum("D" in t for t in op_ticks.values()) == 5
-    assert sorted(a for a, t in op_ticks.items() if "R" not in t) == [
-        "cw-fault-ack-api",
-        "cw-fault-clear-api",
-        "cw-fault-notes-api",
-        "nso-connector",
-    ]
+    # the operator body: Write on 26 rows, Delete on 10 (every one of them Read+Write+
+    # Delete), Write without Read on 7
+    assert sum("W" in t for t in op_ticks.values()) == 26
+    assert sorted(a for a, t in op_ticks.items() if "D" in t) == OPERATOR_DELETE_ROWS
+    assert all(op_ticks[a] == {"R", "W", "D"} for a in OPERATOR_DELETE_ROWS)
+    assert sorted(a for a, t in op_ticks.items() if "R" not in t) == OPERATOR_WRITE_ONLY_ROWS
+    assert len(op_ticks) == OPERATOR_ROW_COUNT
 
 
-def test_stored_readonly_role_permits_168_reads_and_refuses_the_pinned_14(rbac):
+def test_stored_readonly_role_permits_170_reads_and_refuses_the_pinned_14(rbac):
     """The body as the AAA service stores it (R rows + the read templates + the baseline
     rows), evaluated by cnc_check_permissions' evaluator under Tyk's rule: exactly the
     pinned 14 read tools are refused (each through a POST outside its API's read
@@ -429,7 +468,7 @@ def test_stored_readonly_role_permits_168_reads_and_refuses_the_pinned_14(rbac):
     permitted_reads = set(verdict["permitted"]) & reads
     refused_reads = {r["tool"] for r in verdict["refused"]} & reads
     assert refused_reads == READ_TOOLS_REFUSED_BY_READ
-    assert len(permitted_reads) == 168 and len(refused_reads) == 14
+    assert len(permitted_reads) == READS_PERMITTED_BY_READ and len(refused_reads) == 14
     assert permitted_reads | refused_reads == reads and len(reads) == READ_TOOL_COUNT
     assert set(verdict["permitted"]) - reads == WRITE_TOOLS_PERMITTED_BY_READ
     # every refusal is a POST the Read tick does not name (never a missing row)
@@ -477,9 +516,77 @@ def test_stored_readonly_role_permits_168_reads_and_refuses_the_pinned_14(rbac):
     )
 
 
+def test_readonly_exceptions_are_the_read_legs_of_the_write_tools(rbac):
+    """The requests only write tools send that the stored read-only role permits: the
+    pinned GETs (Read is GET ``/.*`` on the rows the read tools use — the NSO plan of a
+    service being provisioned, the config file and PM-policy inventory reads) plus the
+    one POST a read template names; every one classed R, every non-GET one sent by
+    exactly the write tools the role permits, and each GET's senders refused (they also
+    send a write). A request only write tools send that the Read tick does not cover
+    stops the generator."""
+    exceptions = rbac_map.readonly_exceptions(
+        body("readonly"), rbac["tools"], rbac["platform"], rbac["apis"]
+    )
+    assert exceptions == READONLY_EXCEPTIONS
+    read_sent = requirements(rbac, read_only=True)
+    access_rights = stored(rbac, "readonly")
+    for method, path, api_id in exceptions:
+        assert (method, path, api_id) not in read_sent
+        assert (method, path, api_id) in requirements(rbac, read_only=False)
+        assert tyk_permits(access_rights, api_id, method, concrete(path))
+        assert rbac_map.classify(method, path, api_id, rbac["platform"]["read_templates"]) == "R"
+        assert method == "GET" or api_id in rbac["platform"]["read_templates"]
+    assert [e for e in exceptions if e[0] != "GET"] == [
+        ("POST", "/crosswork/probemgr/v1/reactivateProbe", "cw-probe-mgr")
+    ]
+    verdict = evaluate_rbac_map(sorted(rbac["tools"]), rbac, access_rights)
+    permitted = set(verdict["permitted"])
+
+    def senders(method: str, path: str, api_id: str) -> set[str]:
+        return {
+            name
+            for name, spec in rbac["tools"].items()
+            if not spec["read_only"]
+            and any(
+                r["path"] == path and r["api_id"] == api_id and r["method"] in (method, "*")
+                for r in spec["requirements"]
+            )
+        }
+
+    assert senders("POST", "/crosswork/probemgr/v1/reactivateProbe", "cw-probe-mgr") == (
+        WRITE_TOOLS_PERMITTED_BY_READ
+    )
+    get_senders = set().union(*(senders(*e) for e in exceptions if e[0] == "GET"))
+    assert len(get_senders) == 16 and not get_senders & permitted
+    assert "cnc_provision_service" in get_senders and "cnc_upload_ztp_config_file" not in (
+        get_senders
+    )
+    # a Write entry in the body: the permitted POST/PUT/PATCH only write tools send
+    leaky = json.loads(json.dumps(body("readonly")))
+    leaky["cnc-mcp-readonly"]["access_rights"]["cw-grouping-service"]["allowed_urls"] = [
+        {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
+    ]
+    with pytest.raises(SystemExit, match="does not cover: POST /crosswork/grouping/"):
+        rbac_map.readonly_exceptions(leaky, rbac["tools"], rbac["platform"], rbac["apis"])
+    # the guide's section 2 states them
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert (
+        "Read on these rows also permits what the write tools read before they write: 5 GET "
+        "request templates no read tool sends — `GET /crosswork/configsvc/v1/configs/files/{}` "
+        "and `GET /crosswork/configsvc/v1/configs/{}` on `cw-config-service-deprecated`; "
+        "`GET /crosswork/performance/v1/policies/inventory-devices` on "
+        "`performance-policies-rest-apis`; `GET /crosswork/proxy/nso/restconf/data/{}-plan={}` "
+        "and `GET /crosswork/proxy/nso/restconf/data/{}/{}-plan={}` on `proxy_cw-proxy` — sent "
+        "by 16 write tools, and the 1 POST a read template names — `POST "
+        "/crosswork/probemgr/v1/reactivateProbe` on `cw-probe-mgr` (`cnc_reactivate_probe`). "
+        "`cnc_reactivate_probe` is the one write tool whose every request the role permits "
+        "(section 6); every other write tool also sends a request it refuses."
+    ) in text
+
+
 def test_stored_operator_role_permits_every_tool(rbac):
     access_rights = stored(rbac, "operator")
-    assert len(access_rights) == 49
+    assert len(access_rights) == OPERATOR_ROW_COUNT + len(rbac_map.BASELINE_APIS) == 52
     names = sorted(rbac["tools"])
     verdict = evaluate_rbac_map(names, rbac, access_rights)
     assert set(verdict["permitted"]) == set(names) and len(names) == TOOL_COUNT
@@ -1147,22 +1254,24 @@ def test_fixture_is_sanitised_and_well_formed(name):
 
 @pytest.mark.parametrize("kind", ["readonly", "operator"])
 def test_stored_model_reproduces_the_generated_body_read_back(rbac, kind):
-    """The committed body, PUT through an admin API session and read back (2026-09-15):
-    ``stored_access_rights`` reproduces every stored row entry for entry, in stored
-    order — the read-only body's 42 Read rows with their templates (45 rows with the
-    baseline three); the operator body's 46 rows, its union entries verbatim except the
-    three Write-without-Delete rows on the verified POST-delete APIs, which came back
-    split (the other methods alphabetical on ``/.*``, POST under the not-delete
-    pattern). The role fields are the editor's plus what the service adds; ``versions``
-    is ``[]`` on every submitted row and ``["Default"]`` on the baseline rows;
-    ``api_name`` is what the body submitted (the v1 catalogue's HTML-escaped name)."""
+    """The committed body, PUT through an admin API session and read back (2026-09-15,
+    the Phase D generation): ``stored_access_rights`` reproduces every stored row entry
+    for entry, in stored order — the read-only body's 42 Read rows with their templates
+    (45 rows with the baseline three); the operator body's 49 rows, its union entries
+    verbatim except the three Write-without-Delete rows on the verified POST-delete
+    APIs, which came back split (the other methods alphabetical on ``/.*``, POST under
+    the not-delete pattern) — the Read+Write+Delete row on the POST-delete API
+    ``cw-ztp-service`` came back verbatim, no split. The role fields are the editor's
+    plus what the service adds; ``versions`` is ``[]`` on every submitted row and
+    ``["Default"]`` on the baseline rows; ``api_name`` is what the body submitted (the
+    v1 catalogue's HTML-escaped name)."""
     data = fixture(GENERATED_FIXTURES[kind])
     body_obj = body(kind)
     stored_rows = rbac_map.stored_access_rights(body_obj, rbac["platform"], rbac["apis"])
     assert {a: g["allowed_urls"] for a, g in stored_rows.items()} == data["stored"]
     assert modelled_rows(body_obj, rbac) == normalised(data["stored"])
     assert set(data["stored"]) - set(role(kind)["access_rights"]) == set(rbac_map.BASELINE_APIS)
-    assert len(data["stored"]) == (45 if kind == "readonly" else 49)
+    assert len(data["stored"]) == (45 if kind == "readonly" else OPERATOR_ROW_COUNT + 3)
     assert data["role_fields"] == {
         "name": f"cnc-mcp-{kind}",
         **rbac_map.ROLE_SKELETON,
@@ -1205,23 +1314,27 @@ def test_stored_model_reproduces_the_generated_body_read_back(rbac, kind):
         {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH"]}
     ]
     delete_rows = sorted(a for a, t in op_ticks.items() if "D" in t)
-    assert delete_rows == [
-        "device-config",
-        "event-processing-service-suppressionpolicy-api",
-        "inventory_cwinventory",
-        "nb-api-subscription-api-700",
-        "proxy_cw-proxy",
-    ]
+    assert delete_rows == OPERATOR_DELETE_ROWS
     for api_id in delete_rows:
         assert data["stored"][api_id] == [
             {"url": "/.*", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]}
         ]
-    for api_id in ("cw-fault-ack-api", "cw-fault-clear-api", "cw-fault-notes-api", "nso-connector"):
+    for api_id in OPERATOR_WRITE_ONLY_ROWS:
         assert data["stored"][api_id] == [{"url": "/.*", "methods": ["POST", "PUT", "PATCH"]}]
-    # none of the verbatim rows is on the POST-delete list, and no Write-without-Delete
-    # row on that list escaped the split
+    # of the verbatim rows only cw-ztp-service is on the POST-delete list — a single
+    # entry carrying DELETE, read back VERBATIM (the split is for Write without Delete);
+    # no Write-only row is on the list, and no Write-without-Delete row on it escaped
+    # the split
     post_delete = set(rbac["platform"]["post_delete_apis"])
-    assert not (set(delete_rows) | {a for a, t in op_ticks.items() if "R" not in t}) & post_delete
+    assert set(delete_rows) & post_delete == set(rbac_map.DELETE_ROW_VERBATIM_VERIFIED)
+    assert rbac_map.DELETE_ROW_VERBATIM_VERIFIED == ("cw-ztp-service",)
+    assert "cw-ztp-service" in rbac_map.POST_DELETE_INFERRED and "cw-ztp-service" in verbatim
+    assert not rbac_map.is_split_row(
+        "cw-ztp-service",
+        role(kind)["access_rights"]["cw-ztp-service"]["allowed_urls"],
+        rbac["platform"],
+    )
+    assert not {a for a, t in op_ticks.items() if "R" not in t} & post_delete
     assert {a for a, t in op_ticks.items() if t == {"R", "W"}} & post_delete == set(split_rows)
 
 
@@ -1336,38 +1449,61 @@ def test_stored_model_reproduces_the_all_read_experiment(rbac):
 
 
 def test_stored_model_reproduces_the_read_write_delete_experiment(rbac):
-    """(b) A body with ``/.*`` entries per tick — R on every row, W on 21, D on 5 (the
-    earlier generation's operator classification, a superset of the operator body's 13 W
-    rows): a row with a POST entry received no template, a GET-only row did, the baseline
-    rows were added."""
+    """(b) A body with ``/.*`` entries per tick — the 47 rows of the operator body of
+    2026-09-14, R on every one, W on 21, D on 5 (that generation's classification,
+    before the template capture): reproduced from the fixture's OWN submitted rows — a
+    row with a POST entry received no template, a GET-only row did, the baseline rows
+    were added. Those 47 rows are all still rows of the bodies (the operator body has
+    since gained rows and ticks — Phase D — and lost the Write the template capture
+    reclassified as Read; neither direction of tick inclusion holds, and neither is
+    what the fixture pins)."""
     data = fixture("stored_operator_WD_experiment")
     ticks = data["submitted"]["ticks"]
     assert len(ticks) == 47 and all("R" in letters for letters in ticks.values())
     assert sum("W" in letters for letters in ticks.values()) == 21
     assert sum("D" in letters for letters in ticks.values()) == 5
     assert modelled_rows(ui_shaped_body("x", ticks, rbac), rbac) == normalised(data["stored"])
+    assert set(data["stored"]) - set(ticks) == set(rbac_map.BASELINE_APIS) - {"aaa_cw_role_read"}
     for api_id, letters in ticks.items():
         entries = data["stored"][api_id]
+        # the submitted per-tick entries came back first, verbatim and in tick order
+        submitted = [
+            {"url": "/.*", "methods": list(rbac_map.TICK_METHODS[tick])}
+            for tick in rbac_map.TICKS
+            if tick in letters
+        ]
+        assert entries[: len(submitted)] == submitted, api_id
         if "W" in letters:
-            assert all(entry["url"] == "/.*" for entry in entries), api_id  # no template
-        elif api_id in rbac["platform"]["read_templates"]:
-            assert any(entry["url"] != "/.*" for entry in entries), api_id
-    # the operator body's rows and ticks are within what was submitted
-    op_ticks = rbac_map.body_ticks(body("operator"))
-    assert set(op_ticks) | {"aaa_cw_role_read"} == set(ticks), (
-        "the operator body's rows changed since the capture: re-capture and refresh the fixture"
-    )
-    for api_id, tick_set in op_ticks.items():
-        assert tick_set <= set(ticks[api_id]), api_id
+            assert entries == submitted, api_id  # no template beside a POST entry
+        else:  # a GET-only row: its template (aaa_cw_role_read's is its baseline one)
+            assert entries[1:] == rbac["platform"]["read_templates"].get(api_id, []), api_id
+    # the experiment's rows are the read-only body's, the baseline row aaa_cw_role_read
+    # and the write-only rows of that day — every one still a row of a body
+    op_rows = set(role("operator")["access_rights"])
+    assert set(role("readonly")["access_rights"]) < set(ticks) <= op_rows | {"aaa_cw_role_read"}
+    assert sorted(set(ticks) - set(role("readonly")["access_rights"])) == [
+        "aaa_cw_role_read",
+        "cw-fault-ack-api",
+        "cw-fault-clear-api",
+        "cw-fault-notes-api",
+        "nso-connector",
+    ]
+    assert sorted(op_rows - set(ticks)) == [
+        "cw-fault-alarm-autoclear",
+        "cw-fault-alarm-autoclear-revert",
+        "nb-api-alarm-nt-3-700",
+    ]
 
 
 def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rbac):
     """The pinned verdicts hold against the rows the service actually stored, not only
     against the generator's model of them: the all-Read read-back refuses the 14 and
-    permits cnc_reactivate_probe; the R/W/D read-back permits every tool; the UI-built
-    role (three alarm rows) permits only the alarm-settings reads and the suppression-
-    policy writes, and lets cnc_check_permissions read the role through the baseline
-    mirror row it never asked for."""
+    permits cnc_reactivate_probe; the R/W/D read-back of 2026-09-14 permits every tool
+    of that generation — 254 of the 282, the other 28 being Phase D write tools needing
+    a row or tick it did not submit — exactly the model's verdict on its submitted
+    rows; the UI-built role (three alarm rows) permits only the alarm-settings reads
+    and the suppression-policy writes, and lets cnc_check_permissions read the role
+    through the baseline mirror row it never asked for."""
     names = sorted(rbac["tools"])
     reads = {name for name in names if rbac["tools"][name]["read_only"]}
     verdict = evaluate_rbac_map(
@@ -1375,13 +1511,29 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
     )
     assert verdict["not_in_map"] == []
     assert {r["tool"] for r in verdict["refused"]} & reads == READ_TOOLS_REFUSED_BY_READ
-    assert len(set(verdict["permitted"]) & reads) == 168
+    assert len(set(verdict["permitted"]) & reads) == READS_PERMITTED_BY_READ
     assert set(verdict["permitted"]) - reads == WRITE_TOOLS_PERMITTED_BY_READ
-    verdict = evaluate_rbac_map(
-        names, rbac, fixture_access_rights(fixture("stored_operator_WD_experiment"))
+    data = fixture("stored_operator_WD_experiment")
+    verdict = evaluate_rbac_map(names, rbac, fixture_access_rights(data))
+    assert verdict["not_in_map"] == [] and len(names) == TOOL_COUNT
+    assert len(verdict["permitted"]) == 254 and len(verdict["refused"]) == 28
+    assert reads <= set(verdict["permitted"])
+    experiment = data["submitted"]["ticks"]
+    for entry in verdict["refused"]:
+        assert not rbac["tools"][entry["tool"]]["read_only"], entry["tool"]
+        for row in entry["missing"]:  # a tick, or a row, the experiment did not submit
+            tick = rbac_map.classify(
+                row["method"], row["path"], row["api_id"], rbac["platform"]["read_templates"]
+            )
+            assert tick not in experiment.get(row["api_id"], ""), (entry["tool"], row)
+    model = evaluate_rbac_map(
+        names,
+        rbac,
+        rbac_map.stored_access_rights(
+            ui_shaped_body("x", experiment, rbac), rbac["platform"], rbac["apis"]
+        ),
     )
-    assert set(verdict["permitted"]) == set(names) and len(names) == TOOL_COUNT
-    assert verdict["refused"] == [] and verdict["not_in_map"] == []
+    assert rbac_map.verdict_drift(model, verdict) == []
     verdict = evaluate_rbac_map(names, rbac, fixture_access_rights(fixture(UI_FIXTURE)))
     permitted = set(verdict["permitted"])
     assert "cnc_check_permissions" in permitted
@@ -1398,9 +1550,9 @@ def test_every_tool_evaluated_against_the_read_backs_gives_the_pinned_numbers(rb
 
 def test_generated_bodies_read_back_give_the_model_verdict_for_every_tool(rbac):
     """The read-backs of the committed bodies, evaluated by cnc_check_permissions'
-    evaluator on the rows the service actually stored: the read-only role permits 168 of
-    the 182 read tools and refuses the pinned 14 (plus cnc_reactivate_probe permitted),
-    the operator role permits all 245 — the same verdict, tool for tool, as the model's
+    evaluator on the rows the service actually stored: the read-only role permits 170 of
+    the 184 read tools and refuses the pinned 14 (plus cnc_reactivate_probe permitted),
+    the operator role permits all 282 — the same verdict, tool for tool, as the model's
     stored form of each body (the split rows permit every request the tools send on
     the POST-delete APIs). ``read_back_verdict`` / ``verdict_drift`` are what the
     generator uses to say so in section 6."""
@@ -1410,7 +1562,7 @@ def test_generated_bodies_read_back_give_the_model_verdict_for_every_tool(rbac):
     assert data == fixture(GENERATED_FIXTURES["readonly"])
     assert verdict["not_in_map"] == []
     assert {r["tool"] for r in verdict["refused"]} & reads == READ_TOOLS_REFUSED_BY_READ
-    assert len(set(verdict["permitted"]) & reads) == 168
+    assert len(set(verdict["permitted"]) & reads) == READS_PERMITTED_BY_READ
     assert set(verdict["permitted"]) - reads == WRITE_TOOLS_PERMITTED_BY_READ
     model = evaluate_rbac_map(names, rbac, stored(rbac, "readonly"))
     assert rbac_map.verdict_drift(model, verdict) == []
@@ -1490,9 +1642,21 @@ def test_render_doc_and_generate_report_a_read_back_of_a_previous_body(rbac, tmp
         "refresh the fixture"
     ]
     # rows that differ from the committed body's stored form WITHOUT changing the verdict
-    # (a Write entry where the tools need GET only, and a template-less row): the verdict
-    # comparison alone would pass this as the body as committed
-    changed = {"cw-fault-ack-api": "operator", "cw-grouping-service": "readonly"}
+    # (a Write entry on a read-only row where no tool needs Write — a template-less one,
+    # so the entry is the whole row — and on an operator row that is Write-only already):
+    # the verdict comparison alone would pass this as the body as committed
+    needed = rbac_map.ticks_for(rbac["tools"].values(), rbac["platform"]["read_templates"])
+    template_free_read_rows = sorted(
+        api_id
+        for api_id, ticks in needed.items()
+        if ticks == {"R"}
+        and api_id in role("readonly")["access_rights"]
+        and api_id not in rbac["platform"]["read_templates"]
+    )
+    assert "cw-grouping-service" not in template_free_read_rows  # Phase D: writes need W
+    read_row = template_free_read_rows[0]
+    assert read_row == "aaa_cwaaa"
+    changed = {"cw-fault-ack-api": "operator", read_row: "readonly"}
 
     def change_rows(name: str, data: dict) -> None:
         for api_id, kind in changed.items():
@@ -1512,7 +1676,7 @@ def test_render_doc_and_generate_report_a_read_back_of_a_previous_body(rbac, tmp
     text = rbac_map.render_doc(rbac, rbac["apis"], body("readonly"), body("operator"), tmp_path)
     assert "are of a PREVIOUS body" in text
     assert (
-        "under `cnc-mcp-readonly` its stored rows differ on 1 row(s) (`cw-grouping-service`); "
+        f"under `cnc-mcp-readonly` its stored rows differ on 1 row(s) (`{read_row}`); "
         "under `cnc-mcp-operator` its stored rows differ on 1 row(s) (`cw-fault-ack-api`)"
     ) in text
     assert "its verdict differs" not in text
@@ -1522,12 +1686,20 @@ def test_render_doc_and_generate_report_a_read_back_of_a_previous_body(rbac, tmp
     )
     assert warnings == [
         "tests/fixtures/rbac/stored_generated_readonly.json is a read-back of a previous "
-        "cnc-mcp-readonly body: its stored rows differ on 1 row(s) (cw-grouping-service) — "
+        f"cnc-mcp-readonly body: its stored rows differ on 1 row(s) ({read_row}) — "
         "re-PUT the body, read it back and refresh the fixture",
         "tests/fixtures/rbac/stored_generated_operator.json is a read-back of a previous "
         "cnc-mcp-operator body: its stored rows differ on 1 row(s) (cw-fault-ack-api) — "
         "re-PUT the body, read it back and refresh the fixture",
     ]
+    # the Phase D counter-example: Write on cw-grouping-service in the read-only
+    # read-back permits the two grouping writes that need RW only, so the verdict differs
+    changed = {"cw-grouping-service": "readonly"}
+    write_generated_fixtures(fixture_dir, change_rows)
+    data, verdict = rbac_map.read_back_verdict(rbac_map.READONLY_ROLE, rbac, tmp_path)
+    assert rbac_map.verdict_drift(
+        rbac_map.evaluate_body(body("readonly"), rbac, rbac["apis"]), verdict
+    ) == ["cnc_move_group_members", "cnc_set_device_group_members"]
 
     # the order of a row's entries is part of the comparison (the service's stored order)
     def swap_entries(name: str, data: dict) -> None:
@@ -1586,7 +1758,8 @@ def test_refused_read_rows_stops_when_evaluation_and_classification_disagree(rba
 def test_doc_names_the_refused_tools_and_the_permitted_write(rbac):
     text = DOC_PATH.read_text(encoding="utf-8")
     assert "### The 14 read tools a Read-only role cannot call" in text
-    assert "permits 168 of the 182 read tools" in text
+    assert f"permits {READS_PERMITTED_BY_READ} of the {READ_TOOL_COUNT} read tools" in text
+    assert "permits 170 of the 184 read tools" in text
     for name in READ_TOOLS_REFUSED_BY_READ:
         assert f"  - `{name}`: `POST /crosswork/" in text, name
     assert "CNC_MCP_DISABLED_TOOLS=" + ",".join(sorted(READ_TOOLS_REFUSED_BY_READ)) in text
@@ -1662,23 +1835,40 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
         "`cw-fault-alarm-autoclear`, `cw-fault-alarm-autoclear-revert` as GET-only rows, "
         "template-free"
     ) in text
-    # the smoke ran on the previous generation of the bodies, the committed bodies were
-    # read back and give the same verdict: said in both places (section 1 and 6)
-    assert (
-        text.count(
-            "the smoke runs were on the previous generation of the bodies, which differed only in"
-        )
-        == 2
+    # the smoke ran on the previous generation of the bodies — for the 245 tools of that
+    # day; the 37 Phase D tools were not exercised by it and the read-only verdict it
+    # confirmed still holds tool for tool — and the committed bodies were read back and
+    # give the same verdict: said in both places (section 1 and 6), computed from the
+    # generator's SMOKE_* constants and the map, never hard-coded
+    assert (rbac_map.SMOKE_TOOL_COUNT, rbac_map.SMOKE_READ_TOOL_COUNT) == (245, 182)
+    assert set(rbac_map.SMOKE_REFUSED_READS) == READ_TOOLS_REFUSED_BY_READ
+    assert set(rbac_map.SMOKE_PERMITTED_WRITES) == WRITE_TOOLS_PERMITTED_BY_READ
+    smoke_clause = (
+        "the smoke runs were on the previous generation of the bodies — those of the 245 "
+        "tools registered on 2026-09-15 (182 read) — which differed from the generated bodies "
+        "of those tools only in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the "
+        "paths the tools send then, `/.*` now; `aaa_cw_role_read` in the body then, left to "
+        "the baseline row now — `versions` and the `rate` field; the bodies as committed now "
+        f"also carry what the {TOOL_COUNT - 245} tools added since ({READ_TOOL_COUNT - 182} "
+        f"read, {TOOL_COUNT - READ_TOOL_COUNT - 63} write) need — rows and ticks that smoke "
+        "did not exercise — and the refusal predictions for the tools of that day are "
+        "identical (the same 14 read tools refused under `cnc-mcp-readonly`, "
+        "`cnc_reactivate_probe` permitted, every tool permitted under `cnc-mcp-operator`); "
     )
+    assert "37 tools added since (2 read, 35 write)" in smoke_clause
+    assert text.count(smoke_clause) == 2
+    assert "which differed only in the two AAA rows" not in text
+    assert "now but not then" not in text  # the verdict of that day holds tool for tool
     read_back_clause = (
         "the bodies as committed were stored through the API and read back (2026-09-15: "
         "`tests/fixtures/rbac/stored_generated_readonly.json`, "
         "`tests/fixtures/rbac/stored_generated_operator.json`); evaluated on the stored form "
-        "they give the same verdict for every tool as the model — `cnc-mcp-readonly`: 168 of "
-        "the 182 read tools permitted, 14 refused, 1 write tool permitted "
-        "(`cnc_reactivate_probe`); `cnc-mcp-operator`: 245 of 245 permitted"
+        "they give the same verdict for every tool as the model — `cnc-mcp-readonly`: "
+        f"{READS_PERMITTED_BY_READ} of the {READ_TOOL_COUNT} read tools permitted, 14 refused, "
+        f"1 write tool permitted (`cnc_reactivate_probe`); `cnc-mcp-operator`: {TOOL_COUNT} of "
+        f"{TOOL_COUNT} permitted"
     )
-    assert text.count(read_back_clause) == 2
+    assert text.count(smoke_clause + read_back_clause) == 2
     assert "have not been stored in their current shape" not in text
     assert "the two generated bodies as committed stored through the API and read back" in text
     # the split rule: the pattern quoted, what it means, the three verified APIs, the
@@ -1718,10 +1908,16 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
     ) in split_bullet
     assert "came back as this same pattern" not in text
     assert "the split there is the model's extrapolation, not a read-back" in split_bullet
+    # Phase D: cw-ztp-service carries Read+Write+Delete on a POST-delete API and was read
+    # back verbatim — the split is for Write without Delete only
     assert (
-        "so were the operator body's 5 rows carrying DELETE and its 4 Write-only rows "
-        "(`[POST, PUT, PATCH]`) — none of them on this list"
+        f"so were the operator body's {len(OPERATOR_DELETE_ROWS)} rows carrying DELETE and its "
+        f"{len(OPERATOR_WRITE_ONLY_ROWS)} Write-only rows (`[POST, PUT, PATCH]`) — including "
+        "`cw-ztp-service` on this list: a single entry carrying DELETE is stored verbatim, the "
+        "split applies only to Write without Delete (read back 2026-09-15)"
     ) in split_bullet
+    assert "10 rows carrying DELETE and its 7 Write-only rows" in split_bullet
+    assert "none of them on this list" not in text
     # the two-entry observation of the same submission — what the single-entry condition
     # of the split keys on
     assert (
@@ -1791,9 +1987,11 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
     ) in text
     assert (
         "Extrapolated, not read back: the same split on the 7 other POST-delete APIs (from a "
-        "POST-only experiment), and what the service stores for a row carrying DELETE, or a "
-        "Write-only row, on any of them (the bodies have none)"
+        "POST-only experiment), and what the service stores for a Write-only row on any of "
+        "them, or a row carrying DELETE on one other than `cw-ztp-service` (the bodies have "
+        "none)"
     ) in text
+    assert "what the service stores for a row carrying DELETE, or a Write-only row" not in text
     assert "Extrapolated from the per-row rule" not in text
     assert "**By editor row** (tick Read on each):" in text
     assert "| feature | editor row | api_ids the read tools use | sibling api_ids" in text
@@ -1819,19 +2017,23 @@ def test_doc_states_the_verified_editor_facts_and_none_of_the_removed_wording(rb
         "`tests/fixtures/rbac/stored_generated_readonly.json`, "
         "`tests/fixtures/rbac/stored_generated_operator.json` — the model reproduces every "
         "stored row entry for entry: the read-only body's 42 Read rows with their templates; "
-        "the operator body's union entries, `[GET, POST, PUT, PATCH]` on 4 rows and all five "
-        "methods on 5, verbatim except the 3 split rows section 1 describes — `cwcollection`, "
+        "the operator body's union entries, `[GET, POST, PUT, PATCH]` on 9 rows and all five "
+        "methods on 10, verbatim except the 3 split rows section 1 describes — `cwcollection`, "
         "`optima_restconf`, `platform_cwplatform` — where POST came back under the "
         "not-delete pattern; plus the three baseline rows on each)"
     ) in text
+    op_ticks = rbac_map.body_ticks(body("operator"))
+    assert sum(t == {"R", "W"} for t in op_ticks.values()) == 9
+    assert sum(t == {"R", "W", "D"} for t in op_ticks.values()) == 10 == len(OPERATOR_DELETE_ROWS)
     assert "have not been read back" not in text
     assert "follow from the per-row rule" not in text
     assert "**an API-loaded role is managed through the API only**" in text
     assert "a Save rebuilds every group from the editor's model" in text
     assert (
-        "`cnc-mcp-operator.role.json` carries 46 rows: 13 with Write, 5 with Delete, 4 Write-only"
-        in text
-    )
+        f"`cnc-mcp-operator.role.json` carries {OPERATOR_ROW_COUNT} rows: 26 with Write, "
+        f"{len(OPERATOR_DELETE_ROWS)} with Delete, {len(OPERATOR_WRITE_ONLY_ROWS)} Write-only"
+    ) in text
+    assert "carries 49 rows: 26 with Write, 10 with Delete, 7 Write-only" in text
     # none of the removed wording — in the guide, the README and SECURITY.md alike
     # (SECURITY.md kept the superseded AAA-row paragraph once); the CHANGELOG describes
     # what changed, so it is checked for the claims no fixture supports only

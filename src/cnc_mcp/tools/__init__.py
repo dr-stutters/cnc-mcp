@@ -76,7 +76,7 @@ ALL_MODULES = [
 ]
 
 # How many close matches an unknown DISABLED_TOOLS name is answered with: the full
-# tool list (245 names, ~6.5 KB) is unreadable in a one-line startup error.
+# tool list (hundreds of names, several KB) is unreadable in a one-line startup error.
 CLOSE_TOOL_NAMES = 5
 FULL_TOOL_LIST_HINT = "run `uv run python scripts/mcp_cli.py list` for the full tool list"
 

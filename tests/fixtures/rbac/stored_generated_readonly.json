@@ -1,6 +1,6 @@
 {
  "captured": "2026-09-15",
- "how": "CNC 7.2.0 lab, admin API session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the inner object of docs/rbac/cnc-mcp-readonly.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back; 'versions' and 'role_fields' the other fields the service stored. Refresh whenever the body changes (re-PUT, read back, sanitise).",
+ "how": "CNC 7.2.0 lab, admin API session: PUT /crosswork/aaa/v1/role/cnc-mcp-readonly with the inner object of docs/rbac/cnc-mcp-readonly.role.json as committed (204), then GET /crosswork/aaa/v1/role/cnc-mcp-readonly (200). 'stored' keeps, per api_id, url and methods of every allowed_urls entry in the order read back; 'versions' and 'role_fields' the other fields the service stored. Refresh whenever the body changes (re-PUT, read back, sanitise). This capture is the Phase D generation (grouping, PM policy, ZTP, external-subscription and alarm-settings writes added): the operator body's cw-ztp-service row carries Read+Write+Delete on a POST-delete API and came back verbatim (no split).",
  "role_fields": {
   "name": "cnc-mcp-readonly",
   "org_id": "1",

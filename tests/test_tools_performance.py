@@ -2916,3 +2916,1077 @@ async def test_get_interface_delay_refuses_a_host_name_and_reports_api_errors(ma
         {**args, "device_uuid": PE1_UUID},
     )
     assert text.startswith("Error: API request failed with status 500.")
+
+
+# --- policy and retention writes (verified live 2026-09-15) ------------------
+
+from cnc_mcp.tools.performance import (  # noqa: E402
+    check_operation_results,
+    devices_status_text,
+    find_retention_table,
+    find_template,
+    operation_results,
+    paged_total,
+    parse_policy_ids,
+    parse_schemas_interval,
+    parse_uuid_list,
+    policy_body,
+    policy_devices_settled,
+    retention_body,
+    same_selection,
+)
+
+WRITE_TOOLS_HERE = {
+    "cnc_create_performance_policy",
+    "cnc_update_performance_policy",
+    "cnc_activate_performance_policy",
+    "cnc_deactivate_performance_policy",
+    "cnc_delete_performance_policy",
+    "cnc_update_performance_retention",
+    "cnc_reset_performance_retention",
+}
+ACTIVATE_URL = f"{PERF}/policies/activate"
+DEACTIVATE_URL = f"{PERF}/policies/deactivate"
+INVENTORY_DEVICES_URL = f"{PERF}/policies/inventory-devices"
+RETENTION_URL = f"{PERF}/dataretention"
+RETENTION_RESET_URL = f"{PERF}/dataretention/reset"
+# Live 2026-09-15: the INTERFACE template's allowed cadences on 7.2 (default 900).
+LIVE_INTERFACE_TEMPLATE = {
+    **INTERFACE_TEMPLATE,
+    "schemasInterval": {
+        "CEPMCRC": {"defaultInterval": 0, "pollingIntervals": [0, 300, 600, 900, 1800, 3600]},
+        "CEPMINTERFACE": {
+            "defaultInterval": 900,
+            "pollingIntervals": [0, 300, 600, 900, 1800, 3600],
+        },
+    },
+}
+LIVE_TEMPLATES = {**TEMPLATES, "INTERFACE": LIVE_INTERFACE_TEMPLATE}
+# The policy the scout created (id 3), verbatim shape; created INACTIVE with active omitted.
+PHASE_D_POLICY = {
+    "id": 3,
+    "policyTemplate": "INTERFACE",
+    "name": "phase-d-pm",
+    "description": "phase-d scout: PE1 only, 3600 s",
+    "schemasInterval": {"CEPMINTERFACE": 3600, "CEPMCRC": 0},
+    "devices": PE1_UUID,
+    "deviceGroups": "",
+    "portGroups": "",
+    "tag": "",
+    "thresholds": {},
+    "active": False,
+    "creationTimestamp": 1789483081382,
+    "lastChangedTimestamp": 1789483081382,
+}
+PHASE_D_DTO = {
+    "monitoringPolicy": PHASE_D_POLICY,
+    "monitoringPolicyTemplate": LIVE_INTERFACE_TEMPLATE,
+    "policyCollectionStatus": "OK",
+}
+PHASE_D_ACTIVE_DTO = {
+    **PHASE_D_DTO,
+    "monitoringPolicy": {**PHASE_D_POLICY, "active": True},
+    "policyCollectionStatus": "PARTIAL",
+}
+POLICY_EXISTS = envelope(
+    "POLICY_EXITS",
+    "There is already an existing policy with the same name",
+    "phase-d-pm (INTERFACE)",
+)
+MISSING_DEVICES = envelope(
+    "MISSING_DEVICES",
+    "The policy must be created with either device IPs, device groups OR port groups selected",
+    "phase-d-pm (INTERFACE)",
+)
+INVENTORY_PE1 = {"data": [{**DEVICE_PE1, "selected": False}], "total_count": 1}
+# The device rows of a freshly activated policy: IN_PROGRESS at t+0, ACTIVE at t+5 s.
+DEVICES_IN_PROGRESS = {
+    "data": [
+        {
+            **DEVICE_PE1,
+            "collectionStatus": "NOTPOLLING",
+            "comments": [{"type": "IN_PROGRESS", "argument": None}],
+        }
+    ],
+    "total_count": 1,
+}
+DEVICES_ACTIVE = {"data": [DEVICE_PE1], "total_count": 1}
+RETENTION_ALL_LIVE = {
+    "CEPM_INTERFACE": {
+        "rawDataRetentionPeriod": 24,
+        "hourlyDataRetentionPeriod": 168,
+        "dailyDataRetentionPeriod": 744,
+        "weeklyDataRetentionPeriod": 9072,
+        "policyType": "INTERFACE",
+        "schemaName": "CEPMINTERFACE",
+        "hasAggrOption": True,
+    },
+    "CEPM_PTP": {
+        "rawDataRetentionPeriod": 24,
+        "hourlyDataRetentionPeriod": 0,
+        "dailyDataRetentionPeriod": 0,
+        "weeklyDataRetentionPeriod": 0,
+        "policyType": "PTP",
+        "schemaName": "CEPMPTP",
+        "hasAggrOption": False,
+    },
+}
+INTERFACE_PERIODS = {
+    "rawDataRetentionPeriod": 24,
+    "hourlyDataRetentionPeriod": 168,
+    "dailyDataRetentionPeriod": 744,
+    "weeklyDataRetentionPeriod": 9072,
+}
+
+
+def put(url: str, body: object, status: int = 200) -> respx.Route:
+    return respx.put(url).mock(return_value=httpx.Response(status, json=body))
+
+
+def delete(url: str, body: object, status: int = 200) -> respx.Route:
+    return respx.delete(url).mock(return_value=httpx.Response(status, json=body))
+
+
+def writes(make_settings) -> MCPServer:
+    return build(make_settings(enable_writes=True, max_retries=0))
+
+
+async def test_write_tools_need_enable_writes_and_carry_annotations(make_settings):
+    hidden = {t.name for t in await build(make_settings(enable_writes=False)).list_tools()}
+    assert not (WRITE_TOOLS_HERE & hidden)
+    tools = {t.name: t for t in await writes(make_settings).list_tools()}
+    assert WRITE_TOOLS_HERE <= set(tools)
+    for name in WRITE_TOOLS_HERE:
+        assert tools[name].annotations.read_only_hint is False, name
+        assert tools[name].description.strip(), name
+    assert tools["cnc_delete_performance_policy"].annotations.destructive_hint is True
+    assert tools["cnc_reset_performance_retention"].annotations.destructive_hint is True
+    # An overwrite whose shortened period purges samples irreversibly: destructive too.
+    assert tools["cnc_update_performance_retention"].annotations.destructive_hint is True
+    assert tools["cnc_create_performance_policy"].annotations.idempotent_hint is False
+    for name in WRITE_TOOLS_HERE - {"cnc_create_performance_policy"}:
+        assert tools[name].annotations.idempotent_hint is True, name
+    # Flat arguments, no wrapping model.
+    for name in WRITE_TOOLS_HERE:
+        assert "$ref" not in json.dumps(tools[name].input_schema), name
+
+
+def test_parse_policy_ids_is_the_comma_list_of_the_path_segment():
+    assert parse_policy_ids("3") == [3]
+    assert parse_policy_ids(" 3, 5,3 ") == [3, 5]
+    for bad in ("", "abc", "3;5", "0", "-1", "3,x"):
+        with pytest.raises(PlatformError, match="Nothing was sent"):
+            parse_policy_ids(bad)
+
+
+def test_find_template_is_case_insensitive_and_keeps_the_canonical_key():
+    assert find_template(LIVE_TEMPLATES, "interface")[0] == "INTERFACE"
+    assert find_template(LIVE_TEMPLATES, "DEVICEHEALTH")[0] == "deviceHealth"
+    with pytest.raises(PlatformError, match="unknown policy template 'BOGUS'.*INTERFACE"):
+        find_template(LIVE_TEMPLATES, "BOGUS")
+    with pytest.raises(PlatformError, match="unknown policy template"):
+        find_template({}, "")
+
+
+def test_parse_schemas_interval_validates_what_the_platform_does_not():
+    key, template = find_template(LIVE_TEMPLATES, "INTERFACE")
+    # Explicit pairs (case-insensitive schema, '=' or ':'), unnamed schemas -> 0.
+    assert parse_schemas_interval("cepminterface=3600", key, template) == {
+        "CEPMCRC": 0,
+        "CEPMINTERFACE": 3600,
+    }
+    assert parse_schemas_interval("CEPMINTERFACE:900, CEPMCRC:300", key, template) == {
+        "CEPMCRC": 300,
+        "CEPMINTERFACE": 900,
+    }
+    # One cadence for every schema.
+    assert parse_schemas_interval("300", key, template) == {"CEPMCRC": 300, "CEPMINTERFACE": 300}
+    # 123 s was ACCEPTED live: the tool refuses it.
+    with pytest.raises(PlatformError, match="cadence 123 s is not allowed for CEPMINTERFACE"):
+        parse_schemas_interval("CEPMINTERFACE=123", key, template)
+    with pytest.raises(PlatformError, match="schema 'BOGUS' is not part of template INTERFACE"):
+        parse_schemas_interval("BOGUS=300", key, template)
+    with pytest.raises(PlatformError, match="not SCHEMA=seconds"):
+        parse_schemas_interval("CEPMINTERFACE", key, template)
+    with pytest.raises(PlatformError, match="not a whole number"):
+        parse_schemas_interval("CEPMINTERFACE=fast", key, template)
+    with pytest.raises(PlatformError, match="schemas_interval is required"):
+        parse_schemas_interval("  ", key, template)
+    with pytest.raises(PlatformError, match="lists no schemas"):
+        parse_schemas_interval("300", "X", {})
+
+
+def test_parse_uuid_list_refuses_anything_but_uuids():
+    assert parse_uuid_list(f" {GROUP_UUID.upper()},{GROUP_UUID}, ", "device_groups", "hint") == [
+        GROUP_UUID
+    ]
+    assert parse_uuid_list("", "device_groups", "hint") == []
+    with pytest.raises(PlatformError, match="device_groups must be comma-separated uuids.*hint"):
+        parse_uuid_list("All Locations", "device_groups", "hint")
+
+
+def test_operation_results_and_their_check():
+    raw = [
+        {"policyId": 3, "status": "ALREADY_ACTIVATED", "policyName": "phase-d-pm"},
+        {"policyId": 999999, "status": "NOT_FOUND", "policyName": ""},
+    ]
+    results = operation_results(raw)
+    assert results[1] == {
+        "policy_id": 999999,
+        "status": "NOT_FOUND",
+        "policy_name": None,
+        "error_message": None,
+    }
+    with pytest.raises(PlatformError) as info:
+        check_operation_results(results, [3, 999999], "activated")
+    assert "no performance policy 999999 (NOT_FOUND)" in str(info.value)
+    assert "Applied to the others: 0 activated, 1 already so" in str(info.value)
+    done, already = check_operation_results(results[:1], [3], "activated")
+    assert done == [] and already == results[:1]
+    ok = operation_results({"policyId": 3, "status": "OK", "policyName": "phase-d-pm"})
+    assert check_operation_results(ok, [3], "deleted") == (ok, [])
+    with pytest.raises(PlatformError, match="policy 7: no result in the platform's answer"):
+        check_operation_results(ok, [3, 7], "deleted")
+    with pytest.raises(PlatformError, match="policy 3: DB_ERROR — disk full"):
+        check_operation_results(
+            operation_results([{"policyId": 3, "status": "DB_ERROR", "errorMessage": "disk full"}]),
+            [3],
+            "deleted",
+        )
+
+
+def test_policy_body_is_the_full_put_body_with_the_active_flag():
+    body = policy_body({**PHASE_D_POLICY, "active": True, "description": None, "thresholds": None})
+    assert set(body) == {
+        "id",
+        "policyTemplate",
+        "name",
+        "description",
+        "schemasInterval",
+        "devices",
+        "deviceGroups",
+        "portGroups",
+        "tag",
+        "thresholds",
+        "active",
+    }
+    assert body["active"] is True and body["description"] == "" and body["thresholds"] == {}
+    assert policy_body({})["active"] is False and policy_body({})["schemasInterval"] == {}
+
+
+def test_paged_total_and_same_selection():
+    assert paged_total({"data": [], "total_count": 5}) == 5
+    assert paged_total({"data": []}) is None
+    assert paged_total({"total_count": True}) is None and paged_total({"total_count": "5"}) is None
+    assert same_selection(f"{PE1_UUID.upper()}, {GROUP_UUID}", f"{GROUP_UUID},{PE1_UUID}")
+    assert same_selection("", None) and same_selection(" , ", "")
+    assert not same_selection(PE1_UUID, "") and not same_selection(PE1_UUID, PE2_UUID)
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+def test_policy_devices_settled_and_status_text():
+    assert policy_devices_settled(DEVICES_IN_PROGRESS["data"]) is False
+    assert policy_devices_settled(DEVICES_ACTIVE["data"]) is True
+    assert policy_devices_settled([]) is True
+    assert devices_status_text(DEVICES_IN_PROGRESS["data"]) == "PE1 NOTPOLLING [IN_PROGRESS]"
+    assert devices_status_text([DEVICE_PE1, DEVICE_PE2]) == (
+        "PE1 ACTIVE, PE2 NOTPOLLING [POLLED_BY_ANOTHER_POLICY Default interface health]"
+    )
+    assert devices_status_text([]) == "(no devices listed)"
+
+
+def test_find_retention_table_and_body():
+    assert find_retention_table(RETENTION_ALL_LIVE, "cepm_interface")[0] == "CEPM_INTERFACE"
+    assert find_retention_table(RETENTION_ALL_LIVE, "CEPMINTERFACE")[0] == "CEPM_INTERFACE"
+    assert find_retention_table(RETENTION_ALL_LIVE, "cepmptp")[0] == "CEPM_PTP"
+    with pytest.raises(
+        PlatformError, match="unknown retention table 'CPU'.*CEPM_INTERFACE = CEPMINTERFACE"
+    ):
+        find_retention_table(RETENTION_ALL_LIVE, "CPU")
+    with pytest.raises(PlatformError, match="unknown retention table ''"):
+        find_retention_table(RETENTION_ALL_LIVE, "")
+    entry = RETENTION_ALL_LIVE["CEPM_INTERFACE"]
+    assert retention_body(entry, {"weeklyDataRetentionPeriod": 9073}) == {
+        **INTERFACE_PERIODS,
+        "weeklyDataRetentionPeriod": 9073,
+    }
+    assert retention_body(entry, {}) == INTERFACE_PERIODS
+    with pytest.raises(PlatformError, match="reports no rawDataRetentionPeriod"):
+        retention_body({}, {"weeklyDataRetentionPeriod": 1})
+
+
+@respx.mock
+async def test_create_policy_resolves_host_names_and_creates_inactive(make_settings):
+    templates = get(TEMPLATES_URL, LIVE_TEMPLATES)
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "interface",
+            "schemas_interval": "CEPMINTERFACE=3600",
+            "devices": "PE1",
+            "description": "phase-d scout: PE1 only, 3600 s",
+        },
+    )
+    assert text.startswith(
+        "Performance policy 3 'phase-d-pm' created (inactive — activate with "
+        "cnc_activate_performance_policy(policy_ids='3'))."
+    )
+    assert templates.call_count == 1 and inventory.call_count == 1 and create.call_count == 1
+    assert params_of(inventory) == {"hostName": "PE1", "pageSize": "1000", "page": "1"}
+    assert sent(create) == {
+        "policyTemplate": "INTERFACE",
+        "name": "phase-d-pm",
+        "description": "phase-d scout: PE1 only, 3600 s",
+        "schemasInterval": {"CEPMCRC": 0, "CEPMINTERFACE": 3600},
+        "devices": PE1_UUID,
+        "deviceGroups": "",
+        "portGroups": "",
+        "tag": "",
+        "thresholds": {},
+        "active": False,
+    }
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["policy"]["id"] == 3 and payload["policy"]["active"] is False
+    assert payload["policy"]["devices"] == [PE1_UUID] and payload["activation"] is None
+    assert payload["policy_ids"] == "3" and payload["activation_error"] is None
+
+
+@respx.mock
+async def test_create_policy_host_name_lookup_walks_the_substring_pages(make_settings):
+    # The platform's hostName filter is a case-insensitive SUBSTRING match (verified live:
+    # hostName=P answered P1, P2, PCE, PE1, PE2): the exact match can sit on a later page.
+    get(TEMPLATES_URL, LIVE_TEMPLATES)
+    pe10 = {**DEVICE_PE1, "hostName": "PE10", "uuid": GROUP_UUID}
+    pe11 = {**DEVICE_PE1, "hostName": "PE11", "uuid": PE2_UUID}
+    inventory = respx.get(INVENTORY_DEVICES_URL).mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [pe10, pe11], "total_count": 3}),
+            httpx.Response(200, json={"data": [DEVICE_PE1], "total_count": 3}),
+        ]
+    )
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "INTERFACE",
+            "schemas_interval": "CEPMINTERFACE=3600",
+            "devices": "pe1",
+        },
+    )
+    assert text.startswith("Performance policy 3 'phase-d-pm' created (inactive")
+    assert inventory.call_count == 2 and create.call_count == 1
+    assert params_of(inventory, 0) == {"hostName": "pe1", "pageSize": "1000", "page": "1"}
+    assert params_of(inventory, 1) == {"hostName": "pe1", "pageSize": "1000", "page": "2"}
+    assert sent(create)["devices"] == PE1_UUID
+    # Only substring hits, on every page: refused with the count of EXACT matches (0).
+    inventory.mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [pe10, pe11], "total_count": 2}),
+        ]
+    )
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "INTERFACE",
+            "schemas_interval": "CEPMINTERFACE=3600",
+            "devices": "PE1",
+        },
+    )
+    assert text.startswith("Error: device 'PE1' is not an inventory uuid and 0 device(s) match")
+    assert inventory.call_count == 3 and create.call_count == 1
+
+
+@respx.mock
+async def test_create_policy_with_activate_waits_for_the_devices(make_settings, monkeypatch):
+    monkeypatch.setattr("cnc_mcp.polling.asyncio.sleep", _no_sleep)
+    get(TEMPLATES_URL, LIVE_TEMPLATES)
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    activate = put(
+        f"{ACTIVATE_URL}/3", [{"policyId": 3, "status": "OK", "policyName": "phase-d-pm"}]
+    )
+    read_back = get(f"{POLICIES_URL}/3", PHASE_D_ACTIVE_DTO)
+    devices = respx.get(f"{POLICIES_URL}/devices/3").mock(
+        side_effect=[
+            httpx.Response(200, json=DEVICES_IN_PROGRESS),
+            httpx.Response(200, json=DEVICES_ACTIVE),
+        ]
+    )
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "INTERFACE",
+            "schemas_interval": "CEPMINTERFACE=3600,CEPMCRC=0",
+            "devices": f"{PE1_UUID.upper()},{PE1_UUID}",
+            "device_groups": GROUP_UUID,
+            "activate": True,
+            "wait_seconds": 6,
+        },
+    )
+    lines = text.split("\n")
+    assert lines[0] == "Performance policy 3 'phase-d-pm' created and activated."
+    assert lines[1] == "- policy 3 'phase-d-pm': activated"
+    assert lines[2].startswith("- policy 3 devices after ") and lines[2].endswith(
+        "s (settled): PE1 ACTIVE"
+    )
+    assert sent(create)["devices"] == PE1_UUID and sent(create)["deviceGroups"] == GROUP_UUID
+    assert activate.call_count == 1 and devices.call_count == 2 and read_back.call_count == 1
+    assert params_of(devices) == {"pageSize": "1000", "page": "1"}
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["activation"]["waits"][0]["settled"] is True
+    assert payload["activation"]["waits"][0]["devices"][0]["collection_status"] == "ACTIVE"
+    assert payload["activation"]["waits"][0]["error"] is None
+    assert payload["activation_error"] is None
+    # The POST echo says active false; the answer shows the activated policy (read back).
+    assert payload["policy"]["active"] is True and payload["policy"]["id"] == 3
+    # A failed read-back keeps the POST view rather than failing the (successful) call.
+    read_back.mock(return_value=httpx.Response(500, text="boom"))
+    devices.mock(return_value=httpx.Response(200, json=DEVICES_ACTIVE))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "INTERFACE",
+            "schemas_interval": "300",
+            "devices": PE1_UUID,
+            "activate": True,
+            "wait_seconds": 0,
+        },
+    )
+    assert text.startswith("Performance policy 3 'phase-d-pm' created and activated.")
+    assert json.loads(text.split("\n\n", 1)[1])["policy"]["active"] is False
+
+
+@respx.mock
+async def test_create_policy_names_the_created_id_when_the_activation_fails(make_settings):
+    # Once the POST has answered an id the policy EXISTS: a failed activate PUT must not read
+    # as a failed create (an agent that "tries again" re-creates -> POLICY_EXITS / orphans).
+    get(TEMPLATES_URL, LIVE_TEMPLATES)
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    activate = put(f"{ACTIVATE_URL}/3", {"message": "boom"}, status=500)
+    args = {
+        "name": "phase-d-pm",
+        "template": "INTERFACE",
+        "schemas_interval": "CEPMINTERFACE=3600",
+        "devices": PE1_UUID,
+        "activate": True,
+        "wait_seconds": 0,
+    }
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith(
+        "Performance policy 3 'phase-d-pm' CREATED, but its activation failed: Error: API "
+        "request failed with status 500."
+    )
+    assert "do not re-create it" in text
+    assert "cnc_activate_performance_policy(policy_ids='3')" in text
+    assert "cnc_delete_performance_policy(policy_id=3)" in text
+    assert create.call_count == 1 and activate.call_count == 1
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["policy"]["id"] == 3 and payload["policy_ids"] == "3"
+    assert payload["activation"] is None
+    assert payload["activation_error"].startswith("Error: API request failed with status 500.")
+    # A 200 whose result is not OK (DB_ERROR / NOT_FOUND) is the same partial success.
+    activate.mock(
+        return_value=httpx.Response(
+            200, json=[{"policyId": 3, "status": "DB_ERROR", "errorMessage": "disk full"}]
+        )
+    )
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith(
+        "Performance policy 3 'phase-d-pm' CREATED, but its activation failed: Error: policy 3: "
+        "DB_ERROR — disk full."
+    )
+    assert create.call_count == 2 and activate.call_count == 2
+
+
+@respx.mock
+async def test_create_policy_activated_but_the_status_poll_fails_is_not_an_error(make_settings):
+    get(TEMPLATES_URL, LIVE_TEMPLATES)
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    activate = put(
+        f"{ACTIVATE_URL}/3", [{"policyId": 3, "status": "OK", "policyName": "phase-d-pm"}]
+    )
+    get(f"{POLICIES_URL}/3", PHASE_D_ACTIVE_DTO)
+    devices = get(f"{POLICIES_URL}/devices/3", {"message": "boom"}, status=500)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_create_performance_policy",
+        {
+            "name": "phase-d-pm",
+            "template": "INTERFACE",
+            "schemas_interval": "CEPMINTERFACE=3600",
+            "devices": PE1_UUID,
+            "activate": True,
+            "wait_seconds": 0,
+        },
+    )
+    lines = text.split("\n")
+    assert lines[0] == "Performance policy 3 'phase-d-pm' created and activated."
+    assert lines[1] == "- policy 3 'phase-d-pm': activated"
+    assert lines[2].startswith(
+        "- policy 3 devices: status unavailable after 0 s (Error: API request failed with "
+        "status 500."
+    )
+    assert lines[2].endswith(
+        "— the activation itself succeeded; cnc_list_performance_policy_devices(policy_id=3) "
+        "shows the devices"
+    )
+    assert create.call_count == 1 and activate.call_count == 1 and devices.call_count == 1
+    payload = json.loads(text.split("\n\n", 1)[1])
+    wait = payload["activation"]["waits"][0]
+    assert wait["settled"] is False and wait["devices"] == []
+    assert wait["error"].startswith("Error: API request failed with status 500.")
+    assert payload["activation_error"] is None
+
+
+@respx.mock
+async def test_create_policy_refusals_send_nothing(make_settings):
+    templates = get(TEMPLATES_URL, LIVE_TEMPLATES)
+    inventory = get(INVENTORY_DEVICES_URL, {"data": [], "total_count": 0})
+    create = post(POLICIES_URL, PHASE_D_DTO)
+    base = {"name": "phase-d-pm", "template": "INTERFACE", "schemas_interval": "CEPMINTERFACE=3600"}
+    cases = [
+        (
+            {**base, "devices": PE1_UUID, "schemas_interval": "CEPMINTERFACE=123"},
+            "cadence 123 s is not allowed",
+        ),
+        ({**base, "devices": PE1_UUID, "template": "BOGUS"}, "unknown policy template 'BOGUS'"),
+        ({**base}, "the policy needs a selection"),
+        ({**base, "devices": "nope"}, "device 'nope' is not an inventory uuid and 0 device(s)"),
+        ({**base, "device_groups": "All Locations"}, "device_groups must be comma-separated uuids"),
+    ]
+    for args, expected in cases:
+        text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+        assert text.startswith(f"Error: {expected}"), (args, text)
+        assert "Nothing was sent" in text
+    assert create.call_count == 0
+    assert templates.call_count == len(cases) and inventory.call_count == 1
+
+
+@respx.mock
+async def test_create_policy_duplicate_and_platform_errors(make_settings):
+    get(TEMPLATES_URL, LIVE_TEMPLATES)
+    create = post(POLICIES_URL, POLICY_EXISTS, status=400)
+    args = {
+        "name": "phase-d-pm",
+        "template": "INTERFACE",
+        "schemas_interval": "300",
+        "devices": PE1_UUID,
+    }
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith(
+        "Error: a performance policy named 'phase-d-pm' already exists (POLICY_EXITS). "
+        "cnc_list_performance_policies shows it"
+    )
+    assert sent(create)["schemasInterval"] == {"CEPMCRC": 300, "CEPMINTERFACE": 300}
+    create.mock(return_value=httpx.Response(400, json=MISSING_DEVICES))
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith("Error: the policy needs a selection (MISSING_DEVICES).")
+    create.mock(return_value=httpx.Response(200, json={"monitoringPolicy": {}}))
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith("Error: the platform answered no policy id")
+    create.mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(writes(make_settings), "cnc_create_performance_policy", args)
+    assert text.startswith("Error: API request failed with status 500.")
+
+
+@respx.mock
+async def test_update_policy_merges_and_keeps_the_active_flag(make_settings):
+    active_dto = PHASE_D_ACTIVE_DTO
+    policy = respx.get(f"{POLICIES_URL}/3").mock(return_value=httpx.Response(200, json=active_dto))
+    policies = get(POLICIES_URL, [POLICY_LSP, POLICY_INTERFACE, active_dto])
+    templates = get(TEMPLATES_URL, LIVE_TEMPLATES)
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    update = put(
+        f"{POLICIES_URL}/3",
+        {
+            **active_dto,
+            "monitoringPolicy": {**active_dto["monitoringPolicy"], "creationTimestamp": 0},
+        },
+    )
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {
+            "policy_id": 3,
+            "name": "phase-d-pm renamed",
+            "description": "changed",
+            "schemas_interval": "CEPMINTERFACE=900",
+            "devices": "PE1",
+            "device_groups": GROUP_UUID,
+            "tag": "{contact:noc}",
+        },
+    )
+    assert text.startswith(
+        "Performance policy 3 'phase-d-pm' updated (name, description, tag, schemas_interval, "
+        "selection; still active)."
+    )
+    assert sent(update) == {
+        "id": 3,
+        "policyTemplate": "INTERFACE",
+        "name": "phase-d-pm renamed",
+        "description": "changed",
+        "schemasInterval": {"CEPMCRC": 0, "CEPMINTERFACE": 900},
+        "devices": PE1_UUID,
+        "deviceGroups": GROUP_UUID,
+        "portGroups": "",
+        "tag": "{contact:noc}",
+        "thresholds": {},
+        "active": True,  # carried through: absent/false would deactivate (verified live)
+    }
+    assert policy.call_count == 2  # read-merge, then the read-back for real timestamps
+    assert policies.call_count == 1 and templates.call_count == 1 and inventory.call_count == 1
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["changed"] == ["name", "description", "tag", "schemas_interval", "selection"]
+    # Only a description: no list, no template, no inventory lookup; body still complete.
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 3, "description": "only this"},
+    )
+    assert text.startswith("Performance policy 3 'phase-d-pm' updated (description; still active).")
+    assert sent(update, 1)["active"] is True and sent(update, 1)["name"] == "phase-d-pm"
+    assert policies.call_count == 1 and templates.call_count == 1
+
+
+@respx.mock
+async def test_update_policy_refusals_and_errors(make_settings):
+    policy = get(f"{POLICIES_URL}/3", PHASE_D_DTO)
+    policies = get(POLICIES_URL, [POLICY_LSP, POLICY_INTERFACE, PHASE_D_DTO])
+    update = put(f"{POLICIES_URL}/3", PHASE_D_DTO)
+    # Nothing to change: nothing sent, not an error.
+    text = await call_tool_text(
+        writes(make_settings), "cnc_update_performance_policy", {"policy_id": 3}
+    )
+    assert text.startswith("Nothing to change for policy 3")
+    assert policy.call_count == 0
+    # Every given value already matches the policy (name, description, cadences and the
+    # selection in another spelling): read, compared, nothing sent — a no-op PUT would still
+    # bump lastChangedTimestamp (verified live).
+    templates = get(TEMPLATES_URL, LIVE_TEMPLATES)
+    inventory = get(INVENTORY_DEVICES_URL, INVENTORY_PE1)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {
+            "policy_id": 3,
+            "name": "phase-d-pm",
+            "description": "phase-d scout: PE1 only, 3600 s",
+            "schemas_interval": "CEPMINTERFACE=3600",
+            "devices": "PE1",
+        },
+    )
+    assert text == (
+        "Nothing to change for policy 3: every given value already matches the policy. "
+        "Nothing was sent."
+    )
+    assert policy.call_count == 1 and templates.call_count == 1 and inventory.call_count == 1
+    assert update.call_count == 0 and policies.call_count == 0
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 3, "devices": PE1_UUID.upper()},
+    )
+    assert text.startswith("Nothing to change for policy 3: every given value already matches")
+    assert update.call_count == 0
+    # A rename onto an existing name is accepted by the platform — refused here.
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 3, "name": "Default interface health"},
+    )
+    assert text.startswith(
+        "Error: a performance policy named 'Default interface health' already exists (id 1)"
+    )
+    assert "Nothing was sent" in text and update.call_count == 0 and policies.call_count == 1
+    # A selection that resolves to nothing.
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 3, "devices": " , "},
+    )
+    assert text.startswith("Error: the new selection resolved to nothing")
+    assert "Nothing was sent" in text and update.call_count == 0
+    # Unknown id.
+    respx.get(f"{POLICIES_URL}/999").mock(return_value=httpx.Response(400, json=MISSING_POLICY_ID))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 999, "description": "x"},
+    )
+    assert text.startswith("Error: no performance policy 999 (MISSING_POLICY_ID).")
+    # The platform refusing the PUT.
+    update.mock(return_value=httpx.Response(400, json=MISSING_POLICY_ID))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_policy",
+        {"policy_id": 3, "description": "x"},
+    )
+    assert text.startswith(
+        "Error: no such performance policy (or the body's id did not match) (MISSING_POLICY_ID)."
+    )
+
+
+@respx.mock
+async def test_activate_policies_reports_each_id_and_waits(make_settings, monkeypatch):
+    monkeypatch.setattr("cnc_mcp.polling.asyncio.sleep", _no_sleep)
+    activate = put(
+        f"{ACTIVATE_URL}/3,5",
+        [
+            {"policyId": 3, "status": "OK", "policyName": "phase-d-pm"},
+            {"policyId": 5, "status": "ALREADY_ACTIVATED", "policyName": "other"},
+        ],
+    )
+    devices3 = respx.get(f"{POLICIES_URL}/devices/3").mock(
+        side_effect=[
+            httpx.Response(200, json=DEVICES_IN_PROGRESS),
+            httpx.Response(200, json=DEVICES_ACTIVE),
+        ]
+    )
+    devices5 = get(f"{POLICIES_URL}/devices/5", DEVICES_ACTIVE)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_activate_performance_policy",
+        {"policy_ids": " 3, 5 ", "wait_seconds": 6},
+    )
+    lines = text.split("\n")
+    assert lines[0] == "Activated 1 performance policy(ies) (1 already active)."
+    assert lines[1] == "- policy 3 'phase-d-pm': activated"
+    assert lines[2] == "- policy 5 'other': already active"
+    assert lines[3].endswith("s (settled): PE1 ACTIVE") and lines[3].startswith(
+        "- policy 3 devices"
+    )
+    assert lines[4].startswith("- policy 5 devices after 0 s (settled): PE1 ACTIVE")
+    assert activate.call_count == 1 and devices3.call_count == 2 and devices5.call_count == 1
+    assert params_of(devices3) == {"pageSize": "1000", "page": "1"}
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert [r["status"] for r in payload["results"]] == ["OK", "ALREADY_ACTIVATED"]
+    assert [w["policy_id"] for w in payload["waits"]] == [3, 5]
+    assert [w["error"] for w in payload["waits"]] == [None, None]
+    # wait_seconds=0: one read, "still deploying" is not an error.
+    put(f"{ACTIVATE_URL}/3", [{"policyId": 3, "status": "OK", "policyName": "phase-d-pm"}])
+    devices3.mock(return_value=httpx.Response(200, json=DEVICES_IN_PROGRESS))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_activate_performance_policy",
+        {"policy_ids": "3", "wait_seconds": 0},
+    )
+    assert "- policy 3 devices after 0 s (still deploying): PE1 NOTPOLLING [IN_PROGRESS]" in text
+    assert not text.startswith("Error")
+
+
+@respx.mock
+async def test_activate_policies_walks_every_device_page(make_settings, monkeypatch):
+    # A policy selecting more devices than one page: the wait reads every page (total_count)
+    # before deciding settled — an IN_PROGRESS device on page 2 keeps it deploying.
+    monkeypatch.setattr("cnc_mcp.polling.asyncio.sleep", _no_sleep)
+    put(f"{ACTIVATE_URL}/3", [{"policyId": 3, "status": "OK", "policyName": "phase-d-pm"}])
+    monkeypatch.setattr(performance, "LOOKUP_PAGE_SIZE", 1)
+    page2_in_progress = {"data": DEVICES_IN_PROGRESS["data"], "total_count": 2}
+    page2_active = {"data": [DEVICE_PE2], "total_count": 2}
+    devices = respx.get(f"{POLICIES_URL}/devices/3").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [DEVICE_PE1], "total_count": 2}),
+            httpx.Response(200, json=page2_in_progress),
+            httpx.Response(200, json={"data": [DEVICE_PE1], "total_count": 2}),
+            httpx.Response(200, json=page2_active),
+        ]
+    )
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_activate_performance_policy",
+        {"policy_ids": "3", "wait_seconds": 6},
+    )
+    assert devices.call_count == 4
+    assert [params_of(devices, i)["page"] for i in range(4)] == ["1", "2", "1", "2"]
+    assert "(settled): PE1 ACTIVE, PE2 NOTPOLLING [POLLED_BY_ANOTHER_POLICY" in text
+
+
+@respx.mock
+async def test_activate_policies_poll_failure_is_reported_per_policy(make_settings):
+    # The activation succeeded; a 5xx on the device-status read must not turn the whole call
+    # into an error (a retry would only answer ALREADY_ACTIVATED).
+    activate = put(
+        f"{ACTIVATE_URL}/3,5",
+        [
+            {"policyId": 3, "status": "OK", "policyName": "phase-d-pm"},
+            {"policyId": 5, "status": "OK", "policyName": "other"},
+        ],
+    )
+    devices3 = get(f"{POLICIES_URL}/devices/3", {"message": "boom"}, status=500)
+    devices5 = get(f"{POLICIES_URL}/devices/5", DEVICES_ACTIVE)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_activate_performance_policy",
+        {"policy_ids": "3,5", "wait_seconds": 0},
+    )
+    lines = text.split("\n")
+    assert lines[0] == "Activated 2 performance policy(ies)."
+    assert lines[3].startswith(
+        "- policy 3 devices: status unavailable after 0 s (Error: API request failed with "
+        "status 500."
+    )
+    assert "the activation itself succeeded" in lines[3]
+    assert lines[4] == "- policy 5 devices after 0 s (settled): PE1 ACTIVE"
+    assert activate.call_count == 1 and devices3.call_count == 1 and devices5.call_count == 1
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["waits"][0]["error"].startswith("Error: API request failed with status 500.")
+    assert payload["waits"][0]["devices"] == [] and payload["waits"][1]["error"] is None
+
+
+@respx.mock
+async def test_activate_policies_not_found_is_an_error(make_settings):
+    activate = put(
+        f"{ACTIVATE_URL}/3,999999",
+        [
+            {"policyId": 3, "status": "ALREADY_ACTIVATED", "policyName": "phase-d-pm"},
+            {"policyId": 999999, "status": "NOT_FOUND", "policyName": ""},
+        ],
+    )
+    text = await call_tool_text(
+        writes(make_settings), "cnc_activate_performance_policy", {"policy_ids": "3,999999"}
+    )
+    assert text.startswith(
+        "Error: no performance policy 999999 (NOT_FOUND). Applied to the others: 0 activated, "
+        "1 already so."
+    )
+    assert activate.call_count == 1
+    text = await call_tool_text(
+        writes(make_settings), "cnc_activate_performance_policy", {"policy_ids": "abc"}
+    )
+    assert text.startswith("Error: policy_ids must be one or more positive integer policy ids")
+    assert activate.call_count == 1
+    activate.mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        writes(make_settings), "cnc_activate_performance_policy", {"policy_ids": "3,999999"}
+    )
+    assert text.startswith("Error: API request failed with status 500.")
+
+
+@respx.mock
+async def test_deactivate_policies(make_settings):
+    deactivate = put(
+        f"{DEACTIVATE_URL}/3,5",
+        [
+            {"policyId": 3, "status": "OK", "policyName": "phase-d-pm"},
+            {"policyId": 5, "status": "ALREADY_DEACTIVATED", "policyName": "other"},
+        ],
+    )
+    text = await call_tool_text(
+        writes(make_settings), "cnc_deactivate_performance_policy", {"policy_ids": "3,5"}
+    )
+    lines = text.split("\n")
+    assert lines[0] == "Deactivated 1 performance policy(ies) (1 already inactive)."
+    assert lines[1] == "- policy 3 'phase-d-pm': deactivated"
+    assert lines[2] == "- policy 5 'other': already inactive"
+    assert deactivate.call_count == 1
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert (
+        payload["deactivated"][0]["policy_id"] == 3
+        and payload["already_inactive"][0]["policy_id"] == 5
+    )
+    put(f"{DEACTIVATE_URL}/999999", [{"policyId": 999999, "status": "NOT_FOUND", "policyName": ""}])
+    text = await call_tool_text(
+        writes(make_settings), "cnc_deactivate_performance_policy", {"policy_ids": "999999"}
+    )
+    assert text.startswith(
+        "Error: no performance policy 999999 (NOT_FOUND). Applied to the others: none."
+    )
+
+
+@respx.mock
+async def test_delete_policy(make_settings):
+    remove = delete(
+        f"{POLICIES_URL}/3", [{"policyId": 3, "status": "OK", "policyName": "phase-d-pm"}]
+    )
+    text = await call_tool_text(
+        writes(make_settings), "cnc_delete_performance_policy", {"policy_id": 3}
+    )
+    assert text.startswith("Performance policy 3 'phase-d-pm' deleted.")
+    assert json.loads(text.split("\n\n", 1)[1])["status"] == "OK"
+    assert remove.call_count == 1
+    # A second delete / an unknown id: 200 NOT_FOUND on the wire, an error here.
+    remove.mock(
+        return_value=httpx.Response(
+            200, json=[{"policyId": 3, "status": "NOT_FOUND", "policyName": ""}]
+        )
+    )
+    text = await call_tool_text(
+        writes(make_settings), "cnc_delete_performance_policy", {"policy_id": 3}
+    )
+    assert text.startswith("Error: no performance policy 3 (NOT_FOUND).")
+    remove.mock(return_value=httpx.Response(500, text="boom"))
+    text = await call_tool_text(
+        writes(make_settings), "cnc_delete_performance_policy", {"policy_id": 3}
+    )
+    assert text.startswith("Error: API request failed with status 500.")
+
+
+@respx.mock
+async def test_update_retention_reads_merges_writes_and_reads_back(make_settings):
+    raised = {
+        **RETENTION_ALL_LIVE,
+        "CEPM_INTERFACE": {
+            **RETENTION_ALL_LIVE["CEPM_INTERFACE"],
+            "weeklyDataRetentionPeriod": 9073,
+        },
+    }
+    all_route = respx.get(RETENTION_ALL_URL).mock(
+        side_effect=[httpx.Response(200, json=RETENTION_ALL_LIVE), httpx.Response(200, json=raised)]
+    )
+    update = put(RETENTION_URL, True)
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {"table": "cepminterface", "weekly_hours": 9073},
+    )
+    lines = text.split("\n")
+    assert lines[0] == (
+        "Retention of CEPM_INTERFACE (schema CEPMINTERFACE) updated: raw 24 h, hourly 168 h, "
+        "daily 744 h, weekly 9073 h (before: raw 24 h, hourly 168 h, daily 744 h, weekly 9072 h)."
+    )
+    assert lines[1] == (
+        "Restore with: cnc_update_performance_retention(table='CEPM_INTERFACE', raw_hours=24, "
+        "hourly_hours=168, daily_hours=744, weekly_hours=9072)"
+    )
+    # The canonical key and ALL FOUR periods are sent (verified: a miscased key -> false).
+    assert sent(update) == {
+        "CEPM_INTERFACE": {**INTERFACE_PERIODS, "weeklyDataRetentionPeriod": 9073}
+    }
+    assert all_route.call_count == 2
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["changed"] is True and payload["before"] == INTERFACE_PERIODS
+    # The same values back: still sent, reported unchanged.
+    all_route.mock(return_value=httpx.Response(200, json=RETENTION_ALL_LIVE))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {
+            "table": "CEPM_INTERFACE",
+            "raw_hours": 24,
+            "hourly_hours": 168,
+            "daily_hours": 744,
+            "weekly_hours": 9072,
+        },
+    )
+    assert text.startswith(
+        "Retention of CEPM_INTERFACE (schema CEPMINTERFACE) unchanged: raw 24 h, hourly 168 h, "
+        "daily 744 h, weekly 9072 h."
+    )
+    assert update.call_count == 2 and sent(update, 1) == {"CEPM_INTERFACE": INTERFACE_PERIODS}
+    assert json.loads(text.split("\n\n", 1)[1])["changed"] is False
+
+
+@respx.mock
+async def test_update_retention_refusals_and_errors(make_settings):
+    all_route = get(RETENTION_ALL_URL, RETENTION_ALL_LIVE)
+    update = put(RETENTION_URL, False)
+    text = await call_tool_text(
+        writes(make_settings), "cnc_update_performance_retention", {"table": "CEPM_INTERFACE"}
+    )
+    assert text.startswith("Error: pass at least one of raw_hours, hourly_hours")
+    assert all_route.call_count == 0
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {"table": "CPU", "raw_hours": 48},
+    )
+    assert text.startswith(
+        "Error: unknown retention table 'CPU'. Tables (raw table key = schema): "
+        "CEPM_INTERFACE = CEPMINTERFACE"
+    )
+    assert update.call_count == 0
+    # 200 false = the platform applied nothing (verified live for a miscased key).
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {"table": "CEPM_INTERFACE", "raw_hours": 48},
+    )
+    assert text.startswith(
+        "Error: the platform applied nothing for retention table 'CEPM_INTERFACE' (it answered "
+        "false"
+    )
+    assert update.call_count == 1
+    # true but the read-back disagrees.
+    update.mock(return_value=httpx.Response(200, json=True))
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {"table": "CEPM_INTERFACE", "raw_hours": 48},
+    )
+    assert text.startswith(
+        "Error: the platform answered true but retention table 'CEPM_INTERFACE' reads back as "
+        "raw 24 h"
+    )
+    # A JSON parse rejection is a sentence, not a code: the generic error.
+    update.mock(
+        return_value=httpx.Response(400, json={"code": 400, "message": "JSON parse error: x"})
+    )
+    text = await call_tool_text(
+        writes(make_settings),
+        "cnc_update_performance_retention",
+        {"table": "CEPM_INTERFACE", "raw_hours": 48},
+    )
+    assert text.startswith("Error: API request failed with status 400.")
+
+
+@respx.mock
+async def test_reset_retention_reports_the_changed_tables_with_restore_calls(make_settings):
+    raised = {
+        **RETENTION_ALL_LIVE,
+        "CEPM_INTERFACE": {
+            **RETENTION_ALL_LIVE["CEPM_INTERFACE"],
+            "weeklyDataRetentionPeriod": 9073,
+        },
+    }
+    all_route = respx.get(RETENTION_ALL_URL).mock(
+        side_effect=[httpx.Response(200, json=raised), httpx.Response(200, json=RETENTION_ALL_LIVE)]
+    )
+    default = get(RETENTION_DEFAULT_URL, RETENTION_DEFAULT)
+    reset = post(RETENTION_RESET_URL, True)
+    text = await call_tool_text(writes(make_settings), "cnc_reset_performance_retention", {})
+    lines = text.split("\n")
+    assert lines[0] == "Performance retention reset to the defaults: 1 table(s) changed."
+    assert lines[1] == (
+        "- CEPM_INTERFACE (CEPMINTERFACE): raw 24 h, hourly 168 h, daily 744 h, weekly 9073 h -> "
+        "raw 24 h, hourly 168 h, daily 744 h, weekly 9072 h; restore with "
+        "cnc_update_performance_retention(table='CEPM_INTERFACE', raw_hours=24, hourly_hours=168, "
+        "daily_hours=744, weekly_hours=9073)"
+    )
+    assert reset.call_count == 1 and all_route.call_count == 2 and default.call_count == 1
+    assert reset.calls[0].request.content == b""
+    payload = json.loads(text.split("\n\n", 1)[1])
+    assert payload["answer"] is True and payload["changed"][0]["table"] == "CEPM_INTERFACE"
+    assert payload["default"] == RETENTION_DEFAULT
+    # Nothing changed.
+    all_route.mock(return_value=httpx.Response(200, json=RETENTION_ALL_LIVE))
+    text = await call_tool_text(writes(make_settings), "cnc_reset_performance_retention", {})
+    assert text.split("\n")[1] == "- no table changed (all were already at the defaults)"
+
+
+@respx.mock
+async def test_reset_retention_errors(make_settings):
+    get(RETENTION_ALL_URL, RETENTION_ALL_LIVE)
+    get(RETENTION_DEFAULT_URL, RETENTION_DEFAULT)
+    reset = post(RETENTION_RESET_URL, {"message": "nope"}, status=500)
+    text = await call_tool_text(writes(make_settings), "cnc_reset_performance_retention", {})
+    assert text.startswith("Error: API request failed with status 500.")
+    assert reset.call_count == 1
+    reset.mock(return_value=httpx.Response(200, json=False))
+    text = await call_tool_text(writes(make_settings), "cnc_reset_performance_retention", {})
+    assert text.startswith(
+        "Error: the platform answered false instead of true; 0 table(s) read back changed"
+    )

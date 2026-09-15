@@ -279,6 +279,37 @@ READ_FORMS: dict[str, tuple[str, str]] = {
     ),
 }
 
+# The live smoke section 1 of the guide cites (users carrying the generated roles:
+# read-only 262 read calls answered, 7 predicted 403s, two writes refused; operator 432
+# steps, no 403). It ran on the PREVIOUS generation of the bodies — the custom-URL AAA
+# rows — for the tools registered that day, whose generated bodies then differed from
+# the smoke's only in the two AAA rows, ``versions`` and ``rate``. Tools added since
+# were not exercised by it: the guide counts them from these constants and says which
+# read tools the read-only role refused that day (``cnc_check_permissions``' verdict the
+# smoke's 403s confirmed) and which write tool it permitted; the generator stops when a
+# tool of that verdict is no longer refused/permitted (the smoke's evidence no longer
+# maps onto the map — re-run scripts/live_smoke.py with the roles and update these).
+SMOKE_DATE = "2026-09-15"
+SMOKE_TOOL_COUNT = 245
+SMOKE_READ_TOOL_COUNT = 182
+SMOKE_REFUSED_READS = (
+    "cnc_check_nso_device_sync",
+    "cnc_explain_sr_policy",
+    "cnc_get_config_backup_job",
+    "cnc_get_lcm_recommendation_preview",
+    "cnc_get_oam_settings",
+    "cnc_get_oam_trace_route",
+    "cnc_get_sr_policy_metrics",
+    "cnc_get_sr_policy_path_notification_state",
+    "cnc_investigate_device",
+    "cnc_list_config_backup_jobs",
+    "cnc_list_oam_trace_routes",
+    "cnc_list_sensor_templates",
+    "cnc_wait_for_config_backup_job",
+    "cnc_wait_for_oam_trace_route",
+)
+SMOKE_PERMITTED_WRITES = ("cnc_reactivate_probe",)
+
 # A tool whose method argument the analyser folds to ``*`` (passed through at runtime)
 # but which validates it against a subset: the map records the subset, not all five.
 # cnc_provision_service: ``_choice(method, WRITE_METHODS)`` with WRITE_METHODS =
@@ -1009,6 +1040,14 @@ def split_post_entry(entry: dict[str, Any], not_delete_pattern: str) -> Entries:
     ]
 
 
+# POST-delete APIs on which a SINGLE entry carrying DELETE (Read+Write+Delete, the
+# editor's union) was read back stored VERBATIM — no split (2026-09-15, the Phase D
+# operator body: cw-ztp-service [GET, POST, PUT, PATCH, DELETE] /.*, fixture
+# tests/fixtures/rbac/stored_generated_operator.json). A Write-only row on any
+# POST-delete API is still unobserved; the generator stops if one appears.
+DELETE_ROW_VERBATIM_VERIFIED: tuple[str, ...] = ("cw-ztp-service",)
+
+
 def is_split_row(api_id: str, entries: Entries, platform: Platform) -> bool:
     """Whether the service splits this row: a POST-delete API and a SINGLE entry that
     carries POST and not DELETE (the editor's union entry; two entries beside each
@@ -1062,14 +1101,60 @@ def evaluate_body(
     return evaluate_rbac_map(sorted(rbac_map["tools"]), rbac_map, stored)
 
 
+def readonly_exceptions(
+    readonly_body: dict[str, Any], tools: dict[str, Any], platform: Platform, catalogue: Catalogue
+) -> list[tuple[str, str, str]]:
+    """The (method, path template, api_id) requests only the WRITE tools send that the
+    read-only role, as the service stores it (``stored_access_rights``), nevertheless
+    permits — what the write tools read before they write: a GET on a row the read
+    tools use (Read is GET ``/.*`` on the whole API) or a POST the row's read template
+    names (``cnc_reactivate_probe``'s ``reactivateProbe``). Every one of them is what
+    ``classify`` calls R; a permitted request classed W or D would mean the read-only
+    role permits a write the Read tick does not cover (Tyk's evaluation and the
+    classification disagreeing, or a Write entry in the body), and the generator stops."""
+    read_sent = {
+        (method, req["path"], req["api_id"])
+        for spec in tools.values()
+        if spec["read_only"]
+        for req in spec["requirements"]
+        for method in needed_methods(req["method"])
+    }
+    stored = stored_access_rights(readonly_body, platform, catalogue)
+    exceptions: set[tuple[str, str, str]] = set()
+    for spec in tools.values():
+        if spec["read_only"]:
+            continue
+        for req in spec["requirements"]:
+            for method in needed_methods(req["method"]):
+                key = (method, req["path"], req["api_id"])
+                if key in read_sent:
+                    continue
+                grant = stored.get(req["api_id"])
+                if grant is not None and entries_permit(
+                    grant["allowed_urls"], method, concrete_path(req["path"])
+                ):
+                    exceptions.add(key)
+    not_read = sorted(
+        key
+        for key in exceptions
+        if classify(key[0], key[1], key[2], platform["read_templates"]) != "R"
+    )
+    if not_read:
+        raise SystemExit(
+            "the read-only role permits requests only write tools send that the Read tick "
+            "does not cover: " + ", ".join(f"{m} {p} ({a})" for m, p, a in not_read)
+        )
+    return sorted(exceptions)
+
+
 def post_delete_requests(tools: dict[str, Any], platform: Platform) -> list[tuple[str, str, str]]:
     """The (tool, path, api_id) of every POST a tool sends on a POST-delete API that the
     not-delete pattern REFUSES (a path ending in the segment ``delete``): the one
     request Write without Delete does not permit there. None in the map — the
     Optimization Engine's delete RPC ends in ``...:sr-policy-delete``, one segment,
     which the pattern permits — and the generator stops if one appears, because what
-    the service stores for a row carrying DELETE on these APIs has not been read back
-    (no verified rule to classify it by)."""
+    the service stores for a row carrying DELETE on these APIs has been read back on
+    ``DELETE_ROW_VERBATIM_VERIFIED`` only (stored verbatim there)."""
     not_delete = re.compile(platform["not_delete_pattern"])
     return sorted(
         (name, req["path"], req["api_id"])
@@ -1425,7 +1510,8 @@ def render_doc(
             "a tool POSTs a path ending in the segment 'delete' on a POST-delete API "
             f"({post_delete_requests(tools, platform)}): Write without Delete does not permit "
             "it there, and what the service stores for a row carrying DELETE on these APIs "
-            "has not been read back — verify live before classifying it"
+            f"has been read back on {', '.join(DELETE_ROW_VERBATIM_VERIFIED)} only — verify "
+            "live before classifying it"
         )
     # the guide documents every POST-delete API as verified (a fixture) or inferred (the
     # 2026-09-14 experiment) and counts them: a capture that adds or drops one is not
@@ -1482,12 +1568,14 @@ def render_doc(
     )
     delete_rows = sorted(a for a, t in operator_ticks.items() if "D" in t)
     write_only_rows = sorted(a for a, t in operator_ticks.items() if "R" not in t)
-    if set(delete_rows + write_only_rows) & set(post_delete_apis):
+    unobserved_delete = set(delete_rows) & set(post_delete_apis) - set(DELETE_ROW_VERBATIM_VERIFIED)
+    if unobserved_delete or set(write_only_rows) & set(post_delete_apis):
         raise SystemExit(
-            "the split-rule note is stale: an operator row carrying DELETE, or a Write-only "
-            "row, is on a POST-delete API — what the service stores for it has not been read "
-            "back"
+            "the split-rule note is stale: an operator row carrying DELETE (other than "
+            f"{', '.join(DELETE_ROW_VERBATIM_VERIFIED)}), or a Write-only row, is on a "
+            "POST-delete API — what the service stores for it has not been read back"
         )
+    delete_on_list = sorted(set(delete_rows) & set(post_delete_apis))
     # the read-backs of the bodies as committed: what the service stored must be the
     # model's stored form of the body, row for row (the tests pin the rows entry for
     # entry), and the verdict on it the model's verdict — a fixture of a previous body
@@ -1533,12 +1621,57 @@ def render_doc(
             )
             + " — re-PUT the bodies, read them back and refresh the fixtures"
         )
+    # the smoke's generation: the tools added since it ran are counted from the
+    # constants, and the read-only verdict it confirmed must still hold tool for tool
+    if len(tools) < SMOKE_TOOL_COUNT or n_read < SMOKE_READ_TOOL_COUNT:
+        raise SystemExit(
+            "the smoke note is stale: fewer tools are registered than the smoke's generation "
+            f"had ({len(tools)} of {SMOKE_TOOL_COUNT}, {n_read} read of {SMOKE_READ_TOOL_COUNT})"
+        )
+    smoke_gone = sorted(set(SMOKE_REFUSED_READS) - set(refused_names)) + sorted(
+        set(SMOKE_PERMITTED_WRITES) - set(permitted_writes)
+    )
+    if smoke_gone:
+        raise SystemExit(
+            "the smoke note is stale: the read-only role's verdict the smoke confirmed no "
+            f"longer holds for {smoke_gone} — re-run scripts/live_smoke.py with the roles and "
+            "update SMOKE_REFUSED_READS / SMOKE_PERMITTED_WRITES"
+        )
+    refused_since = sorted(set(refused_names) - set(SMOKE_REFUSED_READS))
+    permitted_since = sorted(set(permitted_writes) - set(SMOKE_PERMITTED_WRITES))
+    tools_since = len(tools) - SMOKE_TOOL_COUNT
+    reads_since = n_read - SMOKE_READ_TOOL_COUNT
     smoke_generation = (
-        "the smoke runs were on the previous generation of the bodies, which differed only "
-        "in the two AAA rows — `aaa_cwaaa` a GET pattern limited to the paths the tools "
-        "send then, `/.*` now; `aaa_cw_role_read` in the body then, left to the baseline "
-        "row now — `versions` and the `rate` field, and their refusal predictions are "
-        f"identical; {read_back_clause}"
+        "the smoke runs were on the previous generation of the bodies — those of the "
+        f"{SMOKE_TOOL_COUNT} tools registered on {SMOKE_DATE} ({SMOKE_READ_TOOL_COUNT} read) — "
+        "which differed from the generated bodies of those tools only in the two AAA rows "
+        "— `aaa_cwaaa` a GET pattern limited to the paths the tools send then, `/.*` now; "
+        "`aaa_cw_role_read` in the body then, left to the baseline row now — `versions` "
+        "and the `rate` field"
+        + (
+            f"; the bodies as committed now also carry what the {tools_since} tools added "
+            f"since ({reads_since} read, {tools_since - reads_since} write) need — rows and "
+            "ticks that smoke did not exercise —"
+            if tools_since
+            else ","
+        )
+        + " and the refusal predictions for the tools of that day are identical (the same "
+        f"{len(SMOKE_REFUSED_READS)} read tools refused under `{READONLY_ROLE}`, "
+        + ", ".join(f"`{n}`" for n in SMOKE_PERMITTED_WRITES)
+        + f" permitted, every tool permitted under `{OPERATOR_ROLE}`)"
+        + (
+            f"; refused under `{READONLY_ROLE}` now but not then, not exercised by that "
+            "smoke: " + ", ".join(f"`{n}`" for n in refused_since)
+            if refused_since
+            else ""
+        )
+        + (
+            f"; permitted under `{READONLY_ROLE}` now but not then, not exercised by that "
+            "smoke: " + ", ".join(f"`{n}`" for n in permitted_since)
+            if permitted_since
+            else ""
+        )
+        + f"; {read_back_clause}"
     )
 
     out: list[str] = []
@@ -1749,8 +1882,16 @@ def render_doc(
         "Read and Write submitted as two entries beside each other (the 2026-09-14 "
         "experiment) were stored verbatim, and "
         f"so were the operator body's {len(delete_rows)} rows carrying DELETE and its "
-        f"{len(write_only_rows)} Write-only rows (`[POST, PUT, PATCH]`) — none of them on "
-        "this list. In the same 2026-09-14 submission a custom GET entry beside a custom "
+        f"{len(write_only_rows)} Write-only rows (`[POST, PUT, PATCH]`)"
+        + (
+            " — including "
+            + ", ".join(f"`{a}`" for a in delete_on_list)
+            + " on this list: a single entry carrying DELETE is stored verbatim, the split "
+            "applies only to Write without Delete (read back 2026-09-15)"
+            if delete_on_list
+            else " — none of them on this list"
+        )
+        + ". In the same 2026-09-14 submission a custom GET entry beside a custom "
         "POST entry was stored verbatim on "
         + ", ".join(f"`{a}`" for a in beside_get_on_list)
         + f" (and on {count_word(len(beside_get_off_list))} API"
@@ -1835,8 +1976,10 @@ def render_doc(
         "exercised live: how the editor displays and re-saves an API-loaded role (the group "
         "rows above, section 6). Extrapolated, not read back: the same split on the "
         f"{len(inferred_split)} other POST-delete APIs (from a POST-only experiment), and "
-        "what the service stores for a row carrying DELETE, or a Write-only row, on any of "
-        "them (the bodies have none). What is still static is the map itself (section 6: a "
+        "what the service stores for a Write-only row on any of them, or a row carrying "
+        "DELETE on one other than "
+        + ", ".join(f"`{a}`" for a in DELETE_ROW_VERBATIM_VERIFIED)
+        + " (the bodies have none). What is still static is the map itself (section 6: a "
         "source-derived heuristic, no tool endpoint is called), a device access group is "
         "reported, not evaluated, and whether task bundles exist for roles other than admin "
         "(section 5) is unknown."
@@ -1897,6 +2040,56 @@ def render_doc(
         + ". cnc_check_permissions keeps working without it: it reads the role through the "
         "`aaa_cw_role_read` baseline row and falls back to `aaa/v1` only when the mirror "
         "answers 403/404 (either row suffices for it)."
+    )
+    w("")
+    # what the write tools read before they write: the requests only they send that the
+    # stored read-only role permits — GETs on its rows, and the POSTs a template names
+    exceptions = readonly_exceptions(readonly_body, tools, platform, catalogue)
+    get_by_api: dict[str, list[str]] = defaultdict(list)
+    for method, path, api_id in exceptions:
+        if method == "GET":
+            get_by_api[api_id].append(path)
+    post_exceptions = [(m, p, a) for m, p, a in exceptions if m != "GET"]
+    senders = {
+        key: sorted(
+            name
+            for name, spec in tools.items()
+            if not spec["read_only"]
+            and any(
+                (req["path"], req["api_id"]) == key[1:] and key[0] in needed_methods(req["method"])
+                for req in spec["requirements"]
+            )
+        )
+        for key in exceptions
+    }
+    if not exceptions or not permitted_writes:
+        raise SystemExit("the read-before-write note is stale: recompute from the map")
+    n_get = sum(len(paths) for paths in get_by_api.values())
+    get_senders = sorted({n for key, names in senders.items() if key[0] == "GET" for n in names})
+    w(
+        "Read on these rows also permits what the write tools read before they write: "
+        f"{n_get} GET request template{'s' if n_get != 1 else ''} no read tool sends — "
+        + "; ".join(
+            " and ".join(f"`GET {path}`" for path in paths) + f" on `{api_id}`"
+            for api_id, paths in sorted(get_by_api.items())
+        )
+        + f" — sent by {len(get_senders)} write tool{'s' if len(get_senders) != 1 else ''}"
+        + (
+            f", and the {len(post_exceptions)} POST a read template names — "
+            + "; ".join(
+                f"`POST {path}` on `{api_id}` ("
+                + ", ".join(f"`{n}`" for n in senders[(method, path, api_id)])
+                + ")"
+                for method, path, api_id in post_exceptions
+            )
+            if post_exceptions
+            else ""
+        )
+        + ". "
+        + ", ".join(f"`{n}`" for n in permitted_writes)
+        + (" is the one write tool" if len(permitted_writes) == 1 else " are the write tools")
+        + " whose every request the role permits (section 6); every other write tool also "
+        "sends a request it refuses."
     )
     w("")
     w(

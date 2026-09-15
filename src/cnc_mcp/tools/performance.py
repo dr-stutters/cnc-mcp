@@ -128,12 +128,86 @@ spacing (:func:`sample_spacing`). The ``max`` endpoints answer ``{"max...",
 200). Delay / loss series need the corresponding SR-PM / Y.1731 probes on the
 devices; a lab without them answers ``[]`` everywhere.
 
-NOT exposed (writes, unverified live): policy create / update / activate /
-deactivate / delete (``POST policies``, ``PUT policies/<id>``, ``PUT
-policies/activate|deactivate/<ids>``, ``DELETE policies/<ids>``), ``PUT
-dataretention`` and ``PUT dashboards/healthsettings`` (+ the ``reset``
-endpoints), the per-schema graph endpoints (``dashboards/<area>/graph/...``)
-and ``dashboards/summary/topN``; all are read-only observation here.
+Policy and retention writes (verified live 2026-09-15 with a temporary
+``phase-d-pm`` INTERFACE policy on PE1 — create -> read back -> update ->
+activate -> deactivate -> delete, the lab left as found):
+
+- ``POST policies`` (MonitoringPolicyInputDTO: ``policyTemplate``, ``name``,
+  ``description``, ``schemasInterval {SCHEMA: seconds}``, ``devices`` /
+  ``deviceGroups`` / ``portGroups`` as comma-separated uuid STRINGS, ``tag``,
+  ``thresholds {}``, ``active``) answers 200 with the same
+  ``{"monitoringPolicy", "monitoringPolicyTemplate", "policyCollectionStatus"}``
+  object as a GET; ids are sequential integers that are never reused (3, 4
+  deleted -> the next create got 5). ``active`` omitted -> the policy is
+  created INACTIVE (the spec's "default true" is wrong): activation is a
+  separate call. Errors are Spring envelopes: a duplicate name -> 400
+  ``POLICY_EXITS`` (sic) "There is already an existing policy with the same
+  name" (parameters ``["<name> (<TEMPLATE>)"]``); an unknown template -> 400
+  ``INVALID_POLICY_TYPE``; no name -> 400 ``MISSING_NAME``; no devices, groups
+  or port groups -> 400 ``MISSING_DEVICES`` "The policy must be created with
+  either device IPs, device groups OR port groups selected"; an unknown
+  schema in ``schemasInterval`` -> 400 ``INVALID_SCHEMA`` "Invalid schema
+  provided" (parameters ``["BOGUSfor policy INTERFACE"]``). NOT validated by
+  the platform: the cadence (``CEPMINTERFACE: 123`` was accepted although the
+  template allows 0/300/600/900/1800/3600), a device that is not an inventory
+  uuid (``"PE1"`` was accepted and the activated policy simply polled NOTHING
+  — ``policies/devices/<id>`` empty) and an unknown group uuid (accepted) —
+  the tools here validate all three before sending.
+- ``PUT policies/<id>`` needs the FULL MonitoringPolicy body including
+  ``id`` (a partial body, or a body whose ``id`` differs from the path, is
+  answered 400 ``MISSING_POLICY_ID`` "Given policy ID doesn't exist" naming
+  the PATH id — misleading) and the body's ``active`` IS the activation
+  state: ``active: true`` on an inactive policy activates it (a
+  deployment-history entry appears, the device polls within ~3 s),
+  ``active: false`` OR THE KEY ABSENT deactivates an active one. So an update
+  must read-merge-write and carry the current flag — cnc_update_performance_policy
+  does. The PUT answer echoes the policy with ``creationTimestamp`` /
+  ``lastChangedTimestamp`` 0; a GET has the real ones. Renaming to an
+  EXISTING name is accepted (uniqueness is checked on create only) — the tool
+  refuses it before sending.
+- ``PUT policies/activate/<ids>``, ``PUT policies/deactivate/<ids>`` and
+  ``DELETE policies/<ids>`` take ONE comma-separated path segment of integer
+  ids (``activate/3,999999`` verified; a non-integer answers 500 "Method
+  parameter 'policyIdOrIds': Failed to convert ... to required type
+  'java.util.List'") and answer 200 with a LIST of OperationResult
+  ``{"policyId", "status": OK | ALREADY_ACTIVATED | ALREADY_DEACTIVATED |
+  NOT_FOUND (| DB_ERROR, documented), "policyName" ("" for NOT_FOUND)}`` —
+  an unknown id is a 200 NOT_FOUND, never an HTTP error, so the tools turn
+  it into one. Activation timing: at t+0 the policy reads ``active true,
+  policyCollectionStatus PARTIAL`` and the device ``NOTPOLLING`` with a
+  comment ``{"type": "IN_PROGRESS"}``; at t+5 s the device is ``ACTIVE`` and
+  the policy ``OK``. Deactivation is immediate (``active false``, device
+  list empty). A second INTERFACE policy on PE1 did NOT displace the
+  built-in "Default interface health" policy's PE1 row (both stayed ACTIVE,
+  no POLLED_BY_ANOTHER_POLICY). Delete needs no deactivation first (an
+  ACTIVE policy deleted fine); a deleted / unknown id answers NOT_FOUND.
+- ``PUT dataretention`` body ``{"<raw table>": {rawDataRetentionPeriod,
+  hourlyDataRetentionPeriod, dailyDataRetentionPeriod,
+  weeklyDataRetentionPeriod}}`` where the raw table is EXACTLY a key of
+  ``GET dataretention/all`` (``CEPM_INTERFACE``, ``CEPM_SRPOLICY``,
+  ``DeviceCpuUtilInfo``, ``OPTPM_OPTICSLANE``, ... — case-sensitive) ->
+  ``200 true`` and the change reads back at once; an unknown / miscased key
+  -> ``200 false`` and NOTHING changes (so ``false`` means "no such table");
+  ``{}`` -> ``200 true``; a non-object or non-integer value -> 400 "JSON parse
+  error ..." (a sentence, not a code). Partial bodies (fewer than four
+  periods) were NOT sent live — the tool always sends all four. ``POST
+  dataretention/reset`` (spec: 200 boolean) was NOT called live: it would
+  overwrite every table with the defaults. ``GET dataretention`` -> 500
+  "Request method 'GET' is not supported".
+- ``PUT dashboards/healthsettings`` takes the NESTED shape of the GET
+  (``{"<template>": {"<SCHEMA>_<metric>": {metric, schemaName, policy,
+  categories [{level, min, max}], unit, ...}}}``; an unchanged body ->
+  200 with an empty body); the flat ``{"<SCHEMA>_<metric>": {...}}`` form and
+  a non-object setting -> 400 ``METRIC_HEALTH_INVALID_REQ`` "Invalid
+  Request"; ``{}`` -> 200. A CHANGED threshold was not sent live and the
+  categories are a range list, so the health-settings write and its
+  ``reset`` stay unexposed (``GET dashboards/healthsettings/<token>`` is the
+  per-metric read; an unknown token answers ``{}``).
+
+Still NOT exposed: ``PUT dashboards/healthsettings`` (+ ``reset``), TCA
+thresholds on a policy (``thresholds`` is sent as ``{}`` on create and kept
+as-is on update), the per-schema graph endpoints
+(``dashboards/<area>/graph/...``) and ``dashboards/summary/topN``.
 """
 
 from __future__ import annotations
@@ -142,6 +216,7 @@ import asyncio
 import ipaddress
 import logging
 import re
+import time
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Any
@@ -153,6 +228,7 @@ from pydantic import Field
 from cnc_mcp.crosswork import REACHABILITY_STATES
 from cnc_mcp.errors import PlatformError, format_error, http_error
 from cnc_mcp.formatting import ResponseFormat, epoch_iso, finalize, pagination_envelope, to_json
+from cnc_mcp.polling import wait_until
 from cnc_mcp.safety import AppContext, register_tool
 from cnc_mcp.tools.te_state import (
     end_label,
@@ -170,8 +246,13 @@ NPM = "/crosswork/optima-analytics/api/v1"
 POLICIES_URL = f"{PERFORMANCE}/policies"
 POLICY_DEVICES_URL = f"{POLICIES_URL}/devices"
 POLICY_TEMPLATES_URL = f"{POLICIES_URL}/policy-templates"
-RETENTION_ALL_URL = f"{PERFORMANCE}/dataretention/all"
-RETENTION_DEFAULT_URL = f"{PERFORMANCE}/dataretention/default"
+POLICY_INVENTORY_DEVICES_URL = f"{POLICIES_URL}/inventory-devices"
+POLICY_ACTIVATE_URL = f"{POLICIES_URL}/activate"
+POLICY_DEACTIVATE_URL = f"{POLICIES_URL}/deactivate"
+RETENTION_URL = f"{PERFORMANCE}/dataretention"
+RETENTION_ALL_URL = f"{RETENTION_URL}/all"
+RETENTION_DEFAULT_URL = f"{RETENTION_URL}/default"
+RETENTION_RESET_URL = f"{RETENTION_URL}/reset"
 HEALTH_SETTINGS_URL = f"{PERFORMANCE}/dashboards/healthsettings"
 STATISTICS_URL = f"{PERFORMANCE}/dashboards/statistics"
 TOPN_URL = f"{PERFORMANCE}/dashboards/topn"
@@ -244,6 +325,48 @@ CODE_MISSING_POLICY_HISTORY = "MISSING_POLICY_HISTORY"
 CODE_INVALID_SCHEMA = "INVALID_SCHEMA"
 CODE_INVALID_SCHEMA_METRIC_COMBO = "INVALID_SCHEMA_METRIC_COMBO"
 CODE_MISSING_TIME_DETAILS = "MISSING_TIME_DETAILS"
+# Policy-write codes (verified live 2026-09-15; POLICY_EXITS is the platform's spelling).
+CODE_POLICY_EXISTS = "POLICY_EXITS"
+CODE_INVALID_POLICY_TYPE = "INVALID_POLICY_TYPE"
+CODE_MISSING_NAME = "MISSING_NAME"
+CODE_MISSING_DEVICES = "MISSING_DEVICES"
+# OperationResult.status of activate / deactivate / delete (all but DB_ERROR seen live).
+OPERATION_OK = "OK"
+OPERATION_ALREADY = ("ALREADY_ACTIVATED", "ALREADY_DEACTIVATED")
+OPERATION_NOT_FOUND = "NOT_FOUND"
+# The comment type a freshly activated policy's device carries while the scheduler is
+# still deploying the collection job (verified live: NOTPOLLING + IN_PROGRESS at t+0,
+# ACTIVE at t+5 s).
+IN_PROGRESS_COMMENT = "IN_PROGRESS"
+# Page size of the internal lookups (policies/inventory-devices for a host name,
+# policies/devices/<id> for the activation wait): the endpoints' documented default, and
+# verified live 2026-09-15 to be accepted (an out-of-range page answers ``{"data": [],
+# "total_count": N}``). LOOKUP_MAX_PAGES bounds the walk (10 000 rows).
+LOOKUP_PAGE_SIZE = 1000
+LOOKUP_MAX_PAGES = 10
+# The four retention periods (hours) of one raw table, in the platform's spelling.
+RETENTION_FIELDS = (
+    "rawDataRetentionPeriod",
+    "hourlyDataRetentionPeriod",
+    "dailyDataRetentionPeriod",
+    "weeklyDataRetentionPeriod",
+)
+# The MonitoringPolicy fields a PUT policies/<id> body carries (the template part of the
+# DTO is read-only and must not be echoed back).
+POLICY_BODY_FIELDS = (
+    "id",
+    "policyTemplate",
+    "name",
+    "description",
+    "schemasInterval",
+    "devices",
+    "deviceGroups",
+    "portGroups",
+    "tag",
+    "thresholds",
+    "active",
+)
+_POLICY_ID_RE = re.compile(r"^\d+$")
 # The longest window the statistics dashboard is asked for in hours: the default weekly
 # retention (9072 h); anything older is gone whatever the request says.
 MAX_HOURS = 9072
@@ -1269,6 +1392,330 @@ def series_section(title: str, samples: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+# --- policy and retention writes (pure helpers) ------------------------------
+
+
+def parse_policy_ids(text: str | None) -> list[int]:
+    """'3' / '3, 5' -> [3, 5] (order kept, duplicates dropped) — the comma list the
+    activate / deactivate / delete path segment takes (verified live: ``activate/3,999999``).
+    Anything that is not a positive integer is refused before sending (the platform would
+    answer 500 "Failed to convert ... to required type 'java.util.List'")."""
+    ids: list[int] = []
+    for token in (text or "").split(","):
+        value = token.strip()
+        if not value:
+            continue
+        if not _POLICY_ID_RE.match(value) or int(value) < 1:
+            raise PlatformError(
+                f"policy_ids must be one or more positive integer policy ids separated by "
+                f"commas (e.g. '3' or '3,5'), got '{text}'. cnc_list_performance_policies "
+                "shows the ids. Nothing was sent."
+            )
+        if int(value) not in ids:
+            ids.append(int(value))
+    if not ids:
+        raise PlatformError(
+            "policy_ids is required (e.g. '3' or '3,5'); cnc_list_performance_policies shows "
+            "the ids. Nothing was sent."
+        )
+    return ids
+
+
+def find_template(templates: Any, name: str | None) -> tuple[str, dict[str, Any]]:
+    """The ``(canonical key, template object)`` of ``GET policies/policy-templates`` whose
+    key matches ``name`` case-insensitively ('interface' -> 'INTERFACE', 'devicehealth' ->
+    'deviceHealth'); an unknown name is refused naming every template."""
+    wanted = (name or "").strip()
+    catalogue = _dict(templates)
+    for key, template in catalogue.items():
+        if str(key).lower() == wanted.lower() and wanted:
+            return str(key), _dict(template)
+    raise PlatformError(
+        f"unknown policy template '{name}'. Templates on this platform: "
+        f"{', '.join(str(k) for k in catalogue) or '(none)'} — "
+        "cnc_list_performance_policy_templates shows their schemas and cadences. Nothing "
+        "was sent."
+    )
+
+
+def parse_schemas_interval(
+    text: str | None, template_key: str, template: dict[str, Any]
+) -> dict[str, int]:
+    """``schemas_interval`` -> the ``{SCHEMA: seconds}`` map a policy body carries, validated
+    against the template (the platform does not validate the cadence — 123 s was accepted
+    live — nor fills missing schemas): 'CEPMINTERFACE=3600,CEPMCRC=0' (also ':' as the
+    separator) names schemas explicitly, a bare integer ('300') applies to EVERY schema of
+    the template, and every template schema not named is set to 0 (not polled). A schema
+    the template does not have, or a cadence outside the schema's ``pollingIntervals``,
+    is refused naming the allowed values."""
+    intervals = _dict(template.get("schemasInterval"))
+    if not intervals:
+        raise PlatformError(
+            f"template {template_key} lists no schemas; cnc_list_performance_policy_templates "
+            "shows the catalogue. Nothing was sent."
+        )
+    value = (text or "").strip()
+    if not value:
+        raise PlatformError(
+            "schemas_interval is required: 'SCHEMA=seconds,...' (e.g. 'CEPMINTERFACE=3600') "
+            f"or one cadence for every schema (e.g. '300'). Schemas of {template_key}: "
+            f"{', '.join(intervals)}. Nothing was sent."
+        )
+    by_lower = {str(k).lower(): str(k) for k in intervals}
+    result: dict[str, int] = {}
+    if _POLICY_ID_RE.match(value):
+        pairs = [(schema, value) for schema in intervals]
+    else:
+        pairs = []
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            schema, sep, seconds = token.replace(":", "=").partition("=")
+            if not sep or not schema.strip() or not seconds.strip():
+                raise PlatformError(
+                    f"schemas_interval token '{token}' is not SCHEMA=seconds (e.g. "
+                    "'CEPMINTERFACE=3600'). Nothing was sent."
+                )
+            pairs.append((schema.strip(), seconds.strip()))
+    for schema, seconds in pairs:
+        canonical = by_lower.get(schema.lower())
+        if canonical is None:
+            raise PlatformError(
+                f"schema '{schema}' is not part of template {template_key} (its schemas: "
+                f"{', '.join(intervals)}). Nothing was sent."
+            )
+        allowed = _dict(intervals.get(canonical)).get("pollingIntervals")
+        allowed_list = [int(a) for a in allowed] if isinstance(allowed, list) else []
+        if not _POLICY_ID_RE.match(seconds):
+            raise PlatformError(
+                f"cadence '{seconds}' for {canonical} is not a whole number of seconds; "
+                f"allowed: {'/'.join(str(a) for a in allowed_list) or 'per template'}. "
+                "Nothing was sent."
+            )
+        cadence = int(seconds)
+        if allowed_list and cadence not in allowed_list:
+            raise PlatformError(
+                f"cadence {cadence} s is not allowed for {canonical}: the template permits "
+                f"{'/'.join(str(a) for a in allowed_list)} s (0 = not polled). The platform "
+                "would accept it silently and poll at an unsupported interval. Nothing was sent."
+            )
+        result[canonical] = cadence
+    for schema in intervals:
+        result.setdefault(str(schema), 0)
+    return result
+
+
+def parse_uuid_list(text: str | None, what: str, hint: str) -> list[str]:
+    """A comma list of uuids (canonical lower-case; duplicates dropped); anything else is
+    refused — the platform accepts any string as a group uuid and then polls nothing."""
+    out: list[str] = []
+    for token in (text or "").split(","):
+        value = token.strip()
+        if not value:
+            continue
+        try:
+            canonical = str(uuid_lib.UUID(value.lower()))
+        except ValueError:
+            raise PlatformError(
+                f"{what} must be comma-separated uuids, got '{value}' — {hint}. The platform "
+                "would accept it silently and the policy would poll nothing. Nothing was sent."
+            ) from None
+        if canonical not in out:
+            out.append(canonical)
+    return out
+
+
+def operation_results(data: Any) -> list[dict[str, Any]]:
+    """The OperationResult list of activate / deactivate / delete as ``[{"policy_id",
+    "status", "policy_name", "error_message"}]`` (a single object is wrapped)."""
+    rows = data if isinstance(data, list) else [data]
+    return [
+        {
+            "policy_id": r.get("policyId"),
+            "status": r.get("status"),
+            "policy_name": r.get("policyName") or None,
+            "error_message": r.get("errorMessage") or None,
+        }
+        for r in rows
+        if isinstance(r, dict)
+    ]
+
+
+def check_operation_results(
+    results: list[dict[str, Any]], ids: list[int], verb: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split the results into ``(done, already)`` — status OK, and ALREADY_ACTIVATED /
+    ALREADY_DEACTIVATED (a no-op the tools report as success) — and raise for a NOT_FOUND
+    (the platform answers it as a 200), a DB_ERROR / unknown status, or an id the answer
+    does not mention at all."""
+    by_id = {r.get("policy_id"): r for r in results}
+    done: list[dict[str, Any]] = []
+    already: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for policy_id in ids:
+        result = by_id.get(policy_id)
+        if result is None:
+            problems.append(f"policy {policy_id}: no result in the platform's answer")
+            continue
+        status = str(result.get("status") or "")
+        if status == OPERATION_OK:
+            done.append(result)
+        elif status in OPERATION_ALREADY:
+            already.append(result)
+        elif status == OPERATION_NOT_FOUND:
+            problems.append(f"no performance policy {policy_id} (NOT_FOUND)")
+        else:
+            message = result.get("error_message")
+            problems.append(
+                f"policy {policy_id}: {status or 'no status'}"
+                + (f" — {message}" if message else "")
+            )
+    if problems:
+        state = f"{len(done)} {verb}, {len(already)} already so" if (done or already) else "none"
+        raise PlatformError(
+            f"{'; '.join(problems)}. Applied to the others: {state}. "
+            "cnc_list_performance_policies shows the ids."
+        )
+    return done, already
+
+
+def policy_body(policy: dict[str, Any]) -> dict[str, Any]:
+    """The MonitoringPolicy fields of a GET answer as the full body ``PUT policies/<id>``
+    needs (the platform rejects a partial body with MISSING_POLICY_ID and reads a missing
+    ``active`` as false — verified live); ``thresholds`` defaults to {} and ``active`` to
+    False when absent."""
+    body = {field: policy.get(field) for field in POLICY_BODY_FIELDS}
+    for field in ("description", "devices", "deviceGroups", "portGroups", "tag"):
+        if body[field] is None:
+            body[field] = ""
+    if not isinstance(body["thresholds"], dict):
+        body["thresholds"] = {}
+    if not isinstance(body["schemasInterval"], dict):
+        body["schemasInterval"] = {}
+    body["active"] = bool(body["active"])
+    return body
+
+
+def policy_write_hints(name: str = "", template: str = "") -> dict[str, str | tuple[str, str]]:
+    """The Spring codes a policy create / update can answer (verified live)."""
+    return {
+        CODE_POLICY_EXISTS: (
+            f"a performance policy named '{name}' already exists",
+            "cnc_list_performance_policies shows it — pick another name, or change that "
+            "policy with cnc_update_performance_policy.",
+        ),
+        CODE_INVALID_POLICY_TYPE: (
+            f"unknown policy template '{template}'",
+            "cnc_list_performance_policy_templates lists the templates.",
+        ),
+        CODE_MISSING_NAME: ("the policy name is mandatory", "Pass a non-blank name."),
+        CODE_MISSING_DEVICES: (
+            "the policy needs a selection",
+            "Pass devices (inventory uuids or host names), device_groups or port_groups.",
+        ),
+        CODE_INVALID_SCHEMA: (
+            "a schema in schemas_interval is not part of the template",
+            "cnc_list_performance_policy_templates shows each template's schemas.",
+        ),
+        CODE_MISSING_POLICY_ID: (
+            "no such performance policy (or the body's id did not match)",
+            "cnc_list_performance_policies shows the ids.",
+        ),
+    }
+
+
+def paged_total(data: dict[str, Any]) -> int | None:
+    """``total_count`` of a ``{"data": [...], "total_count": N}`` page as an int, None when
+    absent (the plain policies/devices page has been seen without it)."""
+    total = data.get("total_count")
+    return total if isinstance(total, int) and not isinstance(total, bool) else None
+
+
+def same_selection(a: str | None, b: str | None) -> bool:
+    """True when two comma-joined selection strings name the same set (order and case
+    of the uuids / names ignored, blanks dropped)."""
+
+    def tokens(text: str | None) -> set[str]:
+        return {t.strip().lower() for t in (text or "").split(",") if t.strip()}
+
+    return tokens(a) == tokens(b)
+
+
+def policy_devices_settled(rows: list[dict[str, Any]]) -> bool:
+    """True once no device of a freshly activated policy is still IN_PROGRESS (the
+    scheduler has decided ACTIVE / DEGRADED / NOTPOLLING-with-a-reason for every row)."""
+    for row in rows:
+        for comment in _list_of_dicts(row.get("comments")):
+            if str(comment.get("type") or "").upper() == IN_PROGRESS_COMMENT:
+                return False
+    return True
+
+
+def devices_status_text(rows: list[dict[str, Any]]) -> str:
+    """'PE1 ACTIVE, PE2 NOTPOLLING [POLLED_BY_ANOTHER_POLICY Default interface health]' — or
+    '(no devices listed)'."""
+    parts = []
+    for row in rows:
+        notes = "; ".join(
+            f"{c.get('type') or '?'} {c.get('argument') or ''}".strip()
+            for c in _list_of_dicts(row.get("comments"))
+        )
+        parts.append(
+            f"{row.get('hostName') or row.get('uuid') or '?'} {row.get('collectionStatus') or '?'}"
+            + (f" [{notes}]" if notes else "")
+        )
+    return ", ".join(parts) or "(no devices listed)"
+
+
+def find_retention_table(all_data: Any, table: str | None) -> tuple[str, dict[str, Any]]:
+    """The ``(raw table key, entry)`` of ``GET dataretention/all`` that ``table`` names —
+    by key (``CEPM_INTERFACE``, ``DeviceCpuUtilInfo``; case-insensitive, the canonical
+    spelling is what the PUT needs: a miscased key answers ``false`` and changes nothing)
+    or by ``schemaName`` (``CEPMINTERFACE``, ``CPU``); unknown -> refused naming every table."""
+    wanted = (table or "").strip().lower()
+    entries = _dict(all_data)
+    if wanted:
+        for key, entry in entries.items():
+            if str(key).lower() == wanted:
+                return str(key), _dict(entry)
+        for key, entry in entries.items():
+            if str(_dict(entry).get("schemaName") or "").lower() == wanted:
+                return str(key), _dict(entry)
+    raise PlatformError(
+        f"unknown retention table '{table}'. Tables (raw table key = schema): "
+        + ", ".join(f"{k} = {_dict(v).get('schemaName') or '?'}" for k, v in entries.items())
+        + ". Nothing was sent."
+    )
+
+
+def retention_body(entry: dict[str, Any], changes: dict[str, int | None]) -> dict[str, int]:
+    """The four periods of one table: the current values with the given ``changes``
+    (``{"rawDataRetentionPeriod": 48, ...}``, None = keep) applied — always all four, the
+    platform's behaviour on a partial body being unverified."""
+    body: dict[str, int] = {}
+    for field in RETENTION_FIELDS:
+        new = changes.get(field)
+        current = entry.get(field)
+        value = new if new is not None else current
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise PlatformError(
+                f"the platform reports no {field} for this table and none was given; pass "
+                "all four periods."
+            )
+        body[field] = int(value)
+    return body
+
+
+def retention_periods_text(values: dict[str, Any]) -> str:
+    return (
+        f"raw {num_text(values.get('rawDataRetentionPeriod'))} h, hourly "
+        f"{num_text(values.get('hourlyDataRetentionPeriod'))} h, daily "
+        f"{num_text(values.get('dailyDataRetentionPeriod'))} h, weekly "
+        f"{num_text(values.get('weeklyDataRetentionPeriod'))} h"
+    )
+
+
 # --- tools -------------------------------------------------------------------
 
 
@@ -1347,7 +1794,11 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         first to learn the policy ids for cnc_get_performance_policy /
         cnc_list_performance_policy_devices and to see which schemas produce
         data at all (a schema no active policy polls answers empty
-        statistics). Creating or changing policies is not exposed.
+        statistics). Create / change / activate / deactivate / delete a
+        policy with cnc_create_performance_policy,
+        cnc_update_performance_policy, cnc_activate_performance_policy,
+        cnc_deactivate_performance_policy, cnc_delete_performance_policy
+        (write tools; ids are integers, never reused).
 
         Returns:
             str: Markdown "# N performance monitoring policies" and one
@@ -1763,7 +2214,10 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         periods (24 / 168 / 744 / 9072 h on 7.2). Use it to know how far back
         cnc_get_performance_statistics / _top_n / _summary can look and at
         which resolution (raw 5-minute samples for 24 h, then hourly roll-ups,
-        ...). Changing retention (``PUT dataretention``) is not exposed.
+        ...). The display name column IS the raw table key
+        cnc_update_performance_retention takes (``CEPM_INTERFACE``,
+        ``DeviceCpuUtilInfo``, ...; the schema name works too);
+        cnc_reset_performance_retention puts every table back to the default.
 
         Returns:
             str: Markdown "# Performance data retention (hours)", the default
@@ -1824,7 +2278,8 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
         cnc_get_performance_top_n and cnc_get_performance_summary take. Use it
         to interpret a ``severity`` (which range a value fell in) or to check
         what "MAJOR" means for a metric before alarming on it. Changing the
-        thresholds (``PUT dashboards/healthsettings``) is not exposed.
+        thresholds (``PUT dashboards/healthsettings``, which takes this same
+        nested shape — verified with an unchanged body) is not exposed.
 
         Args:
             template: optional template filter (case-insensitive key match).
@@ -2960,5 +3415,1123 @@ def register(mcp: MCPServer, ctx: AppContext) -> None:
             if not (delay and loss):
                 lines.extend(["", f"(An empty series: {NPM_EMPTY_CAVEAT})"])
             return finalize("\n".join(lines), settings)
+        except Exception as e:
+            return format_error(e)
+
+    # --- policy and retention writes -------------------------------------------
+
+    async def perf_send(
+        method: str,
+        path: str,
+        json_body: Any = None,
+        hints: dict[str, str | tuple[str, str]] | None = None,
+    ) -> Any:
+        """A write on performance/v1 (POST is never re-sent on a 5xx / transport error — a
+        lost create answer must not duplicate the policy; PUT / DELETE keep the client's
+        idempotent retry): a Spring error envelope becomes the precise PlatformError of
+        performance_error(); the JSON body otherwise (None for an empty body)."""
+        response = await client.request(method, path, json_body=json_body, raise_on_error=False)
+        if not response.is_success:
+            raise performance_error(response, hints)
+        if not response.content:
+            return None
+        return _parse_json(response)
+
+    async def perf_rows(
+        path: str,
+        params: dict[str, Any],
+        hints: dict[str, str | tuple[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every row of a paged performance/v1 listing (``{"data": [...], "total_count":
+        N}``): page 1 at LOOKUP_PAGE_SIZE, then the next pages while ``total_count`` says
+        more remain (or, when it is absent, while the page came back full), at most
+        LOOKUP_MAX_PAGES pages."""
+        rows: list[dict[str, Any]] = []
+        for page in range(1, LOOKUP_MAX_PAGES + 1):
+            data = _dict(
+                await perf_get(
+                    path, params={**params, "pageSize": LOOKUP_PAGE_SIZE, "page": page}, hints=hints
+                )
+            )
+            page_rows = _list_of_dicts(data.get("data"))
+            rows.extend(page_rows)
+            total = paged_total(data)
+            more = len(rows) < total if total is not None else len(page_rows) >= LOOKUP_PAGE_SIZE
+            if not page_rows or not more:
+                break
+        return rows
+
+    async def resolve_devices(text: str) -> list[str]:
+        """``devices`` -> canonical inventory uuids: a uuid is kept, a host name is looked
+        up with ``GET policies/inventory-devices?hostName=<name>`` (verified live: answers
+        ``{"data": [{hostName, uuid, ...}], "total_count": N}``) and must match exactly one
+        device by exact (case-insensitive) host name. The platform's ``hostName`` filter is
+        a case-insensitive SUBSTRING match (verified live 2026-09-15: ``hostName=P``
+        answered P1, P2, PCE, PE1, PE2), so the exact-name match is client-side and every
+        page of the substring hits is walked (pageSize 1000) before deciding. The platform
+        accepts ANY string as a device (``"PE1"`` was stored and the activated policy polled
+        nothing), so nothing but a resolved uuid is ever sent."""
+        out: list[str] = []
+        for token in split_csv(text):
+            if is_uuid(token):
+                canonical = str(uuid_lib.UUID(token.lower()))
+            else:
+                rows = [
+                    r
+                    for r in await perf_rows(POLICY_INVENTORY_DEVICES_URL, {"hostName": token})
+                    if str(r.get("hostName") or "").lower() == token.lower()
+                ]
+                if len(rows) != 1 or not is_uuid(rows[0].get("uuid")):
+                    raise PlatformError(
+                        f"device '{token}' is not an inventory uuid and {len(rows)} device(s) "
+                        "match it by host name — pass the uuid or the exact host name "
+                        "(cnc_list_devices shows both). The platform would accept the text "
+                        "silently and the policy would poll nothing. Nothing was sent."
+                    )
+                canonical = str(uuid_lib.UUID(str(rows[0]["uuid"]).lower()))
+            if canonical not in out:
+                out.append(canonical)
+        return out
+
+    async def selection_of(devices: str, device_groups: str, port_groups: str) -> dict[str, str]:
+        """The three comma-joined selection strings of a policy body, validated / resolved."""
+        return {
+            "devices": ",".join(await resolve_devices(devices)),
+            "deviceGroups": ",".join(
+                parse_uuid_list(
+                    device_groups,
+                    "device_groups",
+                    "cnc_get_group_hierarchy / cnc_get_group_details show group uuids",
+                )
+            ),
+            "portGroups": ",".join(
+                parse_uuid_list(port_groups, "port_groups", "port-group uuids from the CNC UI")
+            ),
+        }
+
+    async def policy_dto(policy_id: int) -> dict[str, Any]:
+        """``GET policies/<id>`` as the DTO dict (a list answer is unwrapped)."""
+        data = await perf_get(f"{POLICIES_URL}/{policy_id}", hints=policy_hints(policy_id))
+        if isinstance(data, list):
+            data = data[0] if data and isinstance(data[0], dict) else None
+        if not isinstance(data, dict) or not _dict(data.get("monitoringPolicy")):
+            raise PlatformError(
+                f"no performance policy {policy_id}: the platform answered no policy object. "
+                "List policies with cnc_list_performance_policies."
+            )
+        return data
+
+    async def activation_wait(policy_id: int, wait_seconds: int) -> dict[str, Any]:
+        """Poll ``policies/devices/<id>`` (every page, pageSize 1000) until no device is
+        still IN_PROGRESS (verified live: NOTPOLLING + IN_PROGRESS at t+0, ACTIVE at t+5 s)
+        or ``wait_seconds`` elapse; always reads at least once. A failed poll (a 5xx, a
+        transport error) is NOT raised — the activation itself already succeeded — but
+        reported in the result as ``error`` with an empty device list, so the caller can
+        say "activated; device status unavailable"."""
+
+        async def fetch() -> list[dict[str, Any]]:
+            return await perf_rows(
+                f"{POLICY_DEVICES_URL}/{policy_id}", {}, hints=policy_hints(policy_id)
+            )
+
+        started = time.monotonic()
+        try:
+            settled, rows, elapsed = await wait_until(
+                fetch, policy_devices_settled, timeout_seconds=wait_seconds, interval_seconds=3
+            )
+        except Exception as e:
+            error = format_error(e)
+            logger.warning("policy %s activated; device status poll failed: %s", policy_id, error)
+            return {
+                "policy_id": policy_id,
+                "settled": False,
+                "elapsed_seconds": round(time.monotonic() - started),
+                "summary": f"device status unavailable ({error})",
+                "devices": [],
+                "error": error,
+            }
+        return {
+            "policy_id": policy_id,
+            "settled": settled,
+            "elapsed_seconds": round(elapsed),
+            "summary": devices_status_text(rows),
+            "devices": [policy_device_view(r) for r in rows],
+            "error": None,
+        }
+
+    async def activate_policies(ids: list[int], wait_seconds: int) -> dict[str, Any]:
+        """``PUT policies/activate/<ids>`` (one comma-joined segment), the results checked,
+        then the deployment wait for every policy that was (or already is) active — the
+        waits run CONCURRENTLY, so the whole step takes about ``wait_seconds`` at most,
+        not ``wait_seconds`` per policy."""
+        raw = await perf_send("PUT", f"{POLICY_ACTIVATE_URL}/{','.join(str(i) for i in ids)}")
+        results = operation_results(raw)
+        done, already = check_operation_results(results, ids, "activated")
+        waits = list(
+            await asyncio.gather(
+                *(activation_wait(int(r["policy_id"]), wait_seconds) for r in done + already)
+            )
+        )
+        return {"results": results, "activated": done, "already_active": already, "waits": waits}
+
+    def activation_lines(outcome: dict[str, Any]) -> list[str]:
+        lines = []
+        for result in outcome["activated"]:
+            lines.append(
+                f"- policy {result['policy_id']} '{result['policy_name'] or '?'}': activated"
+            )
+        for result in outcome["already_active"]:
+            lines.append(
+                f"- policy {result['policy_id']} '{result['policy_name'] or '?'}': already active"
+            )
+        for wait in outcome["waits"]:
+            if wait.get("error"):
+                lines.append(
+                    f"- policy {wait['policy_id']} devices: status unavailable after "
+                    f"{wait['elapsed_seconds']} s ({wait['error']}) — the activation itself "
+                    f"succeeded; cnc_list_performance_policy_devices(policy_id="
+                    f"{wait['policy_id']}) shows the devices"
+                )
+                continue
+            state = "settled" if wait["settled"] else "still deploying"
+            lines.append(
+                f"- policy {wait['policy_id']} devices after {wait['elapsed_seconds']} s "
+                f"({state}): {wait['summary']}"
+            )
+        return lines
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_create_performance_policy",
+        title="Create Performance Monitoring Policy",
+        read_only=False,
+        idempotent=False,
+        dry_run_hint=(
+            "cnc_list_performance_policy_templates (read-only) shows the template's schemas "
+            "and allowed cadences and cnc_list_performance_policies the policies that exist"
+        ),
+    )
+    async def cnc_create_performance_policy(
+        name: Annotated[
+            str,
+            Field(
+                description="Unique policy name (e.g. 'PE1 interface health, hourly').",
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        template: Annotated[
+            str,
+            Field(
+                description=(
+                    "Policy template to instantiate, as cnc_list_performance_policy_templates "
+                    "names it (e.g. 'INTERFACE', 'deviceHealth', 'SRPOLICY'; case-insensitive)."
+                ),
+                min_length=1,
+                max_length=60,
+            ),
+        ],
+        schemas_interval: Annotated[
+            str,
+            Field(
+                description=(
+                    "Polling cadence per schema of the template: 'SCHEMA=seconds' pairs "
+                    "separated by commas (e.g. 'CEPMINTERFACE=3600,CEPMCRC=0'), or one number "
+                    "for every schema (e.g. '300'). Schemas not named are set to 0 (not polled). "
+                    "Each cadence must be one of the schema's allowed pollingIntervals "
+                    "(0/300/600/900/1800/3600 on 7.2; cnc_list_performance_policy_templates)."
+                ),
+                min_length=1,
+                max_length=1000,
+            ),
+        ],
+        devices: Annotated[
+            str,
+            Field(
+                description=(
+                    "Comma-separated devices to poll: inventory uuids or exact host names (e.g. "
+                    "'PE1,PE2' or 'af1986fa-e1cb-4f8c-aa83-4f05a00472e7'); blank for none. At "
+                    "least one of devices / device_groups / port_groups is required."
+                ),
+                max_length=8000,
+            ),
+        ] = "",
+        device_groups: Annotated[
+            str,
+            Field(
+                description=(
+                    "Comma-separated device-group uuids (e.g. "
+                    "'7913c888-f691-4c08-ac71-55a35b236e49' — cnc_get_group_hierarchy); blank "
+                    "for none."
+                ),
+                max_length=4000,
+            ),
+        ] = "",
+        port_groups: Annotated[
+            str,
+            Field(
+                description=(
+                    "Comma-separated port-group uuids (interface templates only); blank for none."
+                ),
+                max_length=4000,
+            ),
+        ] = "",
+        description: Annotated[
+            str,
+            Field(
+                description="Free-text description (e.g. 'Hourly PE1 counters').", max_length=1000
+            ),
+        ] = "",
+        tag: Annotated[
+            str,
+            Field(
+                description=(
+                    "Contact / tag text the policy carries (e.g. '{contact:noc@example.com}')."
+                ),
+                max_length=500,
+            ),
+        ] = "",
+        activate: Annotated[
+            bool,
+            Field(
+                description=(
+                    "true to activate the policy right after creating it (starts collection on "
+                    "the selected devices — network-impacting); false (default) creates it "
+                    "inactive for cnc_activate_performance_policy later."
+                )
+            ),
+        ] = False,
+        wait_seconds: Annotated[
+            int,
+            Field(
+                description=(
+                    "With activate=true: how long in total to wait for the devices to leave "
+                    "IN_PROGRESS (e.g. 20; 0 = read the device statuses once and return)."
+                ),
+                ge=0,
+                le=120,
+            ),
+        ] = 20,
+    ) -> str:
+        """Create a performance monitoring policy from a template — which schemas
+        to poll, how often, on which devices / groups — inactive unless
+        ``activate`` is set.
+
+        Write; ``POST /crosswork/performance/v1/policies`` with
+        ``{policyTemplate, name, description, schemasInterval {SCHEMA:
+        seconds}, devices, deviceGroups, portGroups (comma-joined uuid
+        strings), tag, thresholds {}, active false}`` (verified live
+        2026-09-15) -> 200 with the policy object (``monitoringPolicy.id`` is
+        a sequential integer, never reused). The policy is created INACTIVE
+        whatever the spec says about ``active`` defaulting to true (verified:
+        omitted -> false), so nothing is polled until
+        cnc_activate_performance_policy — or ``activate=true`` here, which
+        then calls ``PUT policies/activate/<id>`` and waits like that tool
+        (activation starts SNMP / telemetry collection jobs on every selected
+        device at the given cadence: network-impacting; preview the template
+        with cnc_list_performance_policy_templates first). Use it for a
+        device- or group-specific cadence or a schema the built-in policies
+        do not poll (CEPMCRC, deviceHealth CPU / MEMORY, QOS, PTP, ...); a
+        second policy on a device the built-in "Default interface health"
+        already polls is allowed (verified: both stayed ACTIVE). Do not use it
+        to change an existing policy (cnc_update_performance_policy) or for
+        TCA thresholds (not exposed; ``thresholds`` is sent empty).
+
+        Validated BEFORE sending, because the platform does not (verified):
+        the template name (case-insensitive, canonical spelling sent); every
+        schema of ``schemas_interval`` must belong to the template and every
+        cadence must be in the schema's ``pollingIntervals`` (123 s was
+        accepted live and would poll at an unsupported interval); ``devices``
+        must resolve to inventory uuids (a host name is looked up with ``GET
+        policies/inventory-devices?hostName=``; "PE1" sent raw was stored and
+        the policy polled NOTHING); group uuids must be uuids (an unknown
+        uuid is accepted silently). Platform errors: a duplicate name -> 400
+        ``POLICY_EXITS`` (the platform's spelling); no selection -> 400
+        ``MISSING_DEVICES``; unknown template -> 400 ``INVALID_POLICY_TYPE``.
+        Not idempotent: a repeat with the same name fails.
+
+        With ``activate=true`` the create and the activation are two calls,
+        and the answer says which succeeded: once the POST has answered a
+        policy id, a failed activation (a 5xx on the activate PUT, a
+        NOT_FOUND / DB_ERROR result) is reported as "CREATED, but its
+        activation failed" naming the id — the policy EXISTS, so do not
+        re-create it (that answers POLICY_EXITS): retry with
+        cnc_activate_performance_policy or remove it with
+        cnc_delete_performance_policy. A failed device-status poll after a
+        successful activation is not an error at all: "created and activated"
+        with a "status unavailable" devices line. ``wait_seconds`` is the
+        total wait (one policy here).
+
+        Args:
+            name: unique policy name.
+            template: template key (INTERFACE, deviceHealth, SRPOLICY, ...).
+            schemas_interval: 'SCHEMA=seconds,...' or one cadence for all.
+            devices / device_groups / port_groups: the selection (at least one).
+            description / tag: free text.
+            activate: also activate (network-impacting) and wait.
+            wait_seconds: the activation wait (0 = one status read).
+
+        Returns:
+            str: "Performance policy <id> '<name>' created (inactive — activate
+            with cnc_activate_performance_policy(policy_ids='<id>'))." or
+            "... created and activated." plus the "- policy <id> devices after
+            N s (settled|still deploying): PE1 ACTIVE" line (or "- policy <id>
+            devices: status unavailable after N s (Error: ...) — the activation
+            itself succeeded; ..."), then JSON {"policy": {"id", "name",
+            "template", "active", "collection_status", "schemas_interval",
+            "devices", "device_groups", "port_groups", ...} (read back after
+            an activation, so ``active`` is true then), "policy_ids":
+            "<id>" (the string cnc_activate_performance_policy /
+            cnc_deactivate_performance_policy take), "activation": {"results",
+            "activated", "already_active", "waits": [{"policy_id", "settled",
+            "elapsed_seconds", "summary", "devices": [...], "error": str |
+            null}]} | null, "activation_error": str | null}. "Performance
+            policy <id> '<name>' CREATED, but its activation failed: Error: ...
+            The policy exists — do not re-create it ..." (non-"Error:" head:
+            the create succeeded) when the activate step fails after the POST;
+            "Error: a performance policy named '<name>' already exists
+            (POLICY_EXITS). ..." on a duplicate; "Error: cadence 123 s is not
+            allowed for CEPMINTERFACE ... Nothing was sent." / "Error: device
+            'x' is not an inventory uuid ..." for a refused input; "Error: ..."
+            on an API failure before or during the POST.
+        """
+        try:
+            templates = await perf_get(POLICY_TEMPLATES_URL)
+            template_key, template_obj = find_template(templates, template)
+            intervals = parse_schemas_interval(schemas_interval, template_key, template_obj)
+            selection = await selection_of(devices, device_groups, port_groups)
+            if not any(selection.values()):
+                raise PlatformError(
+                    "the policy needs a selection: pass devices (uuids or host names), "
+                    "device_groups or port_groups. Nothing was sent."
+                )
+            body = {
+                "policyTemplate": template_key,
+                "name": name.strip(),
+                "description": description.strip(),
+                "schemasInterval": intervals,
+                **selection,
+                "tag": tag.strip(),
+                "thresholds": {},
+                "active": False,
+            }
+            dto = await perf_send(
+                "POST", POLICIES_URL, body, hints=policy_write_hints(body["name"], template_key)
+            )
+            if isinstance(dto, list):
+                dto = dto[0] if dto and isinstance(dto[0], dict) else None
+            view = policy_view(_dict(dto))
+            policy_id = view.get("id")
+            if not isinstance(policy_id, int) or isinstance(policy_id, bool):
+                raise PlatformError(
+                    "the platform answered no policy id; check cnc_list_performance_policies "
+                    f"for '{body['name']}' before retrying (a repeat would answer POLICY_EXITS)."
+                )
+            activation: dict[str, Any] | None = None
+            lines = []
+            if activate:
+                # The policy exists from here on: a failed activation must never read as
+                # a failed create (an agent that "tries again" would re-create it).
+                try:
+                    activation = await activate_policies([policy_id], wait_seconds)
+                except Exception as e:
+                    error = format_error(e)
+                    logger.warning("policy %s created; activation failed: %s", policy_id, error)
+                    payload = {
+                        "policy": view,
+                        "policy_ids": str(policy_id),
+                        "activation": None,
+                        "activation_error": error,
+                    }
+                    return finalize(
+                        f"Performance policy {policy_id} '{view.get('name')}' CREATED, but its "
+                        f"activation failed: {error} The policy exists — do not re-create it (a "
+                        f"repeat answers POLICY_EXITS): cnc_get_performance_policy(policy_id="
+                        f"{policy_id}) shows its state, cnc_activate_performance_policy("
+                        f"policy_ids='{policy_id}') retries the activation, "
+                        f"cnc_delete_performance_policy(policy_id={policy_id}) removes it.\n\n"
+                        f"{to_json(payload)}",
+                        settings,
+                    )
+                head = f"Performance policy {policy_id} '{view.get('name')}' created and activated."
+                lines.extend(activation_lines(activation))
+                try:  # the POST echo still says active false; show the activated state
+                    view = policy_view(await policy_dto(policy_id))
+                except Exception as e:
+                    logger.warning("policy %s read-back after activation failed: %s", policy_id, e)
+            else:
+                head = (
+                    f"Performance policy {policy_id} '{view.get('name')}' created (inactive — "
+                    f"activate with cnc_activate_performance_policy(policy_ids='{policy_id}'))."
+                )
+            payload = {
+                "policy": view,
+                "policy_ids": str(policy_id),
+                "activation": activation,
+                "activation_error": None,
+            }
+            return finalize(
+                "\n".join([head, *lines, "", to_json(payload)])
+                if lines
+                else f"{head}\n\n{to_json(payload)}",
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_update_performance_policy",
+        title="Update Performance Monitoring Policy",
+        read_only=False,
+        idempotent=True,
+        dry_run_hint=(
+            "cnc_get_performance_policy (read-only) shows the policy as it is and "
+            "cnc_list_performance_policy_templates the cadences the change may use"
+        ),
+    )
+    async def cnc_update_performance_policy(
+        policy_id: Annotated[
+            int,
+            Field(
+                description="Policy id as listed by cnc_list_performance_policies (e.g. 3).", ge=1
+            ),
+        ],
+        name: Annotated[
+            str,
+            Field(
+                description="New unique name (e.g. 'PE1 interface health'); blank to keep.",
+                max_length=200,
+            ),
+        ] = "",
+        description: Annotated[
+            str, Field(description="New description; blank to keep.", max_length=1000)
+        ] = "",
+        schemas_interval: Annotated[
+            str,
+            Field(
+                description=(
+                    "New cadences: 'SCHEMA=seconds,...' (e.g. 'CEPMINTERFACE=900,CEPMCRC=0') or "
+                    "one number for every schema; schemas not named are set to 0. Blank to keep."
+                ),
+                max_length=1000,
+            ),
+        ] = "",
+        devices: Annotated[
+            str,
+            Field(
+                description=(
+                    "New device selection (uuids or exact host names, comma-separated). Giving "
+                    "ANY of devices / device_groups / port_groups replaces the whole selection; "
+                    "all three blank keeps it."
+                ),
+                max_length=8000,
+            ),
+        ] = "",
+        device_groups: Annotated[
+            str,
+            Field(
+                description="New device-group uuids (comma-separated); see devices.",
+                max_length=4000,
+            ),
+        ] = "",
+        port_groups: Annotated[
+            str,
+            Field(
+                description="New port-group uuids (comma-separated); see devices.", max_length=4000
+            ),
+        ] = "",
+        tag: Annotated[
+            str, Field(description="New contact / tag text; blank to keep.", max_length=500)
+        ] = "",
+    ) -> str:
+        """Change a performance policy's name, description, cadences, selection
+        or tag — the rest, including whether it is active, is kept.
+
+        Write; read-merge-write: ``GET policies/<id>``, the given fields
+        applied, then ``PUT /crosswork/performance/v1/policies/<id>`` with the
+        FULL MonitoringPolicy body ``{id, policyTemplate, name, description,
+        schemasInterval, devices, deviceGroups, portGroups, tag, thresholds,
+        active}`` (verified live 2026-09-15: a partial body, or a body whose
+        ``id`` differs from the path, is answered 400 ``MISSING_POLICY_ID``
+        naming the path id; and the body's ``active`` IS the activation state
+        — ``false`` or absent DEACTIVATES an active policy, ``true`` activates
+        an inactive one — so the current flag is carried through and this
+        tool never changes it; use cnc_activate_performance_policy /
+        cnc_deactivate_performance_policy for that). A PUT on an ACTIVE
+        policy (verified live 2026-09-15, cadence 3600 -> 1800 s on a PE1
+        policy): accepted, the policy stays ``active true`` / collection OK
+        and reads back with the new cadence at once, but ``deployment-history``
+        gets NO new entry and the device rows never cycle through
+        IN_PROGRESS — so whether the running collection jobs pick up the new
+        cadence / selection without a re-activation is NOT observable through
+        the API. To be sure a change takes effect: cnc_deactivate -> update ->
+        cnc_activate_performance_policy (network-impacting when it adds
+        devices or shortens a cadence), or watch the sample spacing with
+        cnc_get_performance_statistics after a cadence has elapsed. The
+        template cannot change (create a new policy instead). Validated
+        before sending as in cnc_create_performance_policy (schema names and
+        cadences against the template, devices resolved to uuids, group
+        uuids) — plus the new name must not belong to another policy: the
+        platform checks uniqueness on create only and accepted a rename to
+        "Default interface health" live, so the tool lists the policies and
+        refuses that. Only a value that differs from the policy's current one
+        counts as a change; when every given value already matches, nothing is
+        sent (verified: a no-op PUT still bumps ``lastChangedTimestamp``). The
+        PUT answer echoes the policy with both timestamps 0; the tool reads it
+        back for the real ones.
+
+        Args:
+            policy_id: the policy to change.
+            name / description / tag: blank keeps the current value.
+            schemas_interval: blank keeps the current cadences.
+            devices / device_groups / port_groups: any of them given replaces
+                the whole selection.
+
+        Returns:
+            str: "Performance policy <id> '<name>' updated (<changed fields>;
+            still active|inactive)." then JSON {"changed": [field, ...],
+            "policy": {"id", "name", "template", "active", ...}}. "Nothing to
+            change for policy <id>: pass name, ..." (non-error, nothing read
+            or sent) when every argument is blank; "Nothing to change for
+            policy <id>: every given value already matches the policy. Nothing
+            was sent." (non-error) when the given values equal the current
+            ones; "Error: no performance policy <id> (MISSING_POLICY_ID). ..."
+            for an unknown id; "Error: a performance policy named '<name>'
+            already exists (id N). Nothing was sent." on a clashing rename;
+            "Error: cadence ... Nothing was sent." for a refused cadence;
+            "Error: ..." on an API failure.
+        """
+        try:
+            wants_selection = any(v.strip() for v in (devices, device_groups, port_groups))
+            if (
+                not any(v.strip() for v in (name, description, schemas_interval, tag))
+                and not wants_selection
+            ):
+                return finalize(
+                    f"Nothing to change for policy {policy_id}: pass name, description, "
+                    "schemas_interval, tag, or a new selection. Nothing was sent.",
+                    settings,
+                )
+            current = _dict((await policy_dto(policy_id)).get("monitoringPolicy"))
+            body = policy_body(current)
+            body["id"] = policy_id
+            changed: list[str] = []
+            if name.strip() and name.strip() != body["name"]:
+                policies = _list_of_dicts(await perf_get(POLICIES_URL))
+                for other in policies:
+                    mp = _dict(other.get("monitoringPolicy"))
+                    if mp.get("name") == name.strip() and mp.get("id") != policy_id:
+                        raise PlatformError(
+                            f"a performance policy named '{name.strip()}' already exists (id "
+                            f"{mp.get('id')}); the platform would accept the duplicate on update. "
+                            "Nothing was sent."
+                        )
+                body["name"] = name.strip()
+                changed.append("name")
+            if description.strip() and description.strip() != body["description"]:
+                body["description"] = description.strip()
+                changed.append("description")
+            if tag.strip() and tag.strip() != body["tag"]:
+                body["tag"] = tag.strip()
+                changed.append("tag")
+            if schemas_interval.strip():
+                templates = await perf_get(POLICY_TEMPLATES_URL)
+                template_key, template_obj = find_template(templates, str(body["policyTemplate"]))
+                intervals = parse_schemas_interval(schemas_interval, template_key, template_obj)
+                if intervals != body["schemasInterval"]:
+                    body["schemasInterval"] = intervals
+                    changed.append("schemas_interval")
+            if wants_selection:
+                selection = await selection_of(devices, device_groups, port_groups)
+                if not any(selection.values()):
+                    raise PlatformError(
+                        "the new selection resolved to nothing; pass devices, device_groups or "
+                        "port_groups. Nothing was sent."
+                    )
+                if any(not same_selection(selection[k], body[k]) for k in selection):
+                    body.update(selection)
+                    changed.append("selection")
+            if not changed:
+                return finalize(
+                    f"Nothing to change for policy {policy_id}: every given value already "
+                    "matches the policy. Nothing was sent.",
+                    settings,
+                )
+            await perf_send(
+                "PUT",
+                f"{POLICIES_URL}/{policy_id}",
+                body,
+                hints=policy_write_hints(str(body["name"]), str(body["policyTemplate"])),
+            )
+            view = policy_view(await policy_dto(policy_id))
+            state = "active" if view.get("active") else "inactive"
+            head = (
+                f"Performance policy {policy_id} '{view.get('name')}' updated "
+                f"({', '.join(changed)}; still {state})."
+            )
+            return finalize(f"{head}\n\n{to_json({'changed': changed, 'policy': view})}", settings)
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_activate_performance_policy",
+        title="Activate Performance Monitoring Policy",
+        read_only=False,
+        idempotent=True,
+        dry_run_hint=(
+            "cnc_get_performance_policy (read-only) shows the scope and cadence the "
+            "activation would start polling with, cnc_list_performance_policy_devices the "
+            "devices it would cover"
+        ),
+    )
+    async def cnc_activate_performance_policy(
+        policy_ids: Annotated[
+            str,
+            Field(
+                description=(
+                    "Policy id, or several separated by commas (e.g. '3' or '3,5'), as listed "
+                    "by cnc_list_performance_policies."
+                ),
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+        wait_seconds: Annotated[
+            int,
+            Field(
+                description=(
+                    "How long in total to wait for every device of every policy to leave "
+                    "IN_PROGRESS (e.g. 20; 0 = read the device statuses once and return). The "
+                    "policies are waited on concurrently, so this is the call's ceiling."
+                ),
+                ge=0,
+                le=120,
+            ),
+        ] = 20,
+    ) -> str:
+        """Activate one or more performance policies — start collecting their
+        schemas from their devices at the configured cadence.
+
+        Write, NETWORK-IMPACTING: activation deploys SNMP / telemetry
+        collection jobs to every device the policy selects (through the Data
+        Gateway) and they poll from then on. Preview what would start with
+        cnc_get_performance_policy (cadence, schemas, selection) first.
+        ``PUT /crosswork/performance/v1/policies/activate/<id[,id...]>``
+        (verified live 2026-09-15; ONE comma-joined path segment) answers 200
+        with ``[{"policyId", "status": OK | ALREADY_ACTIVATED | NOT_FOUND,
+        "policyName"}]`` — an unknown id is a 200 NOT_FOUND, reported here as
+        an error naming it (the others are still applied and listed);
+        ALREADY_ACTIVATED is a no-op success (idempotent). Then the tool polls
+        ``policies/devices/<id>`` (every page) every 3 s up to
+        ``wait_seconds`` — for all the policies CONCURRENTLY, so
+        ``wait_seconds`` is the total ceiling of the call, not per policy:
+        verified sequence — t+0 the policy reads ``active true`` / collection
+        PARTIAL and each device NOTPOLLING with comment IN_PROGRESS; t+5 s
+        the device is ACTIVE and the policy OK. A device left NOTPOLLING with
+        another comment (MISSING_DEVICE_DETAILS, UN_MANAGED_DEVICE, ...) will
+        not be polled — cnc_list_performance_policy_devices explains. A
+        failed status poll (a 5xx on the devices read) does not fail the
+        call — the activation already succeeded — it is reported per policy
+        as "devices: status unavailable". Data appears in
+        cnc_get_performance_statistics after the first cadence elapses.
+
+        Args:
+            policy_ids: '3' or '3,5'.
+            wait_seconds: total deployment wait (0 = one read).
+
+        Returns:
+            str: "Activated N performance policy(ies)." with one "- policy <id>
+            '<name>': activated|already active" line per id and one "- policy
+            <id> devices after S s (settled|still deploying): PE1 ACTIVE, ..."
+            line per policy (or "- policy <id> devices: status unavailable
+            after S s (Error: ...) — the activation itself succeeded; ..."),
+            then JSON {"results": [{"policy_id", "status", "policy_name",
+            "error_message"}], "activated": [...], "already_active": [...],
+            "waits": [{"policy_id", "settled", "elapsed_seconds", "summary",
+            "devices": [{"host_name", "uuid", "collection_status", "comments",
+            ...}], "error": str | null}]}. "Error: no performance policy 999
+            (NOT_FOUND). Applied to the others: ..." for an unknown id;
+            "Error: policy_ids must be ..." (nothing sent) for a bad list;
+            "Error: ..." when the activate PUT itself fails.
+        """
+        try:
+            ids = parse_policy_ids(policy_ids)
+            outcome = await activate_policies(ids, wait_seconds)
+            head = f"Activated {len(outcome['activated'])} performance policy(ies)"
+            if outcome["already_active"]:
+                head += f" ({len(outcome['already_active'])} already active)"
+            lines = [head + ".", *activation_lines(outcome), "", to_json(outcome)]
+            return finalize("\n".join(lines), settings)
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_deactivate_performance_policy",
+        title="Deactivate Performance Monitoring Policy",
+        read_only=False,
+        idempotent=True,
+    )
+    async def cnc_deactivate_performance_policy(
+        policy_ids: Annotated[
+            str,
+            Field(
+                description=(
+                    "Policy id, or several separated by commas (e.g. '3' or '3,5'), as listed "
+                    "by cnc_list_performance_policies."
+                ),
+                min_length=1,
+                max_length=200,
+            ),
+        ],
+    ) -> str:
+        """Deactivate one or more performance policies — stop collecting their
+        schemas (the policies and their history stay).
+
+        Write; ``PUT /crosswork/performance/v1/policies/deactivate/<id[,id...]>``
+        (verified live 2026-09-15; one comma-joined path segment) answers 200
+        with ``[{"policyId", "status": OK | ALREADY_DEACTIVATED | NOT_FOUND,
+        "policyName"}]`` — an unknown id is a 200 NOT_FOUND, reported here as
+        an error naming it (the others are still applied); ALREADY_DEACTIVATED
+        is a no-op success. Deactivation is immediate (verified: the policy
+        reads ``active false`` and ``policies/devices/<id>`` is empty at once).
+        Deactivating a built-in policy (1 "Default interface health", 2
+        "Default LSP traffic") stops the interface / LSP dashboards from
+        filling — say so before doing it. Deletion does not need it
+        (cnc_delete_performance_policy removes an active policy too).
+
+        Args:
+            policy_ids: '3' or '3,5'.
+
+        Returns:
+            str: "Deactivated N performance policy(ies)." with one "- policy
+            <id> '<name>': deactivated|already inactive" line per id, then JSON
+            {"results": [{"policy_id", "status", "policy_name",
+            "error_message"}], "deactivated": [...], "already_inactive": [...]}.
+            "Error: no performance policy 999 (NOT_FOUND). ..." for an unknown
+            id; "Error: policy_ids must be ..." (nothing sent) for a bad list;
+            "Error: ..." on an API failure.
+        """
+        try:
+            ids = parse_policy_ids(policy_ids)
+            raw = await perf_send("PUT", f"{POLICY_DEACTIVATE_URL}/{','.join(str(i) for i in ids)}")
+            results = operation_results(raw)
+            done, already = check_operation_results(results, ids, "deactivated")
+            head = f"Deactivated {len(done)} performance policy(ies)"
+            if already:
+                head += f" ({len(already)} already inactive)"
+            lines = [head + "."]
+            lines.extend(
+                f"- policy {r['policy_id']} '{r['policy_name'] or '?'}': deactivated" for r in done
+            )
+            lines.extend(
+                f"- policy {r['policy_id']} '{r['policy_name'] or '?'}': already inactive"
+                for r in already
+            )
+            payload = {"results": results, "deactivated": done, "already_inactive": already}
+            return finalize("\n".join([*lines, "", to_json(payload)]), settings)
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_delete_performance_policy",
+        title="Delete Performance Monitoring Policy",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_delete_performance_policy(
+        policy_id: Annotated[
+            int,
+            Field(
+                description="Policy id as listed by cnc_list_performance_policies (e.g. 3).", ge=1
+            ),
+        ],
+    ) -> str:
+        """Delete a performance monitoring policy — collection for it stops and
+        its deployment history goes.
+
+        DESTRUCTIVE write; ``DELETE /crosswork/performance/v1/policies/<id>``
+        (verified live 2026-09-15) answers 200 with ``[{"policyId", "status":
+        OK | NOT_FOUND, "policyName"}]`` — an unknown or already deleted id is
+        a 200 NOT_FOUND, reported here as an error. No deactivation is needed
+        first (an ACTIVE policy was deleted live and the built-in policy's
+        devices stayed ACTIVE); the platform's comma-list form
+        (``policies/3,5``) is deliberately not offered — one policy per call.
+        Verify the target with cnc_get_performance_policy first; deleting a
+        built-in policy (1 "Default interface health", 2 "Default LSP
+        traffic") empties the interface / LSP dashboards from then on. Ids are
+        never reused, so a stale id cannot hit a newer policy.
+
+        Args:
+            policy_id: the policy to delete.
+
+        Returns:
+            str: "Performance policy <id> '<name>' deleted." then JSON
+            {"policy_id", "status": "OK", "policy_name"}. "Error: no
+            performance policy <id> (NOT_FOUND). ..." for an unknown id;
+            "Error: ..." on an API failure.
+        """
+        try:
+            raw = await perf_send("DELETE", f"{POLICIES_URL}/{policy_id}")
+            results = operation_results(raw)
+            done, _already = check_operation_results(results, [policy_id], "deleted")
+            result = done[0]
+            return finalize(
+                f"Performance policy {policy_id} '{result.get('policy_name') or '?'}' deleted.\n\n"
+                f"{to_json(result)}",
+                settings,
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_update_performance_retention",
+        title="Update Performance Data Retention",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_update_performance_retention(
+        table: Annotated[
+            str,
+            Field(
+                description=(
+                    "Retention table to change — its raw table key as "
+                    "cnc_get_performance_retention lists it (e.g. 'CEPM_INTERFACE', "
+                    "'CEPM_SRPOLICY', 'DeviceCpuUtilInfo') or its "
+                    "schema name (e.g. 'CEPMINTERFACE', 'CPU'); case-insensitive."
+                ),
+                min_length=1,
+                max_length=80,
+            ),
+        ],
+        raw_hours: Annotated[
+            int | None,
+            Field(
+                description="New raw-sample retention in hours (e.g. 48); omit to keep.",
+                ge=0,
+                le=100000,
+            ),
+        ] = None,
+        hourly_hours: Annotated[
+            int | None,
+            Field(
+                description="New hourly roll-up retention in hours (e.g. 336); omit to keep.",
+                ge=0,
+                le=100000,
+            ),
+        ] = None,
+        daily_hours: Annotated[
+            int | None,
+            Field(
+                description="New daily roll-up retention in hours (e.g. 1488); omit to keep.",
+                ge=0,
+                le=100000,
+            ),
+        ] = None,
+        weekly_hours: Annotated[
+            int | None,
+            Field(
+                description="New weekly roll-up retention in hours (e.g. 18144); omit to keep.",
+                ge=0,
+                le=100000,
+            ),
+        ] = None,
+    ) -> str:
+        """Change how long one performance schema's data is kept (raw, hourly,
+        daily, weekly) — the other periods and tables stay as they are.
+
+        DESTRUCTIVE write (it overwrites the table's retention setting, and a
+        shortened period lets the platform purge the older samples for good);
+        read-merge-write: ``GET dataretention/all``, the table found by
+        its raw table key or schema name, the given periods applied, then
+        ``PUT /crosswork/performance/v1/dataretention`` with ``{"<raw table
+        key>": {rawDataRetentionPeriod, hourlyDataRetentionPeriod,
+        dailyDataRetentionPeriod, weeklyDataRetentionPeriod}}`` — always all
+        four (a partial body is unverified) and the key in the platform's
+        exact spelling (verified live 2026-09-15: ``CEPM_INTERFACE`` weekly
+        9072 -> 9073 answered ``200 true`` and read back at once; the
+        lower-cased key answered ``200 false`` and changed NOTHING — ``false``
+        means "no such table" and is reported as an error). The change is
+        read back and both states are returned. Lowering a period lets the
+        platform purge older data (irreversible) — the answer carries the
+        exact call that restores the previous values, so the recipe is: note
+        the "before" line (or cnc_get_performance_retention first), change,
+        and restore with the printed call when done. Tables whose
+        ``has_aggregation_option`` is false (CEPM_PTP, CEPM_SYNCE, CEPM_GNSS)
+        sit at hourly / daily / weekly 0 by default; what the platform does
+        with roll-up periods on them is unverified. Whether raw <= hourly <=
+        daily <= weekly is enforced is unverified too (no such error was
+        seen). Defaults: 24 / 168 / 744 / 9072 h (cnc_get_performance_retention;
+        cnc_reset_performance_retention puts EVERY table back to them).
+
+        Args:
+            table: raw table key or schema name.
+            raw_hours / hourly_hours / daily_hours / weekly_hours: at least one.
+
+        Returns:
+            str: "Retention of <key> (schema <SCHEMA>) updated: raw R h, hourly
+            H h, daily D h, weekly W h (before: ...)." (or "... unchanged: ..."
+            when the values already matched — the PUT is still sent), the
+            "Restore with: cnc_update_performance_retention(table='<key>',
+            raw_hours=..., ...)" line, then JSON {"table", "schema", "before":
+            {four periods}, "after": {four periods}, "changed": bool,
+            "restore_call": str}. "Error: unknown retention table '<x>'.
+            Tables: ... Nothing was sent." for a bad name; "Error: pass at
+            least one of ..." (nothing sent) when all four are omitted;
+            "Error: the platform applied nothing (answered false) ..." when the
+            PUT is refused; "Error: ..." on an API failure.
+        """
+        try:
+            changes: dict[str, int | None] = {
+                "rawDataRetentionPeriod": raw_hours,
+                "hourlyDataRetentionPeriod": hourly_hours,
+                "dailyDataRetentionPeriod": daily_hours,
+                "weeklyDataRetentionPeriod": weekly_hours,
+            }
+            if all(v is None for v in changes.values()):
+                raise PlatformError(
+                    "pass at least one of raw_hours, hourly_hours, daily_hours, weekly_hours. "
+                    "Nothing was sent."
+                )
+            all_data = await perf_get(RETENTION_ALL_URL)
+            key, entry = find_retention_table(all_data, table)
+            before = {field: entry.get(field) for field in RETENTION_FIELDS}
+            body = retention_body(entry, changes)
+            answer = await perf_send("PUT", RETENTION_URL, {key: body})
+            if answer is not True:
+                raise PlatformError(
+                    f"the platform applied nothing for retention table '{key}' (it answered "
+                    f"{to_json(answer)} instead of true) — the table name is not one it knows in "
+                    "this spelling; cnc_get_performance_retention lists the tables."
+                )
+            after_all = await perf_get(RETENTION_ALL_URL)
+            after_entry = _dict(_dict(after_all).get(key))
+            after = {field: after_entry.get(field) for field in RETENTION_FIELDS}
+            if after != body:
+                raise PlatformError(
+                    f"the platform answered true but retention table '{key}' reads back as "
+                    f"{retention_periods_text(after)}, not {retention_periods_text(body)}; "
+                    "check cnc_get_performance_retention."
+                )
+            restore_call = (
+                f"cnc_update_performance_retention(table='{key}', "
+                f"raw_hours={num_text(before['rawDataRetentionPeriod'])}, "
+                f"hourly_hours={num_text(before['hourlyDataRetentionPeriod'])}, "
+                f"daily_hours={num_text(before['dailyDataRetentionPeriod'])}, "
+                f"weekly_hours={num_text(before['weeklyDataRetentionPeriod'])})"
+            )
+            changed = after != before
+            schema = entry.get("schemaName") or "?"
+            head = (
+                f"Retention of {key} (schema {schema}) {'updated' if changed else 'unchanged'}: "
+                f"{retention_periods_text(after)}"
+                + (f" (before: {retention_periods_text(before)})." if changed else ".")
+            )
+            payload = {
+                "table": key,
+                "schema": entry.get("schemaName"),
+                "before": before,
+                "after": after,
+                "changed": changed,
+                "restore_call": restore_call,
+            }
+            return finalize(
+                "\n".join([head, f"Restore with: {restore_call}", "", to_json(payload)]), settings
+            )
+        except Exception as e:
+            return format_error(e)
+
+    @register_tool(
+        mcp,
+        ctx,
+        name="cnc_reset_performance_retention",
+        title="Reset Performance Data Retention",
+        read_only=False,
+        destructive=True,
+        idempotent=True,
+    )
+    async def cnc_reset_performance_retention() -> str:
+        """Reset EVERY performance retention table to the platform defaults
+        (raw 24 h, hourly 168 h, daily 744 h, weekly 9072 h).
+
+        DESTRUCTIVE write: it overwrites every table's periods at once (a
+        table whose retention was raised loses that, and shortened periods let
+        the platform purge data). ``POST
+        /crosswork/performance/v1/dataretention/reset`` — per the spec a 200
+        with a boolean; NOT exercised live (it would have changed the lab's
+        settings), so the answer envelope is unverified and the tool relies on
+        ``GET dataretention/all`` before and after instead: every table whose
+        periods changed is listed with its previous values and the
+        cnc_update_performance_retention call that restores them. Read
+        cnc_get_performance_retention first; to change one table use
+        cnc_update_performance_retention instead. Whether the reset also sets
+        hourly / daily / weekly on the no-aggregation tables (CEPM_PTP,
+        CEPM_SYNCE, CEPM_GNSS, at 0 by default) to the defaults is unknown.
+
+        Returns:
+            str: "Performance retention reset to the defaults: N table(s)
+            changed." with one "- <key> (schema): before ... -> after ...;
+            restore with cnc_update_performance_retention(...)" line per
+            changed table (or "no table changed"), then JSON {"default": {four
+            periods}, "answer": <the platform's body>, "changed": [{"table",
+            "schema", "before", "after", "restore_call"}]}. "Error: ..." on an
+            API failure (a non-true answer is reported with the read-back).
+        """
+        try:
+            before_all = _dict(await perf_get(RETENTION_ALL_URL))
+            answer = await perf_send("POST", RETENTION_RESET_URL)
+            after_all, defaults = await asyncio.gather(
+                perf_get(RETENTION_ALL_URL), perf_get(RETENTION_DEFAULT_URL)
+            )
+            changed = []
+            for key, entry in before_all.items():
+                old = {f: _dict(entry).get(f) for f in RETENTION_FIELDS}
+                new = {f: _dict(_dict(after_all).get(key)).get(f) for f in RETENTION_FIELDS}
+                if old != new:
+                    changed.append(
+                        {
+                            "table": str(key),
+                            "schema": _dict(entry).get("schemaName"),
+                            "before": old,
+                            "after": new,
+                            "restore_call": (
+                                f"cnc_update_performance_retention(table='{key}', "
+                                f"raw_hours={num_text(old['rawDataRetentionPeriod'])}, "
+                                f"hourly_hours={num_text(old['hourlyDataRetentionPeriod'])}, "
+                                f"daily_hours={num_text(old['dailyDataRetentionPeriod'])}, "
+                                f"weekly_hours={num_text(old['weeklyDataRetentionPeriod'])})"
+                            ),
+                        }
+                    )
+            if answer is not True and answer is not None:
+                raise PlatformError(
+                    f"the platform answered {to_json(answer)} instead of true; "
+                    f"{len(changed)} table(s) read back changed — check "
+                    "cnc_get_performance_retention."
+                )
+            head = f"Performance retention reset to the defaults: {len(changed)} table(s) changed."
+            lines = [head]
+            for c in changed:
+                lines.append(
+                    f"- {c['table']} ({c['schema'] or '?'}): "
+                    f"{retention_periods_text(c['before'])} -> "
+                    f"{retention_periods_text(c['after'])}; restore with {c['restore_call']}"
+                )
+            if not changed:
+                lines.append("- no table changed (all were already at the defaults)")
+            payload = {"default": _dict(defaults), "answer": answer, "changed": changed}
+            return finalize("\n".join([*lines, "", to_json(payload)]), settings)
         except Exception as e:
             return format_error(e)

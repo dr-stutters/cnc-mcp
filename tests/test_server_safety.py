@@ -51,6 +51,9 @@ WRITE_TOOLS = {
     "cnc_delete_device_backup",
     "cnc_create_webhook_subscription",
     "cnc_delete_notification_subscription",
+    "cnc_create_external_subscription",
+    "cnc_delete_external_subscription",
+    "cnc_clear_notification_subscriptions_by_topic",
     "cnc_pause_lcm_recommendations",
     "cnc_create_odn_template",
     "cnc_delete_odn_template",
@@ -63,6 +66,23 @@ WRITE_TOOLS = {
     "cnc_suspend_inventory_scheduler_job",
     "cnc_update_credential_profile",
     "cnc_enable_device_gnmi",
+    "cnc_create_performance_policy",
+    "cnc_activate_performance_policy",
+    "cnc_delete_performance_policy",
+    "cnc_update_performance_retention",
+    "cnc_reset_performance_retention",
+    "cnc_set_event_type_severity",
+    "cnc_revert_event_type_autoclear",
+    "cnc_update_alarm_manager_settings",
+    "cnc_update_alarm_suppression_policy",
+    "cnc_create_device_group",
+    "cnc_update_device_group",
+    "cnc_delete_device_group",
+    "cnc_set_device_group_members",
+    "cnc_move_group_members",
+    "cnc_upload_ztp_config_file",
+    "cnc_add_ztp_serial_numbers",
+    "cnc_delete_ztp_device",
 }
 
 
@@ -206,6 +226,13 @@ FAULT_WRITES = {
     "cnc_clear_alarm",
     "cnc_create_alarm_suppression_policy",
     "cnc_delete_alarm_suppression_policy",
+    "cnc_update_alarm_suppression_policy",
+    "cnc_set_event_type_severity",
+    "cnc_set_event_type_autoclear",
+    "cnc_revert_event_type_autoclear",
+    "cnc_update_alarm_manager_settings",
+    "cnc_update_gnmi_alarm_settings",
+    "cnc_set_event_type_recommendation",
 }
 
 
@@ -271,12 +298,16 @@ def test_unknown_write_area_fails_startup_with_a_hint(make_settings):
         build_server(make_settings(enable_writes=False, write_areas="falt"))
 
 
-def test_unknown_disabled_tool_fails_startup_with_a_hint(make_settings):
+async def test_unknown_disabled_tool_fails_startup_with_a_hint(make_settings):
     """The message carries the did-you-mean and the few closest names, not the whole
-    245-name list (6.5 KB on one stderr line)."""
+    tool list (hundreds of names, several KB on one stderr line). The count it
+    states is every tool a module registers — derived here from a build with writes
+    on, so the test does not go stale with each new tool."""
     from cnc_mcp.errors import PlatformError
     from cnc_mcp.tools import CLOSE_TOOL_NAMES, FULL_TOOL_LIST_HINT
 
+    total = len(await build_server(make_settings(enable_writes=True)).list_tools())
+    assert total > 200
     with pytest.raises(PlatformError) as info:
         build_server(make_settings(disabled_tools="cnc_delete_devices,cnc_delete_device"))
     text = str(info.value)
@@ -288,12 +319,12 @@ def test_unknown_disabled_tool_fails_startup_with_a_hint(make_settings):
     closest = text.split("Closest tool names: ", 1)[1].split(".", 1)[0].split(", ")
     assert closest[0] == "cnc_delete_device"  # a write tool counts even while writes are off
     assert 1 < len(closest) <= CLOSE_TOOL_NAMES
-    assert f"245 tool names in this build; {FULL_TOOL_LIST_HINT}." in text
+    assert f"{total} tool names in this build; {FULL_TOOL_LIST_HINT}." in text
     assert len(text) < 600
     with pytest.raises(PlatformError) as info:
         build_server(make_settings(disabled_tools="zzz"))
     text = str(info.value)
-    assert "names an unknown tool 'zzz'. 245 tool names in this build; run" in text
+    assert f"names an unknown tool 'zzz'. {total} tool names in this build; run" in text
     assert "Closest" not in text and "did you mean" not in text
     # The area list (24 names) is still printed in full.
     with pytest.raises(PlatformError) as info:
