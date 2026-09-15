@@ -1242,9 +1242,11 @@ def render_doc(
     w(
         "**From the Tyk v5.1.1 gateway source** (`gateway/api_loader.go`, "
         "`mw_access_rights.go`, `mw_granular_access.go`), confirmed live 2026-09-15 by a "
-        "user carrying the generated read-only role (the read smoke: 262 read calls "
-        "answered, the 7 predicted refusals it exercised answered 403, nothing unpredicted "
-        "was refused; two writes and the `/v1/api` listings refused as predicted):"
+        "users carrying the generated roles (read-only, 2026-09-15: 262 read calls answered, "
+        "the 7 predicted refusals the smoke exercises answered 403, nothing unpredicted was "
+        "refused, two writes and the `/v1/api` listings refused as predicted; operator, "
+        "2026-09-15: all 432 read and write steps of the smoke answered, every created object "
+        "removed again, no 403 at all):"
     )
     w("")
     w(
@@ -1306,8 +1308,10 @@ def render_doc(
             if write_only_rows
             else ""
         )
-        + " was not among the shapes read back; the experiments always carried a GET entry "
-        "next to the Write entry."
+        + " was not among the shapes read back through the admin session; it was exercised "
+        "by a user on the operator body (2026-09-15: the alarm acknowledge / note / clear "
+        "tools and the NSO connector calls answered), so the stored form works even though "
+        "it was never inspected."
     )
     w("")
     # --- 2

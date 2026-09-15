@@ -81,7 +81,9 @@ Release body, so every release needs its own `## [x.y.z] - date` heading.
   14 tools. `errors.py` now explains Tyk's two refusal bodies ("Access to
   this API has been disallowed" = the API is not in the role; "Access to
   this resource has been disallowed" = the path/method is not covered) and
-  neither triggers a re-login.
+  neither triggers a re-login. A user on the generated operator role then
+  ran the full read + write smoke (432 steps, every created object removed
+  again) with no refusal.
 - The RBAC map, `docs/RBAC.md` and the `docs/rbac/*.role.json` bodies now
   follow how Crosswork's AAA service actually stores a role (verified live
   2026-09-14 by storing a test role through an admin session and reading it
